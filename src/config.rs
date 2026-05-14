@@ -39,6 +39,7 @@ pub enum DockEdge {
 #[serde(default)]
 pub struct ThemeConfig {
     pub preset: String,
+    pub renderer: Option<RenderMode>,
     pub shelf_top: String,
     pub shelf_bottom: String,
     pub shelf_stroke: String,
@@ -50,6 +51,31 @@ pub struct ThemeConfig {
     pub shelf_height_ratio: f64,
     pub shelf_slant_ratio: f64,
     pub icon_gap_ratio: f64,
+    pub tilt: f64,
+    pub depth: f64,
+    pub bevel: f64,
+    pub floor_opacity: f64,
+    pub shadow_strength: f64,
+    pub highlight_strength: f64,
+    pub reflection_blur: f64,
+    pub material_roughness: f64,
+    pub icon_floor_offset: f64,
+    pub shelf_texture: Option<String>,
+    pub shelf_overlay: Option<String>,
+    pub noise_texture: Option<String>,
+    pub normal_map: Option<String>,
+    pub fallback_texture: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RenderMode {
+    #[default]
+    #[serde(rename = "scene-3d")]
+    Scene3d,
+    #[serde(rename = "texture-2d")]
+    Texture2d,
+    #[serde(rename = "procedural-2d")]
+    Procedural2d,
 }
 
 impl Default for Config {
@@ -86,7 +112,8 @@ impl Default for DockConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
-            preset: "osx-glass".to_string(),
+            preset: "osx-glass-3d".to_string(),
+            renderer: Some(RenderMode::Scene3d),
             shelf_top: "#f8fcffff".to_string(),
             shelf_bottom: "#4f6072e8".to_string(),
             shelf_stroke: "#2f4055cc".to_string(),
@@ -98,6 +125,20 @@ impl Default for ThemeConfig {
             shelf_height_ratio: 0.36,
             shelf_slant_ratio: 0.30,
             icon_gap_ratio: 0.12,
+            tilt: 0.58,
+            depth: 0.78,
+            bevel: 0.28,
+            floor_opacity: 0.62,
+            shadow_strength: 0.42,
+            highlight_strength: 0.72,
+            reflection_blur: 0.18,
+            material_roughness: 0.34,
+            icon_floor_offset: 0.08,
+            shelf_texture: None,
+            shelf_overlay: None,
+            noise_texture: None,
+            normal_map: None,
+            fallback_texture: None,
         }
     }
 }
@@ -131,6 +172,15 @@ impl Config {
         self.theme.shelf_height_ratio = self.theme.shelf_height_ratio.clamp(0.12, 0.9);
         self.theme.shelf_slant_ratio = self.theme.shelf_slant_ratio.clamp(0.0, 0.8);
         self.theme.icon_gap_ratio = self.theme.icon_gap_ratio.clamp(0.0, 0.6);
+        self.theme.tilt = self.theme.tilt.clamp(0.0, 1.2);
+        self.theme.depth = self.theme.depth.clamp(0.0, 1.4);
+        self.theme.bevel = self.theme.bevel.clamp(0.0, 0.8);
+        self.theme.floor_opacity = self.theme.floor_opacity.clamp(0.0, 1.0);
+        self.theme.shadow_strength = self.theme.shadow_strength.clamp(0.0, 1.0);
+        self.theme.highlight_strength = self.theme.highlight_strength.clamp(0.0, 1.0);
+        self.theme.reflection_blur = self.theme.reflection_blur.clamp(0.0, 1.0);
+        self.theme.material_roughness = self.theme.material_roughness.clamp(0.0, 1.0);
+        self.theme.icon_floor_offset = self.theme.icon_floor_offset.clamp(-0.4, 0.4);
         migrate_old_osx_defaults(&mut self.theme);
         for pinned in &mut self.pinned {
             *pinned = normalize_pinned_id(pinned);
@@ -156,7 +206,14 @@ fn normalize_pinned_id(id: &str) -> String {
 }
 
 fn migrate_old_osx_defaults(theme: &mut ThemeConfig) {
-    if theme.preset != "osx-glass" {
+    if theme.preset == "osx-glass" {
+        theme.preset = "osx-glass-3d".to_string();
+        if theme.renderer.is_none() {
+            theme.renderer = Some(RenderMode::Scene3d);
+        }
+    }
+
+    if theme.preset != "osx-glass-3d" {
         return;
     }
 
@@ -196,6 +253,7 @@ mod tests {
         config.dock.refresh_ms = 1;
         config.theme.reflection_opacity = 2.0;
         config.theme.shelf_height_ratio = 0.01;
+        config.theme.tilt = 9.0;
         config.pinned = vec!["org.xfce.Terminal.desktop".to_string()];
 
         let config = config.normalized();
@@ -205,7 +263,20 @@ mod tests {
         assert_eq!(config.dock.refresh_ms, 100);
         assert_eq!(config.theme.reflection_opacity, 0.7);
         assert_eq!(config.theme.shelf_height_ratio, 0.12);
+        assert_eq!(config.theme.tilt, 1.2);
         assert_eq!(config.pinned, vec!["xfce4-terminal.desktop"]);
+    }
+
+    #[test]
+    fn migrates_old_theme_id_to_3d_default() {
+        let mut config = Config::default();
+        config.theme.preset = "osx-glass".to_string();
+        config.theme.renderer = None;
+
+        let config = config.normalized();
+
+        assert_eq!(config.theme.preset, "osx-glass-3d");
+        assert_eq!(config.theme.renderer, Some(RenderMode::Scene3d));
     }
 
     #[test]

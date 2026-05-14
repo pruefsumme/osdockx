@@ -128,6 +128,15 @@ impl Renderer {
         regions
     }
 
+    pub fn layout_for(
+        model: &DockModel,
+        config: &DockConfig,
+        theme: &Theme,
+        hover: Option<Point>,
+    ) -> DockLayout {
+        compute_layout(model, hover, layout_params(config, theme))
+    }
+
     pub fn draw(
         &mut self,
         cr: &Context,
@@ -138,29 +147,63 @@ impl Renderer {
         icons: &mut IconCache,
     ) {
         let started = Instant::now();
-        let params = layout_params(config, theme);
-        let layout = compute_layout(model, hover, params);
-
-        clear(cr);
-        draw_shadow(cr, &layout.shelf);
-        draw_shelf(cr, &layout.shelf, theme);
-        draw_reflections(cr, model, &layout, theme, icons);
-        draw_icons(cr, model, &layout, theme, icons);
-        draw_hover_label(cr, model, &layout);
-
+        let layout = Self::layout_for(model, config, theme, hover);
+        self.draw_layout(cr, model, &layout, theme, icons, ShelfLayer::Procedural);
         self.last_layout = layout;
-        let elapsed = started.elapsed();
+        self.log_draw_time(started.elapsed(), model.items.len());
+    }
+
+    pub fn draw_overlay(&mut self, cr: &Context, frame: RenderFrame<'_>, icons: &mut IconCache) {
+        let started = Instant::now();
+        let layout = Self::layout_for(frame.model, frame.config, frame.theme, frame.hover);
+        self.draw_layout(
+            cr,
+            frame.model,
+            &layout,
+            frame.theme,
+            icons,
+            frame.shelf_layer,
+        );
+        self.last_layout = layout;
+        self.log_draw_time(started.elapsed(), frame.model.items.len());
+    }
+
+    fn draw_layout(
+        &self,
+        cr: &Context,
+        model: &DockModel,
+        layout: &DockLayout,
+        theme: &Theme,
+        icons: &mut IconCache,
+        shelf_layer: ShelfLayer,
+    ) {
+        clear(cr);
+        match shelf_layer {
+            ShelfLayer::None => {}
+            ShelfLayer::Procedural => draw_procedural_shelf_layer(cr, &layout.shelf, theme),
+            ShelfLayer::Texture2d => {
+                if !draw_texture_shelf_layer(cr, &layout.shelf, theme) {
+                    draw_procedural_shelf_layer(cr, &layout.shelf, theme);
+                }
+            }
+        }
+        draw_reflections(cr, model, layout, theme, icons);
+        draw_icons(cr, model, layout, theme, icons);
+        draw_hover_label(cr, model, layout);
+    }
+
+    fn log_draw_time(&self, elapsed: Duration, icon_count: usize) {
         if elapsed >= SLOW_DRAW {
             tracing::debug!(
                 target: "osdockx::perf",
-                icons = model.items.len(),
+                icons = icon_count,
                 elapsed_ms = elapsed_ms(elapsed),
                 "slow dock draw"
             );
         } else {
             tracing::trace!(
                 target: "osdockx::perf",
-                icons = model.items.len(),
+                icons = icon_count,
                 elapsed_ms = elapsed_ms(elapsed),
                 "dock draw"
             );
@@ -178,6 +221,21 @@ impl Renderer {
         let mut icons = IconCache::disabled();
         self.draw(&cr, model, config, theme, None, &mut icons);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShelfLayer {
+    None,
+    Procedural,
+    Texture2d,
+}
+
+pub struct RenderFrame<'a> {
+    pub model: &'a DockModel,
+    pub config: &'a DockConfig,
+    pub theme: &'a Theme,
+    pub hover: Option<Point>,
+    pub shelf_layer: ShelfLayer,
 }
 
 fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
@@ -209,6 +267,11 @@ fn clear(cr: &Context) {
     cr.set_operator(gtk::cairo::Operator::Over);
 }
 
+fn draw_procedural_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) {
+    draw_shadow(cr, shelf);
+    draw_shelf(cr, shelf, theme);
+}
+
 fn draw_shadow(cr: &Context, shelf: &Rect) {
     cr.save().ok();
     rounded_rect(
@@ -222,6 +285,26 @@ fn draw_shadow(cr: &Context, shelf: &Rect) {
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.22);
     let _ = cr.fill();
     cr.restore().ok();
+}
+
+fn draw_texture_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) -> bool {
+    let Some(path) = theme.assets.fallback_texture.as_ref() else {
+        return false;
+    };
+    let Ok(pixbuf) = Pixbuf::from_file(path) else {
+        return false;
+    };
+
+    cr.save().ok();
+    cr.translate(shelf.x, shelf.y);
+    cr.scale(
+        shelf.width / pixbuf.width().max(1) as f64,
+        shelf.height / pixbuf.height().max(1) as f64,
+    );
+    cr.set_source_pixbuf(&pixbuf, 0.0, 0.0);
+    let painted = cr.paint().is_ok();
+    cr.restore().ok();
+    painted
 }
 
 fn draw_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {

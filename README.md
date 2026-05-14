@@ -24,14 +24,17 @@ If no file exists, OSDockX writes a default config on first launch.
 
 ## Current Scope
 
-- GTK4 custom cairo dock window
+- GTK4 overlay dock window with a GLArea shelf layer and cairo icon/label overlay
 - X11 EWMH dock setup through `x11rb`, including dock struts, active window,
   workspace, urgency, PID, executable, and `_NET_WM_ICON` metadata
 - RandR monitor selection via `dock.monitor` (`primary`, a monitor name, or an index)
 - Desktop launcher discovery through GIO desktop entries
 - App matching through `StartupWMClass`, desktop IDs, names, and executable fallback
-- OSX-style glass shelf rendering with icon reflections, magnification, running
-  indicators, badges, and an opaque shelf fallback for non-composited sessions
+- Default `osx-glass-3d` theme with procedural OpenGL shelf geometry, cairo
+  fallback rendering, icon reflections, magnification, running indicators, and badges
+- Theme packs under `$XDG_CONFIG_HOME/osdockx/themes/<theme-id>/theme.toml`
+  or `$XDG_DATA_HOME/osdockx/themes/<theme-id>/theme.toml`, with
+  `renderer = "scene-3d"`, `"texture-2d"`, or `"procedural-2d"`
 - Configurable theme/model/layout boundaries for a later Wayland backend
 
 Wayland support is intentionally not part of v1. The backend boundary is shaped

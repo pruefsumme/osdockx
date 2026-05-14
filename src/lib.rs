@@ -4,5 +4,8 @@ pub mod desktop;
 pub mod layout;
 pub mod model;
 pub mod renderer;
+pub mod scene3d;
+pub mod shelf;
 pub mod theme;
+pub mod theme_pack;
 pub mod ui;

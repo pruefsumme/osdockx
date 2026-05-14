@@ -10,7 +10,9 @@ anyhow = "1.0"
 directories = "6.0"
 gdk-x11 = { package = "gdk4-x11", version = "0.11.0", features = ["xlib"] }
 gio-unix = "0.22"
+glow = "0.16"
 gtk = { package = "gtk4", version = "0.11.3", features = ["v4_12"] }
+libloading = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 toml = "0.9"
