@@ -171,7 +171,6 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     gl_area.set_vexpand(false);
     gl_area.set_has_depth_buffer(true);
     gl_area.set_auto_render(false);
-    gl_area.set_required_version(3, 3);
 
     let drawing = DrawingArea::new();
     drawing.add_css_class("osdock-surface");
