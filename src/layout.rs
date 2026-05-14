@@ -21,9 +21,16 @@ pub struct IconLayout {
     pub scale: f64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabelLayout {
+    pub item_index: usize,
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DockLayout {
     pub icons: Vec<IconLayout>,
+    pub label: Option<LabelLayout>,
     pub shelf: Rect,
     pub size: (i32, i32),
 }
@@ -57,18 +64,19 @@ pub struct LayoutParams {
     pub gap: f64,
     pub reflection_height: f64,
     pub shelf_height: f64,
+    pub label_height: f64,
 }
 
 pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutParams) -> DockLayout {
     let count = model.items.len();
     if count == 0 {
-        let height =
-            (params.icon_size + params.reflection_height + params.shelf_height).ceil() as i32;
+        let height = (params.shelf_height + 10.0).ceil() as i32;
         return DockLayout {
             icons: Vec::new(),
+            label: None,
             shelf: Rect {
                 x: 8.0,
-                y: (height as f64 - params.shelf_height).max(0.0),
+                y: 5.0,
                 width: 180.0,
                 height: params.shelf_height,
             },
@@ -80,23 +88,34 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
     let influence = params.icon_size * 2.3;
     let rest_step = params.icon_size + params.gap;
     let content_width = rest_step * count as f64 - params.gap;
-    let padding = params.icon_size * max_scale * 0.35 + 14.0;
-    let height =
-        params.icon_size * max_scale + params.reflection_height + params.shelf_height + 8.0;
+    let padding = params.icon_size * max_scale * 0.30 + 12.0;
     let width = content_width + padding * 2.0;
-    let baseline_y = 4.0 + params.icon_size * (max_scale - 1.0);
+
+    let centers = (0..count)
+        .map(|index| padding + params.icon_size / 2.0 + index as f64 * rest_step)
+        .collect::<Vec<_>>();
+    let scales = centers
+        .iter()
+        .map(|center| {
+            hover
+                .map(|point| magnification(point.x, *center, influence, params.zoom_strength))
+                .unwrap_or(1.0)
+        })
+        .collect::<Vec<_>>();
+    let label_band = params.label_height + 8.0;
+    let top_padding = 5.0;
+    let baseline_y = top_padding + label_band + params.icon_size * (max_scale - 1.0);
+    let icon_bottom = baseline_y + params.icon_size;
+    let shelf_y = icon_bottom - params.icon_size * 0.12;
+    let height = shelf_y + params.shelf_height + 5.0;
 
     let mut icons = Vec::with_capacity(count);
-    for index in 0..count {
-        let rest_center = padding + params.icon_size / 2.0 + index as f64 * rest_step;
-        let scale = hover
-            .map(|point| magnification(point.x, rest_center, influence, params.zoom_strength))
-            .unwrap_or(1.0);
+    for (index, (rest_center, scale)) in centers.iter().zip(scales).enumerate() {
         let size = params.icon_size * scale;
         icons.push(IconLayout {
             item_index: index,
             rect: Rect {
-                x: rest_center - size / 2.0,
+                x: *rest_center - size / 2.0,
                 y: baseline_y + params.icon_size - size,
                 width: size,
                 height: size,
@@ -105,13 +124,28 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
         });
     }
 
-    let shelf_y = height - params.shelf_height - 4.0;
+    let label = hover.and_then(|point| {
+        icons
+            .iter()
+            .find(|icon| point.x >= icon.rect.x && point.x <= icon.rect.x + icon.rect.width)
+            .map(|icon| LabelLayout {
+                item_index: icon.item_index,
+                rect: Rect {
+                    x: (icon.rect.center_x() - params.icon_size * 0.9).max(2.0),
+                    y: 3.0,
+                    width: params.icon_size * 1.8,
+                    height: params.label_height,
+                },
+            })
+    });
+
     DockLayout {
         icons,
+        label,
         shelf: Rect {
-            x: 8.0,
+            x: 10.0,
             y: shelf_y,
-            width: width - 16.0,
+            width: width - 20.0,
             height: params.shelf_height,
         },
         size: (width.ceil() as i32, height.ceil() as i32),
@@ -159,6 +193,7 @@ mod tests {
             gap: 10.0,
             reflection_height: 24.0,
             shelf_height: 28.0,
+            label_height: 24.0,
         };
         let rest = compute_layout(&model, None, params);
         let hover = compute_layout(
@@ -172,5 +207,24 @@ mod tests {
 
         assert!(hover.icons[1].scale > hover.icons[0].scale);
         assert!(hover.icons[1].scale > 1.2);
+    }
+
+    #[test]
+    fn layout_stays_compact_with_pixel_reflection_param() {
+        let model = DockModel {
+            items: vec![item("a"), item("b"), item("c"), item("d")],
+        };
+        let params = LayoutParams {
+            icon_size: 64.0,
+            zoom_strength: 0.72,
+            gap: 8.0,
+            reflection_height: 27.0,
+            shelf_height: 22.0,
+            label_height: 24.0,
+        };
+        let layout = compute_layout(&model, Some(Point { x: 160.0, y: 40.0 }), params);
+
+        assert!(layout.size.1 < 190);
+        assert!(layout.shelf.y > layout.icons[0].rect.y);
     }
 }

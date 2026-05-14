@@ -47,10 +47,38 @@ impl DesktopIndex {
     }
 
     pub fn launch(&self, desktop_id: &str) -> anyhow::Result<()> {
-        let info = DesktopAppInfo::new(desktop_id)
+        let launch_id = self.resolve_launch_id(desktop_id).unwrap_or(desktop_id);
+        let info = DesktopAppInfo::new(launch_id)
             .ok_or_else(|| anyhow::anyhow!("desktop entry not found: {desktop_id}"))?;
         info.launch(&[], None::<&gio::AppLaunchContext>)?;
         Ok(())
+    }
+
+    fn resolve_launch_id(&self, desktop_id: &str) -> Option<&str> {
+        self.by_id(desktop_id)
+            .map(|app| app.desktop_id.as_str())
+            .or_else(|| {
+                self.match_desktop_alias(desktop_id)
+                    .map(|app| app.desktop_id.as_str())
+            })
+    }
+
+    fn match_desktop_alias(&self, desktop_id: &str) -> Option<&DesktopApp> {
+        let query = desktop_alias_key(desktop_id);
+        if query.is_empty() {
+            return None;
+        }
+
+        self.apps.values().find(|app| {
+            let id = app.desktop_id.to_ascii_lowercase();
+            let name = app.name.to_ascii_lowercase();
+            let wm_class = app
+                .startup_wm_class
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            id.contains(&query) || name == query || name.contains(&query) || wm_class == query
+        })
     }
 }
 
@@ -187,6 +215,18 @@ fn title_case(value: &str) -> String {
         .join(" ")
 }
 
+fn desktop_alias_key(desktop_id: &str) -> String {
+    let stem = desktop_id
+        .trim()
+        .trim_end_matches(".desktop")
+        .to_ascii_lowercase();
+    let stem = stem.rsplit_once('-').map(|(_, tail)| tail).unwrap_or(&stem);
+    stem.rsplit_once('.')
+        .map(|(_, tail)| tail)
+        .unwrap_or(stem)
+        .replace(['_', '-'], " ")
+}
+
 fn executable_matches(exec: Option<&str>, window_executable: Option<&str>) -> bool {
     let Some(window_executable) = window_executable.and_then(command_basename) else {
         return false;
@@ -304,5 +344,21 @@ mod tests {
         };
 
         assert!(app.matches_window(&window));
+    }
+
+    #[test]
+    fn resolves_common_xfce_terminal_alias() {
+        let index = DesktopIndex::from_apps(vec![DesktopApp {
+            desktop_id: "xfce4-terminal.desktop".to_string(),
+            name: "Terminal".to_string(),
+            icon_name: Some("utilities-terminal".to_string()),
+            startup_wm_class: Some("Xfce4-terminal".to_string()),
+            exec: Some("xfce4-terminal".to_string()),
+        }]);
+
+        assert_eq!(
+            index.resolve_launch_id("org.xfce.Terminal.desktop"),
+            Some("xfce4-terminal.desktop")
+        );
     }
 }

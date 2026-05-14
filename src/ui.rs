@@ -12,10 +12,11 @@ use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, DrawingArea, EventControllerMotion, GestureClick, gdk};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const APP_ID: &str = "dev.osdockx.OSDockX";
 const EDGE_VISIBLE_PIXELS: i32 = 4;
+const SLOW_UI_OP: Duration = Duration::from_millis(4);
 
 pub fn run() -> anyhow::Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
@@ -39,6 +40,9 @@ struct Runtime {
     hover: Option<Point>,
     dock_xid: Option<u32>,
     hidden: bool,
+    last_size: Option<(i32, i32)>,
+    last_geometry: Option<DockGeometry>,
+    last_shape_size: Option<(i32, i32)>,
 }
 
 impl Runtime {
@@ -58,7 +62,11 @@ impl Runtime {
     }
 
     fn desired_size(&self) -> (i32, i32) {
-        Renderer::desired_size(&self.model, &self.config.dock, &self.theme)
+        Renderer::desired_size(&self.model, &self.config.dock, &self.theme, self.hover)
+    }
+
+    fn reserved_thickness(&self) -> u32 {
+        Renderer::reserved_thickness(&self.model, &self.config.dock, &self.theme)
     }
 
     fn desired_geometry(&self) -> Option<DockGeometry> {
@@ -69,6 +77,7 @@ impl Runtime {
                 self.desired_size(),
                 self.config.dock.edge,
                 self.config.dock.reserve_space && !self.config.dock.autohide,
+                self.reserved_thickness(),
             );
 
         if self.hidden {
@@ -124,6 +133,9 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         hover: None,
         dock_xid: None,
         hidden: false,
+        last_size: None,
+        last_geometry: None,
+        last_shape_size: None,
     };
     runtime.refresh_model();
 
@@ -136,11 +148,13 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         .focusable(false)
         .build();
     window.set_can_focus(false);
+    window.add_css_class("osdock-window");
 
     let drawing = DrawingArea::new();
+    drawing.add_css_class("osdock-surface");
     drawing.set_hexpand(false);
     drawing.set_vexpand(false);
-    update_window_size(&state, &window, &drawing);
+    sync_dock_window(&state, &window, &drawing, true);
     window.set_child(Some(&drawing));
 
     {
@@ -176,11 +190,19 @@ fn install_css() {
     provider.load_from_string(
         "
         window {
-            background: transparent;
+            background-color: transparent;
+            box-shadow: none;
+        }
+        window.osdock-window,
+        window.osdock-window.background {
+            background-color: transparent;
             box-shadow: none;
         }
         drawingarea {
-            background: transparent;
+            background-color: transparent;
+        }
+        .osdock-surface {
+            background-color: transparent;
         }
         ",
     );
@@ -212,6 +234,8 @@ fn wire_realize(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow) {
         {
             tracing::warn!("could not configure X11 dock window: {error:#}");
         }
+        state.last_geometry = Some(geometry);
+        shape_dock(&mut state);
     });
 }
 
@@ -222,6 +246,7 @@ fn wire_motion(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow, drawing
         let window = window.clone();
         let drawing = drawing.clone();
         motion.connect_motion(move |_, x, y| {
+            let started = Instant::now();
             {
                 let mut state = state.borrow_mut();
                 state.hover = Some(Point { x, y });
@@ -230,8 +255,9 @@ fn wire_motion(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow, drawing
                     move_dock(&mut state);
                 }
             }
-            update_window_size(&state, &window, &drawing);
+            sync_dock_window(&state, &window, &drawing, false);
             drawing.queue_draw();
+            log_slow("motion", started.elapsed());
         });
     }
     {
@@ -294,7 +320,7 @@ fn wire_refresh(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow, drawin
             let mut state = state.borrow_mut();
             state.refresh_model();
         }
-        update_window_size(&state, &window, &drawing);
+        sync_dock_window(&state, &window, &drawing, true);
         drawing.queue_draw();
         glib::ControlFlow::Continue
     });
@@ -348,27 +374,91 @@ fn close_item_window(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
     }
 }
 
-fn update_window_size(
+fn sync_dock_window(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
     drawing: &DrawingArea,
+    force_shape: bool,
 ) {
-    let size = state.borrow().desired_size();
-    drawing.set_content_width(size.0);
-    drawing.set_content_height(size.1);
-    window.set_default_size(size.0, size.1);
+    let started = Instant::now();
+    let mut size_changed = false;
+    let size = {
+        let mut state = state.borrow_mut();
+        let size = state.desired_size();
+        if state.last_size != Some(size) {
+            state.last_size = Some(size);
+            size_changed = true;
+        }
+        size
+    };
+
+    if size_changed {
+        drawing.set_content_width(size.0);
+        drawing.set_content_height(size.1);
+        window.set_default_size(size.0, size.1);
+    }
 
     let mut state = state.borrow_mut();
     move_dock(&mut state);
+    if force_shape || size_changed || state.last_shape_size != Some(size) {
+        shape_dock(&mut state);
+        state.last_shape_size = Some(size);
+    }
+    log_slow("sync-window", started.elapsed());
 }
 
 fn move_dock(state: &mut Runtime) {
+    if state.dock_xid.is_none() {
+        return;
+    }
     let Some(geometry) = state.desired_geometry() else {
         return;
     };
+    if state.last_geometry == Some(geometry) {
+        return;
+    }
+    let started = Instant::now();
     if let Some(backend) = state.backend.as_mut()
         && let Err(error) = backend.move_dock_window(geometry)
     {
         tracing::warn!("could not move dock window: {error:#}");
+        return;
+    }
+    state.last_geometry = Some(geometry);
+    log_slow("move-dock", started.elapsed());
+}
+
+fn shape_dock(state: &mut Runtime) {
+    if state.dock_xid.is_none() {
+        return;
+    }
+
+    let size = state.desired_size();
+    let regions =
+        Renderer::visual_regions(&state.model, &state.config.dock, &state.theme, state.hover);
+    let started = Instant::now();
+    if let Some(backend) = state.backend.as_mut()
+        && let Err(error) = backend.set_dock_shape(size, &regions, &regions)
+    {
+        tracing::debug!("could not shape dock window: {error:#}");
+    }
+    log_slow("shape-dock", started.elapsed());
+}
+
+fn log_slow(operation: &'static str, elapsed: Duration) {
+    if elapsed >= SLOW_UI_OP {
+        tracing::debug!(
+            target: "osdockx::perf",
+            operation,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            "slow UI operation"
+        );
+    } else {
+        tracing::trace!(
+            target: "osdockx::perf",
+            operation,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            "UI operation"
+        );
     }
 }

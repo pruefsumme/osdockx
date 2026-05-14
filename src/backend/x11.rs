@@ -1,5 +1,6 @@
 use super::{DockGeometry, MonitorGeometry, PlatformBackend};
 use crate::config::DockEdge;
+use crate::layout::Rect;
 use crate::model::{WindowIcon, WindowId, WindowInfo};
 use anyhow::Context;
 use std::collections::HashSet;
@@ -8,10 +9,11 @@ use std::path::PathBuf;
 use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::{ConnectionExt as RandrConnectionExt, MonitorInfo};
+use x11rb::protocol::shape::{ConnectionExt as ShapeConnectionExt, SK, SO};
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageData, ClientMessageEvent,
+    Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageData, ClientMessageEvent, ClipOrdering,
     ConfigureWindowAux, ConnectionExt, EventMask, GetPropertyReply, InputFocus, PropMode,
-    StackMode, Window,
+    Rectangle, StackMode, Window,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as WrapperConnectionExt;
@@ -132,6 +134,7 @@ impl X11Backend {
         let screen = &self.conn.setup().roots[self.screen_num];
         let root_width = screen.width_in_pixels as i32;
         let root_height = screen.height_in_pixels as i32;
+        let reserved = geometry.reserved_thickness.max(1) as i32;
         let x_start = geometry.x.max(0) as u32;
         let x_end = (geometry.x + geometry.width as i32 - 1).clamp(0, root_width - 1) as u32;
         let y_start = geometry.y.max(0) as u32;
@@ -140,22 +143,22 @@ impl X11Backend {
         let mut strut = [0_u32; 12];
         match geometry.edge {
             DockEdge::Left => {
-                strut[0] = (geometry.x + geometry.width as i32).max(0) as u32;
+                strut[0] = reserved as u32;
                 strut[4] = y_start;
                 strut[5] = y_end;
             }
             DockEdge::Right => {
-                strut[1] = (root_width - geometry.x).max(0) as u32;
+                strut[1] = reserved as u32;
                 strut[6] = y_start;
                 strut[7] = y_end;
             }
             DockEdge::Top => {
-                strut[2] = (geometry.y + geometry.height as i32).max(0) as u32;
+                strut[2] = reserved as u32;
                 strut[8] = x_start;
                 strut[9] = x_end;
             }
             DockEdge::Bottom => {
-                strut[3] = (root_height - geometry.y).max(0) as u32;
+                strut[3] = reserved as u32;
                 strut[10] = x_start;
                 strut[11] = x_end;
             }
@@ -408,6 +411,26 @@ impl X11Backend {
         self.conn.flush()?;
         Ok(())
     }
+
+    fn apply_shape(
+        &self,
+        xid: WindowId,
+        size: (i32, i32),
+        kind: SK,
+        regions: &[Rect],
+    ) -> anyhow::Result<()> {
+        let rectangles = shape_rectangles(size, regions);
+        self.conn.shape_rectangles(
+            SO::SET,
+            kind,
+            ClipOrdering::UNSORTED,
+            xid,
+            0,
+            0,
+            &rectangles,
+        )?;
+        Ok(())
+    }
 }
 
 impl PlatformBackend for X11Backend {
@@ -427,6 +450,20 @@ impl PlatformBackend for X11Backend {
     fn move_dock_window(&mut self, geometry: DockGeometry) -> anyhow::Result<()> {
         if let Some(xid) = self.dock_window {
             self.configure_dock(xid, geometry)?;
+        }
+        Ok(())
+    }
+
+    fn set_dock_shape(
+        &mut self,
+        size: (i32, i32),
+        visual_regions: &[Rect],
+        input_regions: &[Rect],
+    ) -> anyhow::Result<()> {
+        if let Some(xid) = self.dock_window {
+            self.apply_shape(xid, size, SK::BOUNDING, visual_regions)?;
+            self.apply_shape(xid, size, SK::INPUT, input_regions)?;
+            self.conn.flush()?;
         }
         Ok(())
     }
@@ -553,6 +590,45 @@ fn parse_window_icon(values: &[u32]) -> Option<WindowIcon> {
     best
 }
 
+fn shape_rectangles(size: (i32, i32), regions: &[Rect]) -> Vec<Rectangle> {
+    let full = [Rect {
+        x: 0.0,
+        y: 0.0,
+        width: size.0.max(1) as f64,
+        height: size.1.max(1) as f64,
+    }];
+    let source = if regions.is_empty() {
+        &full[..]
+    } else {
+        regions
+    };
+
+    source
+        .iter()
+        .filter_map(|region| {
+            let x0 = region.x.floor().clamp(0.0, size.0.max(1) as f64) as i32;
+            let y0 = region.y.floor().clamp(0.0, size.1.max(1) as f64) as i32;
+            let x1 = (region.x + region.width)
+                .ceil()
+                .clamp(0.0, size.0.max(1) as f64) as i32;
+            let y1 = (region.y + region.height)
+                .ceil()
+                .clamp(0.0, size.1.max(1) as f64) as i32;
+            let width = u16::try_from((x1 - x0).max(0)).ok()?;
+            let height = u16::try_from((y1 - y0).max(0)).ok()?;
+            if width == 0 || height == 0 {
+                return None;
+            }
+            Some(Rectangle {
+                x: x0.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                y: y0.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                width,
+                height,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,5 +642,23 @@ mod tests {
         assert_eq!(icon.width, 2);
         assert_eq!(icon.height, 2);
         assert_eq!(icon.argb.len(), 4);
+    }
+
+    #[test]
+    fn clamps_shape_rectangles_to_window() {
+        let rectangles = shape_rectangles(
+            (100, 40),
+            &[Rect {
+                x: -10.0,
+                y: 4.2,
+                width: 30.0,
+                height: 80.0,
+            }],
+        );
+
+        assert_eq!(rectangles[0].x, 0);
+        assert_eq!(rectangles[0].y, 4);
+        assert_eq!(rectangles[0].width, 20);
+        assert_eq!(rectangles[0].height, 36);
     }
 }

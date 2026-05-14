@@ -20,12 +20,19 @@ pub struct DockGeometry {
     pub height: u32,
     pub edge: DockEdge,
     pub reserve_space: bool,
+    pub reserved_thickness: u32,
 }
 
 pub trait PlatformBackend {
     fn monitor_geometry(&self, preferred: Option<&str>) -> MonitorGeometry;
     fn set_dock_window(&mut self, xid: WindowId, geometry: DockGeometry) -> anyhow::Result<()>;
     fn move_dock_window(&mut self, geometry: DockGeometry) -> anyhow::Result<()>;
+    fn set_dock_shape(
+        &mut self,
+        size: (i32, i32),
+        visual_regions: &[Rect],
+        input_regions: &[Rect],
+    ) -> anyhow::Result<()>;
     fn poll_windows(&mut self) -> anyhow::Result<Vec<WindowInfo>>;
     fn focus_window(&self, xid: WindowId) -> anyhow::Result<()>;
     fn minimize_window(&self, xid: WindowId) -> anyhow::Result<()>;
@@ -38,6 +45,7 @@ impl MonitorGeometry {
         size: (i32, i32),
         edge: DockEdge,
         reserve_space: bool,
+        reserved_thickness: u32,
     ) -> DockGeometry {
         let width = size.0.max(1) as u32;
         let height = size.1.max(1) as u32;
@@ -64,6 +72,7 @@ impl MonitorGeometry {
             height,
             edge,
             reserve_space,
+            reserved_thickness,
         }
     }
 }
