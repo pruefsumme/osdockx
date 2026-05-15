@@ -1,16 +1,23 @@
 use crate::backend::x11::X11Backend;
 use crate::backend::{DockGeometry, PlatformBackend};
-use crate::config::Config;
+use crate::config::{Config, RenderMode};
 use crate::desktop::DesktopIndex;
 use crate::layout::Point;
 use crate::model::{DockItem, DockModel};
-use crate::renderer::{IconCache, Renderer};
+use crate::renderer::{IconCache, RenderFrame, Renderer, ShelfLayer};
+use crate::scene3d::Scene3dRenderer;
+use crate::shelf::ShelfRenderer;
 use crate::theme::Theme;
+use crate::theme_pack::ThemePack;
 use gdk_x11::X11Surface;
-use gtk::glib::{self, object::Cast};
+use gtk::glib::{self, Propagation, object::Cast};
 use gtk::prelude::*;
-use gtk::{Application, ApplicationWindow, DrawingArea, EventControllerMotion, GestureClick, gdk};
+use gtk::{
+    Application, ApplicationWindow, DrawingArea, EventControllerMotion, GLArea, GestureClick,
+    Overlay, gdk,
+};
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -31,11 +38,14 @@ pub fn run() -> anyhow::Result<()> {
 
 struct Runtime {
     config: Config,
+    config_path: PathBuf,
+    composited: bool,
     theme: Theme,
     desktop_index: DesktopIndex,
     backend: Option<X11Backend>,
     model: DockModel,
     renderer: Renderer,
+    scene3d: Scene3dRenderer,
     icons: IconCache,
     hover: Option<Point>,
     dock_xid: Option<u32>,
@@ -43,6 +53,7 @@ struct Runtime {
     last_size: Option<(i32, i32)>,
     last_geometry: Option<DockGeometry>,
     last_shape_size: Option<(i32, i32)>,
+    last_shape_label: Option<usize>,
 }
 
 impl Runtime {
@@ -103,16 +114,18 @@ impl Runtime {
 fn build_ui(app: &Application) -> anyhow::Result<()> {
     let (config, config_path) = Config::load_or_create()?;
     tracing::info!("using config {}", config_path.display());
+    if let Err(error) = ThemePack::export_builtin_theme_packs() {
+        tracing::warn!("could not export built-in theme packs: {error:#}");
+    }
 
     install_css();
 
     let composited = gdk::Display::default().is_some_and(|display| display.is_composited());
-    let theme = if composited {
-        Theme::from_config(&config.theme)
-    } else {
+    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(&config, composited);
+    tracing::info!("using theme {} ({:?})", theme_id, theme_renderer);
+    if !composited {
         tracing::warn!("display is not composited; using opaque shelf fallback");
-        Theme::from_config(&config.theme).opaque_fallback()
-    };
+    }
     let desktop_index = DesktopIndex::load();
     let backend = match X11Backend::new() {
         Ok(backend) => Some(backend),
@@ -124,11 +137,14 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
 
     let mut runtime = Runtime {
         config,
+        config_path,
+        composited,
         theme,
         desktop_index,
         backend,
         model: DockModel::default(),
         renderer: Renderer::new(),
+        scene3d: Scene3dRenderer::new(),
         icons: IconCache::new(),
         hover: None,
         dock_xid: None,
@@ -136,6 +152,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_size: None,
         last_geometry: None,
         last_shape_size: None,
+        last_shape_label: None,
     };
     runtime.refresh_model();
 
@@ -150,12 +167,27 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     window.set_can_focus(false);
     window.add_css_class("osdock-window");
 
+    let overlay = Overlay::new();
+    overlay.add_css_class("osdock-surface");
+    overlay.set_hexpand(false);
+    overlay.set_vexpand(false);
+
+    let gl_area = GLArea::new();
+    gl_area.add_css_class("osdock-gl");
+    gl_area.set_hexpand(false);
+    gl_area.set_vexpand(false);
+    gl_area.set_has_depth_buffer(true);
+    gl_area.set_auto_render(false);
+    gl_area.set_visible(state.borrow().theme.renderer == RenderMode::Scene3d);
+
     let drawing = DrawingArea::new();
     drawing.add_css_class("osdock-surface");
     drawing.set_hexpand(false);
     drawing.set_vexpand(false);
-    sync_dock_window(&state, &window, &drawing, true);
-    window.set_child(Some(&drawing));
+    sync_dock_window(&state, &window, &drawing, &gl_area, true);
+    overlay.set_child(Some(&gl_area));
+    overlay.add_overlay(&drawing);
+    window.set_child(Some(&overlay));
 
     {
         let state = Rc::clone(&state);
@@ -166,20 +198,42 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
             let config = state.config.dock.clone();
             let theme = state.theme.clone();
             let mut icons = std::mem::take(&mut state.icons);
-            state
-                .renderer
-                .draw(cr, &model, &config, &theme, hover, &mut icons);
+            let shelf_layer = shelf_layer_for(&state);
+            state.renderer.draw_overlay(
+                cr,
+                RenderFrame {
+                    model: &model,
+                    config: &config,
+                    theme: &theme,
+                    hover,
+                    shelf_layer,
+                },
+                &mut icons,
+            );
             state.icons = icons;
         });
     }
+    wire_gl_area(&state, &gl_area, &drawing);
 
-    wire_motion(&state, &window, &drawing);
+    wire_motion(&state, &window, &drawing, &gl_area);
     wire_clicks(&state, &drawing);
     wire_realize(&state, &window);
-    wire_refresh(&state, &window, &drawing);
+    wire_refresh(&state, &window, &drawing, &gl_area);
 
     window.present();
+    queue_gl_render_if_enabled(&state, &gl_area);
     Ok(())
+}
+
+fn resolve_runtime_theme(config: &Config, composited: bool) -> (String, RenderMode, Theme) {
+    let theme_pack = ThemePack::load(&config.theme);
+    let id = theme_pack.id.clone();
+    let renderer = theme_pack.renderer;
+    if composited {
+        (id, renderer, theme_pack.theme)
+    } else {
+        (id, renderer, theme_pack.theme.opaque_fallback())
+    }
 }
 
 fn install_css() {
@@ -201,7 +255,9 @@ fn install_css() {
         drawingarea {
             background-color: transparent;
         }
-        .osdock-surface {
+        glarea,
+        .osdock-surface,
+        .osdock-gl {
             background-color: transparent;
         }
         ",
@@ -239,12 +295,42 @@ fn wire_realize(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow) {
     });
 }
 
-fn wire_motion(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow, drawing: &DrawingArea) {
+fn wire_gl_area(state: &Rc<RefCell<Runtime>>, gl_area: &GLArea, drawing: &DrawingArea) {
+    let state = Rc::clone(state);
+    let drawing = drawing.clone();
+    gl_area.connect_render(move |area, _| {
+        let mut state = state.borrow_mut();
+        let hover = state.hover;
+        let model = state.model.clone();
+        let config = state.config.dock.clone();
+        let theme = state.theme.clone();
+        let layout = Renderer::layout_for(&model, &config, &theme, hover);
+        let rendered = theme.renderer == RenderMode::Scene3d
+            && state
+                .scene3d
+                .render_gl_area(area, &layout, &model, &theme, hover);
+        if !rendered {
+            if let Some(reason) = state.scene3d.fallback_reason() {
+                tracing::debug!("using cairo shelf fallback: {reason}");
+            }
+            drawing.queue_draw();
+        }
+        Propagation::Stop
+    });
+}
+
+fn wire_motion(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
     let motion = EventControllerMotion::new();
     {
         let state = Rc::clone(state);
         let window = window.clone();
         let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
         motion.connect_motion(move |_, x, y| {
             let started = Instant::now();
             {
@@ -255,7 +341,8 @@ fn wire_motion(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow, drawing
                     move_dock(&mut state);
                 }
             }
-            sync_dock_window(&state, &window, &drawing, false);
+            sync_dock_window(&state, &window, &drawing, &gl_area, false);
+            queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
             log_slow("motion", started.elapsed());
         });
@@ -263,6 +350,7 @@ fn wire_motion(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow, drawing
     {
         let state = Rc::clone(state);
         let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
         motion.connect_leave(move |_| {
             let autohide;
             let delay;
@@ -272,6 +360,7 @@ fn wire_motion(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow, drawing
                 autohide = state.config.dock.autohide;
                 delay = state.config.dock.hide_delay_ms;
             }
+            queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
 
             if autohide {
@@ -310,20 +399,59 @@ fn wire_clicks(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea) {
     drawing.add_controller(click);
 }
 
-fn wire_refresh(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow, drawing: &DrawingArea) {
+fn wire_refresh(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
     let refresh = state.borrow().config.dock.refresh_ms;
     let state = Rc::clone(state);
     let window = window.clone();
     let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
     glib::timeout_add_local(Duration::from_millis(refresh as u64), move || {
         {
             let mut state = state.borrow_mut();
+            refresh_config_and_theme(&mut state);
             state.refresh_model();
         }
-        sync_dock_window(&state, &window, &drawing, true);
+        sync_dock_window(&state, &window, &drawing, &gl_area, true);
+        queue_gl_render_if_enabled(&state, &gl_area);
         drawing.queue_draw();
         glib::ControlFlow::Continue
     });
+}
+
+fn refresh_config_and_theme(state: &mut Runtime) {
+    match Config::load_from_path(&state.config_path) {
+        Ok(config) => {
+            if config != state.config {
+                tracing::info!("reloaded config {}", state.config_path.display());
+                state.config = config;
+                state.hidden = false;
+                state.last_size = None;
+                state.last_geometry = None;
+                state.last_shape_size = None;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                "could not reload config {}: {error:#}",
+                state.config_path.display()
+            );
+            return;
+        }
+    }
+
+    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(&state.config, state.composited);
+    if theme != state.theme {
+        tracing::info!("reloaded theme {} ({:?})", theme_id, theme_renderer);
+        state.theme = theme;
+        state.last_size = None;
+        state.last_geometry = None;
+        state.last_shape_size = None;
+    }
 }
 
 fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {
@@ -378,6 +506,7 @@ fn sync_dock_window(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
     drawing: &DrawingArea,
+    gl_area: &GLArea,
     force_shape: bool,
 ) {
     let started = Instant::now();
@@ -395,16 +524,44 @@ fn sync_dock_window(
     if size_changed {
         drawing.set_content_width(size.0);
         drawing.set_content_height(size.1);
+        gl_area.set_size_request(size.0, size.1);
         window.set_default_size(size.0, size.1);
     }
 
     let mut state = state.borrow_mut();
+    gl_area.set_visible(state.theme.renderer == RenderMode::Scene3d);
     move_dock(&mut state);
-    if force_shape || size_changed || state.last_shape_size != Some(size) {
+    let shape_label = current_label_index(&state);
+    if force_shape
+        || size_changed
+        || state.last_shape_size != Some(size)
+        || state.last_shape_label != shape_label
+    {
         shape_dock(&mut state);
         state.last_shape_size = Some(size);
+        state.last_shape_label = shape_label;
     }
     log_slow("sync-window", started.elapsed());
+}
+
+fn current_label_index(state: &Runtime) -> Option<usize> {
+    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, state.hover)
+        .label
+        .map(|label| label.item_index)
+}
+
+fn queue_gl_render_if_enabled(state: &Rc<RefCell<Runtime>>, gl_area: &GLArea) {
+    if state.borrow().theme.renderer == RenderMode::Scene3d {
+        gl_area.queue_render();
+    }
+}
+
+fn shelf_layer_for(state: &Runtime) -> ShelfLayer {
+    match state.theme.renderer {
+        RenderMode::Scene3d if state.scene3d.fallback_reason().is_none() => ShelfLayer::None,
+        RenderMode::Texture2d => ShelfLayer::Texture2d,
+        _ => ShelfLayer::Procedural,
+    }
 }
 
 fn move_dock(state: &mut Runtime) {

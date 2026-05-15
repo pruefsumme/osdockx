@@ -1,4 +1,5 @@
-use crate::config::ThemeConfig;
+use crate::config::{RenderMode, ShelfStyle, ThemeConfig};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
@@ -10,6 +11,9 @@ pub struct Color {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
+    pub id: String,
+    pub renderer: RenderMode,
+    pub shelf_style: ShelfStyle,
     pub shelf_top: Color,
     pub shelf_bottom: Color,
     pub shelf_stroke: Color,
@@ -21,11 +25,37 @@ pub struct Theme {
     pub shelf_height_ratio: f64,
     pub shelf_slant_ratio: f64,
     pub icon_gap_ratio: f64,
+    pub side_margin_ratio: f64,
+    pub shelf_horizon_ratio: f64,
+    pub front_lip_ratio: f64,
+    pub reflection_band_ratio: f64,
+    pub tilt: f64,
+    pub depth: f64,
+    pub bevel: f64,
+    pub floor_opacity: f64,
+    pub shadow_strength: f64,
+    pub highlight_strength: f64,
+    pub reflection_blur: f64,
+    pub material_roughness: f64,
+    pub icon_floor_offset: f64,
+    pub assets: ThemeAssets,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThemeAssets {
+    pub shelf_texture: Option<PathBuf>,
+    pub shelf_overlay: Option<PathBuf>,
+    pub noise_texture: Option<PathBuf>,
+    pub normal_map: Option<PathBuf>,
+    pub fallback_texture: Option<PathBuf>,
 }
 
 impl Theme {
     pub fn from_config(config: &ThemeConfig) -> Self {
         Self {
+            id: config.preset.clone(),
+            renderer: config.renderer.unwrap_or(RenderMode::Procedural2d),
+            shelf_style: config.shelf_style,
             shelf_top: Color::parse(&config.shelf_top).unwrap_or(Color::rgba(0.97, 0.99, 1.0, 1.0)),
             shelf_bottom: Color::parse(&config.shelf_bottom)
                 .unwrap_or(Color::rgba(0.47, 0.56, 0.66, 0.86)),
@@ -40,6 +70,26 @@ impl Theme {
             shelf_height_ratio: config.shelf_height_ratio,
             shelf_slant_ratio: config.shelf_slant_ratio,
             icon_gap_ratio: config.icon_gap_ratio,
+            side_margin_ratio: config.side_margin_ratio,
+            shelf_horizon_ratio: config.shelf_horizon_ratio,
+            front_lip_ratio: config.front_lip_ratio,
+            reflection_band_ratio: config.reflection_band_ratio,
+            tilt: config.tilt,
+            depth: config.depth,
+            bevel: config.bevel,
+            floor_opacity: config.floor_opacity,
+            shadow_strength: config.shadow_strength,
+            highlight_strength: config.highlight_strength,
+            reflection_blur: config.reflection_blur,
+            material_roughness: config.material_roughness,
+            icon_floor_offset: config.icon_floor_offset,
+            assets: ThemeAssets {
+                shelf_texture: config.shelf_texture.as_ref().map(PathBuf::from),
+                shelf_overlay: config.shelf_overlay.as_ref().map(PathBuf::from),
+                noise_texture: config.noise_texture.as_ref().map(PathBuf::from),
+                normal_map: config.normal_map.as_ref().map(PathBuf::from),
+                fallback_texture: config.fallback_texture.as_ref().map(PathBuf::from),
+            },
         }
     }
 
@@ -49,6 +99,17 @@ impl Theme {
         self.shelf_stroke = self.shelf_stroke.with_alpha(1.0);
         self.shelf_highlight = self.shelf_highlight.with_alpha(0.92);
         self.reflection_opacity = self.reflection_opacity.min(0.18);
+        self.renderer = RenderMode::Procedural2d;
+        self
+    }
+
+    pub fn with_assets(mut self, assets: ThemeAssets) -> Self {
+        self.assets = assets;
+        self
+    }
+
+    pub fn with_renderer(mut self, renderer: RenderMode) -> Self {
+        self.renderer = renderer;
         self
     }
 }
@@ -89,6 +150,16 @@ impl Color {
     pub fn with_alpha(self, alpha: f64) -> Self {
         Self { alpha, ..self }
     }
+
+    pub fn mix(self, other: Color, amount: f64) -> Self {
+        let amount = amount.clamp(0.0, 1.0);
+        Self::rgba(
+            self.red + (other.red - self.red) * amount,
+            self.green + (other.green - self.green) * amount,
+            self.blue + (other.blue - self.blue) * amount,
+            self.alpha + (other.alpha - self.alpha) * amount,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -102,5 +173,11 @@ mod tests {
             Color::rgba(1.0, 128.0 / 255.0, 0.0, 1.0)
         );
         assert_eq!(Color::parse("#00000080").unwrap().alpha, 128.0 / 255.0);
+    }
+
+    #[test]
+    fn color_mix_interpolates_channels() {
+        let mixed = Color::rgba(0.0, 0.0, 0.0, 1.0).mix(Color::rgba(1.0, 0.5, 0.0, 0.5), 0.5);
+        assert_eq!(mixed, Color::rgba(0.5, 0.25, 0.0, 0.75));
     }
 }

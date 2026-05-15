@@ -1,4 +1,4 @@
-use crate::config::DockConfig;
+use crate::config::{DockConfig, ShelfStyle};
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
 use crate::model::{DockItem, DockModel, WindowIcon};
 use crate::theme::{Color, Theme};
@@ -88,29 +88,28 @@ impl Renderer {
     pub fn reserved_thickness(model: &DockModel, config: &DockConfig, theme: &Theme) -> u32 {
         let _ = model;
         let icon_size = config.icon_size as f64;
-        (icon_size + icon_size * theme.shelf_height_ratio * 0.72 + 8.0).ceil() as u32
+        let shelf_height = icon_size * theme.shelf_height_ratio;
+        let visible_shelf = shelf_height * (1.0 - theme.shelf_horizon_ratio);
+        (icon_size + visible_shelf + 12.0).ceil() as u32
     }
 
     pub fn visual_regions(
         model: &DockModel,
         config: &DockConfig,
         theme: &Theme,
-        _hover: Option<Point>,
+        hover: Option<Point>,
     ) -> Vec<Rect> {
         let params = layout_params(config, theme);
-        let layout = compute_layout(model, None, params);
+        let layout = compute_layout(model, hover, params);
         let icon_expansion = config.icon_size as f64 * config.zoom_strength + 10.0;
         let mut regions = Vec::with_capacity(layout.icons.len() * 2 + 4);
-        regions.push(Rect {
-            x: 0.0,
-            y: 0.0,
-            width: layout.size.0 as f64,
-            height: params.label_height + 10.0,
-        });
-        regions.push(expand(layout.shelf, 8.0));
+        regions.push(expand(layout.shelf, 5.0));
+        if uses_shelf_plane_reflections(theme) && theme.reflection_opacity > 0.0 {
+            regions.push(expand(shelf_plane_reflection_rect(&layout, theme), 3.0));
+        }
         for icon in &layout.icons {
             regions.push(expand(icon.rect, icon_expansion));
-            if theme.reflection_height > 0.0 {
+            if theme.reflection_height > 0.0 && !uses_shelf_plane_reflections(theme) {
                 regions.push(expand(
                     Rect {
                         x: icon.rect.x,
@@ -128,6 +127,15 @@ impl Renderer {
         regions
     }
 
+    pub fn layout_for(
+        model: &DockModel,
+        config: &DockConfig,
+        theme: &Theme,
+        hover: Option<Point>,
+    ) -> DockLayout {
+        compute_layout(model, hover, layout_params(config, theme))
+    }
+
     pub fn draw(
         &mut self,
         cr: &Context,
@@ -138,29 +146,92 @@ impl Renderer {
         icons: &mut IconCache,
     ) {
         let started = Instant::now();
-        let params = layout_params(config, theme);
-        let layout = compute_layout(model, hover, params);
-
-        clear(cr);
-        draw_shadow(cr, &layout.shelf);
-        draw_shelf(cr, &layout.shelf, theme);
-        draw_reflections(cr, model, &layout, theme, icons);
-        draw_icons(cr, model, &layout, theme, icons);
-        draw_hover_label(cr, model, &layout);
-
+        let layout = Self::layout_for(model, config, theme, hover);
+        self.draw_layout(cr, model, &layout, theme, icons, ShelfLayer::Procedural);
         self.last_layout = layout;
-        let elapsed = started.elapsed();
+        self.log_draw_time(started.elapsed(), model.items.len());
+    }
+
+    pub fn draw_overlay(&mut self, cr: &Context, frame: RenderFrame<'_>, icons: &mut IconCache) {
+        let started = Instant::now();
+        let layout = Self::layout_for(frame.model, frame.config, frame.theme, frame.hover);
+        self.draw_layout(
+            cr,
+            frame.model,
+            &layout,
+            frame.theme,
+            icons,
+            frame.shelf_layer,
+        );
+        self.last_layout = layout;
+        self.log_draw_time(started.elapsed(), frame.model.items.len());
+    }
+
+    fn draw_layout(
+        &self,
+        cr: &Context,
+        model: &DockModel,
+        layout: &DockLayout,
+        theme: &Theme,
+        icons: &mut IconCache,
+        shelf_layer: ShelfLayer,
+    ) {
+        clear(cr);
+        if theme.shelf_style == ShelfStyle::LeopardPlank && shelf_layer != ShelfLayer::None {
+            draw_shadow(cr, &layout.shelf, theme);
+            draw_glass_shelf_base(cr, &layout.shelf, theme);
+            if theme.reflection_opacity > 0.0 {
+                draw_icon_reflections_on_shelf(cr, model, layout, theme, icons);
+            }
+            draw_glass_highlight_overlay(cr, &layout.shelf, theme);
+            draw_front_lip(cr, &layout.shelf, theme);
+            draw_leopard_shelf_strokes(cr, &layout.shelf, theme);
+            draw_icons(cr, model, layout, theme, icons);
+            draw_hover_label(cr, model, layout);
+            return;
+        }
+
+        let mut shelf_icon_surface = if uses_shelf_plane_reflections(theme)
+            && theme.reflection_opacity > 0.0
+            && shelf_layer != ShelfLayer::None
+            && theme.shelf_style != ShelfStyle::LeopardPlank
+        {
+            render_icon_surface(model, layout, icons)
+        } else {
+            None
+        };
+        match shelf_layer {
+            ShelfLayer::None => {}
+            ShelfLayer::Procedural => draw_procedural_shelf_layer(cr, &layout.shelf, theme),
+            ShelfLayer::Texture2d => {
+                if !draw_texture_shelf_layer(cr, &layout.shelf, theme) {
+                    draw_procedural_shelf_layer(cr, &layout.shelf, theme);
+                }
+            }
+        }
+        if theme.shelf_style == ShelfStyle::LeopardPlank && theme.reflection_opacity > 0.0 {
+            draw_icon_reflections_on_shelf(cr, model, layout, theme, icons);
+        } else if let Some(icon_surface) = shelf_icon_surface.as_mut() {
+            draw_shelf_plane_reflections(cr, layout, theme, icon_surface);
+        } else {
+            draw_reflections(cr, model, layout, theme, icons);
+        }
+        draw_icons(cr, model, layout, theme, icons);
+        draw_hover_label(cr, model, layout);
+    }
+
+    fn log_draw_time(&self, elapsed: Duration, icon_count: usize) {
         if elapsed >= SLOW_DRAW {
             tracing::debug!(
                 target: "osdockx::perf",
-                icons = model.items.len(),
+                icons = icon_count,
                 elapsed_ms = elapsed_ms(elapsed),
                 "slow dock draw"
             );
         } else {
             tracing::trace!(
                 target: "osdockx::perf",
-                icons = model.items.len(),
+                icons = icon_count,
                 elapsed_ms = elapsed_ms(elapsed),
                 "dock draw"
             );
@@ -180,6 +251,21 @@ impl Renderer {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShelfLayer {
+    None,
+    Procedural,
+    Texture2d,
+}
+
+pub struct RenderFrame<'a> {
+    pub model: &'a DockModel,
+    pub config: &'a DockConfig,
+    pub theme: &'a Theme,
+    pub hover: Option<Point>,
+    pub shelf_layer: ShelfLayer,
+}
+
 fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
     let icon_size = config.icon_size as f64;
     LayoutParams {
@@ -188,6 +274,9 @@ fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
         gap: icon_size * theme.icon_gap_ratio,
         reflection_height: icon_size * theme.reflection_height,
         shelf_height: icon_size * theme.shelf_height_ratio,
+        side_margin: icon_size * theme.side_margin_ratio,
+        shelf_horizon_ratio: theme.shelf_horizon_ratio,
+        icon_floor_offset: icon_size * theme.icon_floor_offset,
         label_height: 24.0_f64.max(icon_size * 0.34),
     }
 }
@@ -209,22 +298,654 @@ fn clear(cr: &Context) {
     cr.set_operator(gtk::cairo::Operator::Over);
 }
 
-fn draw_shadow(cr: &Context, shelf: &Rect) {
+fn draw_procedural_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) {
+    draw_shadow(cr, shelf, theme);
+    draw_shelf(cr, shelf, theme);
+}
+
+fn draw_shadow(cr: &Context, shelf: &Rect, theme: &Theme) {
     cr.save().ok();
-    rounded_rect(
-        cr,
-        shelf.x + shelf.height * 0.18,
-        shelf.y + shelf.height * 0.58,
-        shelf.width - shelf.height * 0.36,
-        shelf.height * 0.54,
-        shelf.height * 0.18,
-    );
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.22);
-    let _ = cr.fill();
+    let shadow_y = shelf.y + shelf.height * 0.82;
+    let base_alpha = (0.07 * theme.shadow_strength).clamp(0.012, 0.040);
+    for pass in 0..6 {
+        let grow = pass as f64 * shelf.height * 0.14;
+        rounded_rect(
+            cr,
+            shelf.x + shelf.height * 0.10 - grow * 0.88,
+            shadow_y - grow * 0.10,
+            shelf.width - shelf.height * 0.20 + grow * 1.76,
+            shelf.height * 0.20 + grow * 0.32,
+            shelf.height * 0.10 + grow * 0.24,
+        );
+        cr.set_source_rgba(0.0, 0.0, 0.0, base_alpha / (pass as f64 + 1.0));
+        let _ = cr.fill();
+    }
     cr.restore().ok();
 }
 
+fn draw_texture_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) -> bool {
+    let Some(path) = theme.assets.fallback_texture.as_ref() else {
+        return false;
+    };
+    let Ok(pixbuf) = Pixbuf::from_file(path) else {
+        return false;
+    };
+
+    cr.save().ok();
+    cr.translate(shelf.x, shelf.y);
+    cr.scale(
+        shelf.width / pixbuf.width().max(1) as f64,
+        shelf.height / pixbuf.height().max(1) as f64,
+    );
+    cr.set_source_pixbuf(&pixbuf, 0.0, 0.0);
+    let painted = cr.paint().is_ok();
+    cr.restore().ok();
+    painted
+}
+
 fn draw_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
+    match theme.shelf_style {
+        ShelfStyle::LeopardPlank => draw_leopard_plank(cr, shelf, theme),
+        ShelfStyle::CrystalGlass => draw_crystal_shelf(cr, shelf, theme),
+        ShelfStyle::LegacyGlass => draw_legacy_shelf(cr, shelf, theme),
+    }
+}
+
+fn draw_leopard_plank(cr: &Context, shelf: &Rect, theme: &Theme) {
+    cr.save().ok();
+    draw_glass_shelf_base(cr, shelf, theme);
+    draw_glass_highlight_overlay(cr, shelf, theme);
+    draw_front_lip(cr, shelf, theme);
+    draw_leopard_shelf_strokes(cr, shelf, theme);
+    cr.restore().ok();
+}
+
+fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+
+    draw_leopard_undercarriage(cr, shelf, theme);
+
+    fill_crystal_material(
+        cr,
+        shelf,
+        theme
+            .shelf_top
+            .mix(theme.shelf_bottom, 0.30)
+            .with_alpha(0.64 + theme.floor_opacity * 0.10),
+        0.0006 + theme.material_roughness * 0.0012,
+        |cr| {
+            leopard_glass_plane_path(cr, shelf, theme);
+        },
+    );
+
+    cr.save().ok();
+    leopard_glass_plane_path(cr, shelf, theme);
+    cr.clip();
+
+    let glass = LinearGradient::new(0.0, geom.back_left.y, 0.0, geom.lip_left.y);
+    add_stop(
+        &glass,
+        0.00,
+        theme
+            .shelf_top
+            .mix(theme.shelf_bottom, 0.34)
+            .with_alpha(0.30),
+    );
+    add_stop(
+        &glass,
+        0.22,
+        theme
+            .shelf_top
+            .mix(theme.shelf_bottom, 0.24)
+            .mix(theme.shelf_highlight, 0.02)
+                .with_alpha(0.38),
+    );
+    add_stop(
+        &glass,
+        0.70,
+        theme
+            .shelf_top
+            .mix(theme.shelf_bottom, 0.16)
+            .mix(theme.shelf_highlight, 0.05)
+                .with_alpha(0.48),
+    );
+    add_stop(
+        &glass,
+        1.00,
+        theme
+            .shelf_top
+            .mix(theme.shelf_highlight, 0.02)
+            .mix(theme.shelf_bottom, 0.12)
+                .with_alpha(0.62),
+    );
+    let _ = cr.set_source(&glass);
+    let _ = cr.paint();
+
+    let center = LinearGradient::new(geom.back_left.x, 0.0, geom.back_right.x, 0.0);
+    center.add_color_stop_rgba(0.00, 0.83, 0.85, 0.88, 0.0);
+    center.add_color_stop_rgba(0.26, 0.83, 0.85, 0.88, 0.006);
+    center.add_color_stop_rgba(0.50, 0.83, 0.85, 0.88, 0.012);
+    center.add_color_stop_rgba(0.74, 0.83, 0.85, 0.88, 0.006);
+    center.add_color_stop_rgba(1.00, 0.83, 0.85, 0.88, 0.0);
+    let _ = cr.set_source(&center);
+    let _ = cr.paint();
+
+    let edge_vignette = LinearGradient::new(geom.back_left.x, 0.0, geom.back_right.x, 0.0);
+    edge_vignette.add_color_stop_rgba(0.00, 0.30, 0.38, 0.48, 0.012);
+    edge_vignette.add_color_stop_rgba(0.12, 0.30, 0.38, 0.48, 0.004);
+    edge_vignette.add_color_stop_rgba(0.50, 1.0, 1.0, 1.0, 0.0);
+    edge_vignette.add_color_stop_rgba(0.88, 0.30, 0.38, 0.48, 0.004);
+    edge_vignette.add_color_stop_rgba(1.00, 0.30, 0.38, 0.48, 0.012);
+    let _ = cr.set_source(&edge_vignette);
+    let _ = cr.paint();
+
+    let front_gloss = LinearGradient::new(0.0, geom.back_left.y, 0.0, geom.lip_left.y);
+    front_gloss.add_color_stop_rgba(0.00, 0.84, 0.86, 0.89, 0.0);
+    front_gloss.add_color_stop_rgba(0.44, 0.84, 0.86, 0.89, 0.018);
+    front_gloss.add_color_stop_rgba(0.82, 0.84, 0.86, 0.89, 0.050);
+    front_gloss.add_color_stop_rgba(1.00, 0.84, 0.86, 0.89, 0.0);
+    let _ = cr.set_source(&front_gloss);
+    let _ = cr.paint();
+    cr.restore().ok();
+}
+
+fn draw_leopard_undercarriage(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let body = leopard_wedge_body_geometry(shelf, theme);
+
+    draw_leopard_connector_wall(
+        cr,
+        shelf,
+        theme,
+        &geom,
+        &body,
+        geom.back_left.y,
+        body.face_left_bottom.y,
+    );
+}
+
+fn draw_leopard_connector_wall(
+    cr: &Context,
+    shelf: &Rect,
+    theme: &Theme,
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+    top_y: f64,
+    bottom_y: f64,
+) {
+    if bottom_y <= top_y {
+        return;
+    }
+
+    let face_height = (bottom_y - geom.lip_y).max(1.0);
+
+    let base = theme
+        .shelf_top
+        .mix(theme.shelf_bottom, 0.44)
+        .with_alpha(0.88 + theme.floor_opacity * 0.06);
+
+    fill_crystal_material(cr, shelf, base, 0.0007 + theme.material_roughness * 0.0012, |cr| {
+        leopard_wedge_body_path(cr, geom, body);
+    });
+
+    cr.save().ok();
+    leopard_wedge_body_path(cr, geom, body);
+    cr.clip();
+
+    let wall = LinearGradient::new(
+        0.0,
+        geom.lip_y - face_height * 0.16,
+        0.0,
+        bottom_y,
+    );
+    add_stop(
+        &wall,
+        0.00,
+        theme
+            .shelf_top
+            .mix(theme.shelf_bottom, 0.34)
+            .mix(Color::rgba(0.82, 0.86, 0.90, 1.0), 0.10)
+                .with_alpha(0.46),
+    );
+    add_stop(
+        &wall,
+        0.18,
+        theme
+            .shelf_top
+            .mix(theme.shelf_bottom, 0.40)
+            .with_alpha(0.66),
+    );
+    add_stop(
+        &wall,
+        0.56,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.50, 0.58, 0.68, 1.0), 0.34)
+            .with_alpha(0.84),
+    );
+    add_stop(
+        &wall,
+        1.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.21, 0.27, 0.36, 1.0), 0.50)
+            .with_alpha(0.99),
+    );
+    let _ = cr.set_source(&wall);
+    let _ = cr.paint();
+
+    let front_curve = LinearGradient::new(
+        0.0,
+        geom.lip_y - face_height * 0.10,
+        0.0,
+        geom.lip_y + face_height * 0.56,
+    );
+    front_curve.add_color_stop_rgba(0.00, 0.85, 0.87, 0.90, 0.0);
+    front_curve.add_color_stop_rgba(0.16, 0.85, 0.87, 0.90, 0.09);
+    front_curve.add_color_stop_rgba(0.28, 0.85, 0.87, 0.90, 0.12);
+    front_curve.add_color_stop_rgba(0.54, 0.85, 0.87, 0.90, 0.025);
+    front_curve.add_color_stop_rgba(1.00, 0.85, 0.87, 0.90, 0.0);
+    let _ = cr.set_source(&front_curve);
+    let _ = cr.paint();
+
+    let cap_shadow = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
+    add_stop(
+        &cap_shadow,
+        0.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.08, 0.11, 0.16, 1.0), 0.34)
+            .with_alpha(0.18),
+    );
+    add_stop(
+        &cap_shadow,
+        0.12,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.08, 0.11, 0.16, 1.0), 0.24)
+            .with_alpha(0.08),
+    );
+    add_stop(&cap_shadow, 0.24, theme.shelf_bottom.with_alpha(0.0));
+    add_stop(&cap_shadow, 0.76, theme.shelf_bottom.with_alpha(0.0));
+    add_stop(
+        &cap_shadow,
+        0.88,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.08, 0.11, 0.16, 1.0), 0.24)
+            .with_alpha(0.08),
+    );
+    add_stop(
+        &cap_shadow,
+        1.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.08, 0.11, 0.16, 1.0), 0.34)
+            .with_alpha(0.18),
+    );
+    let _ = cr.set_source(&cap_shadow);
+    let _ = cr.paint();
+
+    let sheen = LinearGradient::new(0.0, top_y, 0.0, bottom_y);
+    sheen.add_color_stop_rgba(0.00, 0.85, 0.87, 0.90, 0.06);
+    sheen.add_color_stop_rgba(0.20, 0.85, 0.87, 0.90, 0.025);
+    sheen.add_color_stop_rgba(1.00, 0.85, 0.87, 0.90, 0.0);
+    let _ = cr.set_source(&sheen);
+    let _ = cr.paint();
+    cr.restore().ok();
+}
+
+fn leopard_wedge_body_path(
+    cr: &Context,
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) {
+    let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
+    rounded_polygon_path(
+        cr,
+        &[
+            geom.back_left,
+            geom.back_right,
+            geom.lip_right,
+            body.face_right_bottom,
+            body.face_left_bottom,
+            geom.lip_left,
+        ],
+        (face_height * 0.66).clamp(2.8, 7.6),
+    );
+}
+
+fn leopard_front_face_path(
+    cr: &Context,
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) {
+    let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
+    let face_top_left = Point {
+        x: geom.lip_left.x + (geom.front_left.x - geom.lip_left.x) * 0.30,
+        y: geom.front_left.y,
+    };
+    let face_top_right = Point {
+        x: geom.lip_right.x + (geom.front_right.x - geom.lip_right.x) * 0.30,
+        y: geom.front_right.y,
+    };
+    rounded_polygon_path(
+        cr,
+        &[
+            face_top_left,
+            face_top_right,
+            body.face_right_bottom,
+            body.face_left_bottom,
+        ],
+        (face_height * 0.96).clamp(3.4, 8.8),
+    );
+}
+
+fn draw_glass_highlight_overlay(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+
+    cr.save().ok();
+    leopard_glass_plane_path(cr, shelf, theme);
+    cr.clip();
+
+    let band_y = geom.back_left.y + (geom.lip_left.y - geom.back_left.y) * 0.54;
+    let band = LinearGradient::new(
+        0.0,
+        band_y - shelf.height * 0.18,
+        0.0,
+        band_y + shelf.height * 0.24,
+    );
+    band.add_color_stop_rgba(0.00, 0.85, 0.87, 0.90, 0.0);
+    band.add_color_stop_rgba(0.48, 0.85, 0.87, 0.90, 0.075 * theme.highlight_strength);
+    band.add_color_stop_rgba(1.00, 0.85, 0.87, 0.90, 0.0);
+    let _ = cr.set_source(&band);
+    let _ = cr.paint();
+
+    let top_sheen = LinearGradient::new(geom.back_left.x, 0.0, geom.back_right.x, 0.0);
+    top_sheen.add_color_stop_rgba(0.00, 0.85, 0.87, 0.90, 0.0);
+    top_sheen.add_color_stop_rgba(0.50, 0.85, 0.87, 0.90, 0.010 * theme.highlight_strength);
+    top_sheen.add_color_stop_rgba(1.00, 0.85, 0.87, 0.90, 0.0);
+    let _ = cr.set_source(&top_sheen);
+    let _ = cr.paint();
+    cr.restore().ok();
+}
+
+fn draw_leopard_shelf_strokes(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let body = leopard_wedge_body_geometry(shelf, theme);
+
+    cr.move_to(geom.back_left.x, geom.back_left.y + 0.6);
+    cr.line_to(geom.back_right.x, geom.back_right.y + 0.6);
+    cr.set_line_width(1.0);
+    set_color(
+        cr,
+        theme
+            .shelf_highlight
+            .with_alpha(0.22 * theme.highlight_strength),
+    );
+    let _ = cr.stroke();
+
+    leopard_glass_plane_path(cr, shelf, theme);
+    cr.set_line_width(0.9);
+    let side_fade = LinearGradient::new(geom.front_left.x, 0.0, geom.front_right.x, 0.0);
+    add_stop(&side_fade, 0.00, theme.shelf_stroke.with_alpha(0.0));
+    add_stop(&side_fade, 0.14, theme.shelf_stroke.with_alpha(0.020));
+    add_stop(&side_fade, 0.50, theme.shelf_stroke.with_alpha(0.050));
+    add_stop(&side_fade, 0.86, theme.shelf_stroke.with_alpha(0.020));
+    add_stop(&side_fade, 1.00, theme.shelf_stroke.with_alpha(0.0));
+    let _ = cr.set_source(&side_fade);
+    let _ = cr.stroke();
+
+    cr.move_to(geom.back_left.x + 0.4, geom.back_left.y + 0.4);
+    cr.line_to(geom.lip_left.x + 0.3, geom.lip_left.y - 0.1);
+    cr.move_to(geom.back_right.x - 0.4, geom.back_right.y + 0.4);
+    cr.line_to(geom.lip_right.x - 0.3, geom.lip_right.y - 0.1);
+    cr.set_line_width(0.9);
+    set_color(
+        cr,
+        theme
+            .shelf_highlight
+            .with_alpha(0.10 * theme.highlight_strength),
+    );
+    let _ = cr.stroke();
+
+    cr.move_to(body.face_left_bottom.x + 0.8, body.face_left_bottom.y - 0.6);
+    cr.line_to(body.face_right_bottom.x - 0.8, body.face_right_bottom.y - 0.6);
+    cr.set_line_width(1.0);
+    set_color(
+        cr,
+        theme
+            .shelf_stroke
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.18)
+                .with_alpha(0.26),
+    );
+    let _ = cr.stroke();
+}
+
+fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let body = leopard_wedge_body_geometry(shelf, theme);
+
+    cr.move_to(geom.lip_left.x + 0.4, geom.lip_left.y + 0.46);
+    cr.line_to(geom.lip_right.x - 0.4, geom.lip_right.y + 0.46);
+    cr.set_line_width(1.55);
+    let lip_highlight = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
+    add_stop(&lip_highlight, 0.00, theme.shelf_highlight.with_alpha(0.0));
+    add_stop(&lip_highlight, 0.12, theme.shelf_highlight.with_alpha(0.12));
+    add_stop(
+        &lip_highlight,
+        0.50,
+        theme
+            .shelf_highlight
+            .mix(theme.shelf_top, 0.12)
+            .with_alpha(0.24 * theme.highlight_strength + 0.10),
+    );
+    add_stop(&lip_highlight, 0.88, theme.shelf_highlight.with_alpha(0.12));
+    add_stop(&lip_highlight, 1.00, theme.shelf_highlight.with_alpha(0.0));
+    let _ = cr.set_source(&lip_highlight);
+    let _ = cr.stroke();
+
+    cr.move_to(geom.lip_left.x + 0.6, geom.lip_left.y + 1.55);
+    cr.line_to(geom.lip_right.x - 0.6, geom.lip_right.y + 1.55);
+    cr.set_line_width(1.00);
+    let lip_shadow = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
+    add_stop(&lip_shadow, 0.00, theme.shelf_stroke.with_alpha(0.0));
+    add_stop(&lip_shadow, 0.18, theme.shelf_stroke.with_alpha(0.08));
+    add_stop(
+        &lip_shadow,
+        0.50,
+        theme
+            .shelf_stroke
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.22)
+            .with_alpha(0.20),
+    );
+    add_stop(&lip_shadow, 0.82, theme.shelf_stroke.with_alpha(0.08));
+    add_stop(&lip_shadow, 1.00, theme.shelf_stroke.with_alpha(0.0));
+    let _ = cr.set_source(&lip_shadow);
+    let _ = cr.stroke();
+
+    cr.save().ok();
+    leopard_front_face_path(cr, &geom, &body);
+    cr.clip();
+
+    let face_height = (geom.bottom_y - geom.front_left.y).max(1.0);
+    let face_fill = LinearGradient::new(0.0, geom.front_left.y, 0.0, geom.bottom_y);
+    add_stop(
+        &face_fill,
+        0.00,
+        theme
+            .shelf_top
+            .mix(Color::rgba(0.84, 0.87, 0.91, 1.0), 0.20)
+            .with_alpha(0.50),
+    );
+    add_stop(
+        &face_fill,
+        0.34,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.52, 0.60, 0.69, 1.0), 0.32)
+            .with_alpha(0.78),
+    );
+    add_stop(
+        &face_fill,
+        1.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.24, 0.30, 0.38, 1.0), 0.50)
+            .with_alpha(0.99),
+    );
+    let _ = cr.set_source(&face_fill);
+    let _ = cr.paint();
+
+    let face_roll = LinearGradient::new(
+        0.0,
+        geom.lip_y - face_height * 0.08,
+        0.0,
+        geom.lip_y + face_height * 0.62,
+    );
+    face_roll.add_color_stop_rgba(0.00, 0.85, 0.87, 0.90, 0.0);
+    face_roll.add_color_stop_rgba(0.14, 0.85, 0.87, 0.90, 0.11);
+    face_roll.add_color_stop_rgba(0.30, 0.85, 0.87, 0.90, 0.07);
+    face_roll.add_color_stop_rgba(0.54, 0.85, 0.87, 0.90, 0.015);
+    face_roll.add_color_stop_rgba(1.00, 0.85, 0.87, 0.90, 0.0);
+    let _ = cr.set_source(&face_roll);
+    let _ = cr.paint();
+
+    let recess = LinearGradient::new(0.0, geom.lip_y + 0.2, 0.0, geom.bottom_y);
+    recess.add_color_stop_rgba(0.00, 0.12, 0.14, 0.18, 0.12);
+    recess.add_color_stop_rgba(0.22, 0.12, 0.14, 0.18, 0.06);
+    recess.add_color_stop_rgba(0.72, 0.12, 0.14, 0.18, 0.02);
+    recess.add_color_stop_rgba(1.00, 0.12, 0.14, 0.18, 0.0);
+    let _ = cr.set_source(&recess);
+    let _ = cr.paint();
+
+    let glaze = LinearGradient::new(0.0, geom.lip_y + 0.7, 0.0, geom.bottom_y);
+    glaze.add_color_stop_rgba(0.00, 0.86, 0.88, 0.91, 0.028);
+    glaze.add_color_stop_rgba(0.28, 0.86, 0.88, 0.91, 0.010);
+    glaze.add_color_stop_rgba(1.00, 0.86, 0.88, 0.91, 0.0);
+    let _ = cr.set_source(&glaze);
+    let _ = cr.paint();
+    cr.restore().ok();
+}
+
+fn draw_crystal_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.save().ok();
+
+    let top_material = theme
+        .shelf_top
+        .mix(theme.shelf_bottom, 0.38)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, top_material, 0.24, |cr| {
+        crystal_top_path(cr, shelf, theme);
+    });
+    crystal_top_path(cr, shelf, theme);
+    cr.set_line_width(1.0);
+    set_color(cr, theme.shelf_stroke.with_alpha(0.86));
+    let _ = cr.stroke();
+
+    let face_material = theme
+        .shelf_bottom
+        .mix(theme.shelf_top, 0.10)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, face_material, 0.18, |cr| {
+        crystal_floor_path(cr, shelf, theme);
+    });
+
+    draw_crystal_side_facet(cr, shelf, theme, true);
+    draw_crystal_side_facet(cr, shelf, theme, false);
+
+    let lip_material = theme
+        .shelf_bottom
+        .mix(Color::rgba(0.02, 0.03, 0.04, 1.0), 0.56)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, lip_material, 0.10, |cr| {
+        crystal_lip_path(cr, shelf, theme);
+    });
+
+    cr.move_to(shelf.x + geom.slant, shelf.y + 0.7);
+    cr.line_to(shelf.x + shelf.width - geom.slant, shelf.y + 0.7);
+    cr.set_line_width(1.5);
+    set_color(
+        cr,
+        theme
+            .shelf_highlight
+            .with_alpha(0.62 * theme.highlight_strength),
+    );
+    let _ = cr.stroke();
+
+    cr.move_to(shelf.x + geom.slant * 0.48, geom.horizon_y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.48, geom.horizon_y);
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.22 * theme.highlight_strength);
+    let _ = cr.stroke();
+
+    cr.move_to(shelf.x + 5.0, geom.bottom_y - 0.5);
+    cr.line_to(shelf.x + shelf.width - 5.0, geom.bottom_y - 0.5);
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.64);
+    let _ = cr.stroke();
+
+    cr.restore().ok();
+}
+
+fn draw_crystal_side_facet(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
+    let side_material = theme
+        .shelf_bottom
+        .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.36)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, side_material, 0.12, |cr| {
+        crystal_side_path(cr, shelf, theme, left);
+    });
+}
+
+fn fill_crystal_material<F>(
+    cr: &Context,
+    bounds: &Rect,
+    base: Color,
+    texture_strength: f64,
+    path: F,
+) where
+    F: Fn(&Context),
+{
+    path(cr);
+    set_color(cr, base);
+    let _ = cr.fill();
+
+    cr.save().ok();
+    path(cr);
+    cr.clip();
+    draw_plank_texture(cr, bounds, base, texture_strength);
+    cr.restore().ok();
+}
+
+fn draw_plank_texture(cr: &Context, bounds: &Rect, base: Color, strength: f64) {
+    if strength <= 0.0 {
+        return;
+    }
+
+    cr.save().ok();
+    cr.set_line_width(1.0);
+    let min_y = bounds.y.floor() as i32;
+    let max_y = (bounds.y + bounds.height).ceil() as i32;
+    for y in min_y..=max_y {
+        let noise = (((y * 37 + 17).rem_euclid(23)) as f64 / 22.0) - 0.5;
+        let mix = (noise.abs() * 0.032 + 0.010).min(0.035);
+        let color = if noise >= 0.0 {
+            base.mix(Color::rgba(1.0, 1.0, 1.0, 1.0), mix)
+        } else {
+            base.mix(Color::rgba(0.0, 0.0, 0.0, 1.0), mix)
+        };
+        set_color(cr, color.with_alpha(strength * (0.10 + noise.abs() * 0.08)));
+        let yy = y as f64 + 0.5;
+        cr.move_to(bounds.x, yy);
+        cr.line_to(bounds.x + bounds.width, yy);
+        let _ = cr.stroke();
+    }
+    cr.restore().ok();
+}
+
+fn draw_legacy_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
     let slant = shelf.height * theme.shelf_slant_ratio;
     let horizon_y = shelf.y + shelf.height * 0.40;
     let bottom_y = shelf.y + shelf.height;
@@ -280,6 +1001,459 @@ fn draw_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
     cr.restore().ok();
 }
 
+fn render_icon_surface(
+    model: &DockModel,
+    layout: &DockLayout,
+    icons: &mut IconCache,
+) -> Option<ImageSurface> {
+    let width = layout.size.0.max(1);
+    let height = layout.size.1.max(1);
+    let surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    let cr = Context::new(&surface).ok()?;
+    draw_icon_art(&cr, model, layout, icons, 1.0);
+    surface.flush();
+    Some(surface)
+}
+
+fn draw_shelf_plane_reflections(
+    cr: &Context,
+    layout: &DockLayout,
+    theme: &Theme,
+    icon_surface: &mut ImageSurface,
+) {
+    let reflection = shelf_plane_reflection_rect(layout, theme);
+    if reflection.height <= 1.0 || reflection.width <= 1.0 {
+        return;
+    }
+
+    let horizon_y = crystal_shelf_geometry(&layout.shelf, theme).horizon_y;
+    let band_height = reflection.height.ceil().max(1.0) as i32;
+    let source_y = (horizon_y - band_height as f64).max(0.0).floor() as i32;
+    let Some(mirror) = mirrored_band_surface(icon_surface, source_y, band_height) else {
+        return;
+    };
+
+    cr.save().ok();
+    shelf_plane_reflection_clip_path(cr, &layout.shelf, theme);
+    cr.clip();
+    cr.rectangle(
+        reflection.x,
+        reflection.y,
+        reflection.width,
+        reflection.height,
+    );
+    cr.clip();
+    if cr.set_source_surface(&mirror, 0.0, reflection.y).is_ok() {
+        let fade = LinearGradient::new(0.0, reflection.y, 0.0, reflection.y + reflection.height);
+        let alpha = theme.reflection_opacity.min(0.30);
+        if theme.shelf_style == ShelfStyle::LeopardPlank {
+            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha * 0.12);
+            fade.add_color_stop_rgba(0.58, 1.0, 1.0, 1.0, alpha * 0.42);
+            fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, alpha);
+        } else {
+            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha);
+            fade.add_color_stop_rgba(0.65, 1.0, 1.0, 1.0, alpha * 0.38);
+            fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+        }
+        let _ = cr.mask(&fade);
+    }
+    cr.restore().ok();
+}
+
+fn mirrored_band_surface(
+    source: &mut ImageSurface,
+    source_y: i32,
+    band_height: i32,
+) -> Option<ImageSurface> {
+    let width = source.width().max(1);
+    let source_height = source.height().max(1);
+    let source_y = source_y.clamp(0, source_height - 1);
+    let band_height = band_height.clamp(1, source_height - source_y);
+    let mut mirror = ImageSurface::create(Format::ARgb32, width, band_height).ok()?;
+    source.flush();
+
+    {
+        let source_stride = source.stride() as usize;
+        let mirror_stride = mirror.stride() as usize;
+        let row_bytes = width as usize * 4;
+        let source_data = source.data().ok()?;
+        let mut mirror_data = mirror.data().ok()?;
+        for y in 0..band_height as usize {
+            let src_y = source_y as usize + band_height as usize - 1 - y;
+            let src_start = src_y * source_stride;
+            let dst_start = y * mirror_stride;
+            mirror_data[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&source_data[src_start..src_start + row_bytes]);
+        }
+    }
+
+    mirror.mark_dirty();
+    Some(mirror)
+}
+
+fn shelf_plane_reflection_rect(layout: &DockLayout, theme: &Theme) -> Rect {
+    let geom = crystal_shelf_geometry(&layout.shelf, theme);
+    match theme.shelf_style {
+        ShelfStyle::LeopardPlank => {
+            let height = (layout.shelf.height * theme.reflection_band_ratio)
+                .min(geom.horizon_y - layout.shelf.y - 1.0)
+                .max(0.0);
+            Rect {
+                x: layout.shelf.x,
+                y: geom.horizon_y - height,
+                width: layout.shelf.width,
+                height,
+            }
+        }
+        _ => {
+            let height = (layout.shelf.height * theme.reflection_band_ratio)
+                .min(geom.bottom_y - geom.horizon_y)
+                .max(0.0);
+            Rect {
+                x: layout.shelf.x,
+                y: geom.horizon_y,
+                width: layout.shelf.width,
+                height,
+            }
+        }
+    }
+}
+
+fn shelf_plane_reflection_clip_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    match theme.shelf_style {
+        ShelfStyle::LeopardPlank => leopard_glass_plane_path(cr, shelf, theme),
+        _ => crystal_floor_path(cr, shelf, theme),
+    }
+}
+
+fn uses_shelf_plane_reflections(theme: &Theme) -> bool {
+    matches!(
+        theme.shelf_style,
+        ShelfStyle::LeopardPlank | ShelfStyle::CrystalGlass
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PerspectiveShelfGeometry {
+    back_left: Point,
+    back_right: Point,
+    front_left: Point,
+    front_right: Point,
+    lip_left: Point,
+    lip_right: Point,
+    lip_y: f64,
+    bottom_y: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LeopardWedgeBodyGeometry {
+    face_left_bottom: Point,
+    face_right_bottom: Point,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CrystalShelfGeometry {
+    slant: f64,
+    horizon_y: f64,
+    lip_y: f64,
+    bottom_y: f64,
+}
+
+fn crystal_shelf_geometry(shelf: &Rect, theme: &Theme) -> CrystalShelfGeometry {
+    let slant = shelf.height * theme.shelf_slant_ratio;
+    let horizon_y = shelf.y + shelf.height * theme.shelf_horizon_ratio;
+    let bottom_y = shelf.y + shelf.height;
+    let lip_height = (shelf.height * theme.front_lip_ratio)
+        .max(2.0)
+        .min(shelf.height * 0.34);
+    CrystalShelfGeometry {
+        slant,
+        horizon_y,
+        lip_y: bottom_y - lip_height,
+        bottom_y,
+    }
+}
+
+fn compute_perspective_shelf_geometry(shelf: &Rect, theme: &Theme) -> PerspectiveShelfGeometry {
+    let slant = (shelf.height * theme.shelf_slant_ratio)
+        .clamp(shelf.height * 0.32, shelf.height * 0.46);
+    let rear_inset = slant * (0.80 + theme.depth * 0.16);
+    let front_inset = slant * 0.025;
+    let cap_inset = ((rear_inset - front_inset) * 0.054)
+        .clamp(shelf.height * 0.020, shelf.height * 0.040);
+    let back_rise = (shelf.height * (0.104 + theme.tilt * 0.036))
+        .clamp(shelf.height * 0.104, shelf.height * 0.145);
+    let back_y = shelf.y - back_rise;
+    let front_face_height = (shelf.height * theme.front_lip_ratio * 0.49)
+        .clamp(shelf.height * 0.080, shelf.height * 0.160);
+    let lip_y = shelf.y + shelf.height - front_face_height;
+    let bottom_y = shelf.y + shelf.height + (shelf.height * 0.024).clamp(0.9, 1.5);
+    PerspectiveShelfGeometry {
+        back_left: Point {
+            x: shelf.x + rear_inset,
+            y: back_y,
+        },
+        back_right: Point {
+            x: shelf.x + shelf.width - rear_inset,
+            y: back_y,
+        },
+        front_left: Point {
+            x: shelf.x + front_inset + cap_inset,
+            y: lip_y,
+        },
+        front_right: Point {
+            x: shelf.x + shelf.width - front_inset - cap_inset,
+            y: lip_y,
+        },
+        lip_left: Point {
+            x: shelf.x + front_inset,
+            y: lip_y,
+        },
+        lip_right: Point {
+            x: shelf.x + shelf.width - front_inset,
+            y: lip_y,
+        },
+        lip_y,
+        bottom_y,
+    }
+}
+
+fn leopard_glass_plane_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+    rounded_polygon_path(
+        cr,
+        &[geom.back_left, geom.back_right, geom.lip_right, geom.lip_left],
+        (shelf.height * 0.18).clamp(3.2, 7.0),
+    );
+}
+
+fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> LeopardWedgeBodyGeometry {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+    LeopardWedgeBodyGeometry {
+        face_left_bottom: Point {
+            x: geom.front_left.x,
+            y: geom.bottom_y,
+        },
+        face_right_bottom: Point {
+            x: geom.front_right.x,
+            y: geom.bottom_y,
+        },
+    }
+}
+
+fn rounded_polygon_path(cr: &Context, points: &[Point], radius: f64) {
+    if points.len() < 3 {
+        return;
+    }
+
+    let count = points.len();
+    let first_radius = corner_radius(points[count - 1], points[0], points[1], radius);
+    let first_exit = move_toward(points[0], points[1], first_radius);
+
+    cr.new_path();
+    cr.move_to(first_exit.x, first_exit.y);
+
+    for index in 1..=count {
+        let corner = points[index % count];
+        let prev = points[(index + count - 1) % count];
+        let next = points[(index + 1) % count];
+        let corner_radius = corner_radius(prev, corner, next, radius);
+        let entry = move_toward(corner, prev, corner_radius);
+        let exit = move_toward(corner, next, corner_radius);
+
+        cr.line_to(entry.x, entry.y);
+        cr.curve_to(corner.x, corner.y, corner.x, corner.y, exit.x, exit.y);
+    }
+
+    cr.close_path();
+}
+
+fn corner_radius(prev: Point, corner: Point, next: Point, radius: f64) -> f64 {
+    let prev_len = distance(prev, corner);
+    let next_len = distance(corner, next);
+    radius.min(prev_len * 0.45).min(next_len * 0.45)
+}
+
+fn move_toward(from: Point, toward: Point, distance: f64) -> Point {
+    let dx = toward.x - from.x;
+    let dy = toward.y - from.y;
+    let length = (dx * dx + dy * dy).sqrt();
+    if length <= f64::EPSILON {
+        return from;
+    }
+
+    let scale = distance / length;
+    Point {
+        x: from.x + dx * scale,
+        y: from.y + dy * scale,
+    }
+}
+
+fn distance(a: Point, b: Point) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn crystal_top_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    cr.move_to(shelf.x + geom.slant, shelf.y);
+    cr.line_to(shelf.x + shelf.width - geom.slant, shelf.y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
+    cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
+    cr.close_path();
+}
+
+fn crystal_floor_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    cr.move_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
+    cr.line_to(shelf.x + shelf.width, geom.bottom_y);
+    cr.line_to(shelf.x, geom.bottom_y);
+    cr.close_path();
+}
+
+fn crystal_lip_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    cr.move_to(shelf.x + 2.0, geom.lip_y);
+    cr.line_to(shelf.x + shelf.width - 2.0, geom.lip_y);
+    cr.line_to(shelf.x + shelf.width - 5.0, geom.bottom_y);
+    cr.line_to(shelf.x + 5.0, geom.bottom_y);
+    cr.close_path();
+}
+
+fn crystal_side_path(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    if left {
+        cr.move_to(shelf.x + geom.slant, shelf.y);
+        cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
+        cr.line_to(shelf.x, geom.bottom_y);
+        cr.line_to(
+            shelf.x + geom.slant * 0.22,
+            geom.horizon_y + shelf.height * 0.10,
+        );
+    } else {
+        cr.move_to(shelf.x + shelf.width - geom.slant, shelf.y);
+        cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
+        cr.line_to(shelf.x + shelf.width, geom.bottom_y);
+        cr.line_to(
+            shelf.x + shelf.width - geom.slant * 0.22,
+            geom.horizon_y + shelf.height * 0.10,
+        );
+    }
+    cr.close_path();
+}
+
+fn draw_icon_reflections_on_shelf(
+    cr: &Context,
+    model: &DockModel,
+    layout: &DockLayout,
+    theme: &Theme,
+    icons: &mut IconCache,
+) {
+    let geom = compute_perspective_shelf_geometry(&layout.shelf, theme);
+    cr.save().ok();
+    create_polygon_mask(
+        cr,
+        &[
+            geom.back_left,
+            geom.back_right,
+            geom.lip_right,
+            geom.lip_left,
+        ],
+    );
+    cr.clip();
+
+    for icon in &layout.icons {
+        let item = &model.items[icon.item_index];
+        let max_height = (geom.lip_y
+            - (icon.rect.y + icon.rect.height)
+            - layout.shelf.height * 0.055)
+            .max(icon.rect.height * 0.07);
+        draw_icon_reflection(cr, item, icon.rect, max_height, theme, icons);
+    }
+
+    cr.restore().ok();
+}
+
+fn draw_icon_reflection(
+    cr: &Context,
+    item: &DockItem,
+    icon_rect: Rect,
+    max_height: f64,
+    theme: &Theme,
+    icons: &mut IconCache,
+) {
+    let default_height = icon_rect.height * (theme.reflection_height * 0.90).clamp(0.22, 0.44);
+    let reflection_height = default_height.min(max_height.max(icon_rect.height * 0.07));
+    if reflection_height <= 1.0 {
+        return;
+    }
+
+    let icon_size = icon_rect.height.ceil().max(1.0) as i32;
+    let Ok(icon_surface) = ImageSurface::create(Format::ARgb32, icon_size, icon_size) else {
+        return;
+    };
+    let Ok(icon_cr) = Context::new(&icon_surface) else {
+        return;
+    };
+    draw_icon_source(&icon_cr, item, icon_size, icons, 1.0);
+    icon_surface.flush();
+
+    let reflection_y = icon_rect.y + icon_rect.height;
+    let alpha = (theme.reflection_opacity * 0.94).clamp(0.10, 0.26);
+    let blur = 1.8 + theme.reflection_blur * 3.0;
+    let passes = [
+        (0.0, 0.0, alpha),
+        (-blur * 0.28, blur * 0.10, alpha * 0.34),
+        (blur * 0.28, blur * 0.10, alpha * 0.34),
+        (0.0, blur * 0.24, alpha * 0.18),
+    ];
+
+    for (dx, dy, pass_alpha) in passes {
+        cr.save().ok();
+        rounded_rect(
+            cr,
+            icon_rect.x - 1.6,
+            reflection_y,
+            icon_rect.width + 3.2,
+            reflection_height,
+            (icon_rect.width * 0.08).min(5.0),
+        );
+        cr.clip();
+        cr.translate(icon_rect.x + dx, reflection_y + reflection_height + dy);
+        cr.scale(
+            icon_rect.width / icon_rect.height,
+            -reflection_height / icon_rect.height,
+        );
+        if cr.set_source_surface(&icon_surface, 0.0, 0.0).is_ok() {
+            let fade = LinearGradient::new(0.0, 0.0, 0.0, icon_rect.height);
+            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.0);
+            fade.add_color_stop_rgba(0.44, 1.0, 1.0, 1.0, pass_alpha * 0.08);
+            fade.add_color_stop_rgba(0.76, 1.0, 1.0, 1.0, pass_alpha * 0.36);
+            fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, pass_alpha);
+            let _ = cr.mask(&fade);
+        }
+        cr.restore().ok();
+    }
+}
+
+fn create_polygon_mask(cr: &Context, points: &[Point]) {
+    if points.is_empty() {
+        return;
+    }
+    cr.new_path();
+    cr.move_to(points[0].x, points[0].y);
+    for point in &points[1..] {
+        cr.line_to(point.x, point.y);
+    }
+    cr.close_path();
+}
+
 fn draw_reflections(
     cr: &Context,
     model: &DockModel,
@@ -324,20 +1498,39 @@ fn draw_icons(
     theme: &Theme,
     icons: &mut IconCache,
 ) {
+    draw_icon_art(cr, model, layout, icons, 1.0);
     for icon in &layout.icons {
         let item = &model.items[icon.item_index];
-        cr.save().ok();
-        cr.translate(icon.rect.x, icon.rect.y);
-        cr.scale(icon.rect.width / icon.rect.height, 1.0);
-        draw_icon_source(cr, item, icon.rect.height as i32, icons, 1.0);
-        cr.restore().ok();
-
-        if item.is_running() {
+        if theme.shelf_style == ShelfStyle::LeopardPlank {
+            if item.is_running() {
+                draw_leopard_running_indicator(cr, icon.rect, layout, theme, item.active);
+            }
+            if item.active {
+                draw_leopard_active_indicator(cr, icon.rect, layout, theme);
+            }
+        } else if item.is_running() {
             draw_indicator(cr, icon.rect, theme.indicator, item.active);
         }
         if let Some(badge) = item.badge {
             draw_badge(cr, icon.rect, badge, theme.badge);
         }
+    }
+}
+
+fn draw_icon_art(
+    cr: &Context,
+    model: &DockModel,
+    layout: &DockLayout,
+    icons: &mut IconCache,
+    alpha: f64,
+) {
+    for icon in &layout.icons {
+        let item = &model.items[icon.item_index];
+        cr.save().ok();
+        cr.translate(icon.rect.x, icon.rect.y);
+        cr.scale(icon.rect.width / icon.rect.height, 1.0);
+        draw_icon_source(cr, item, icon.rect.height as i32, icons, alpha);
+        cr.restore().ok();
     }
 }
 
@@ -508,22 +1701,152 @@ fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool) {
     cr.restore().ok();
 }
 
-fn draw_badge(cr: &Context, rect: Rect, count: u32, color: Color) {
-    let text = count.min(99).to_string();
-    let width = 22.0_f64.max(14.0 + text.len() as f64 * 8.0);
-    let height = 20.0;
-    let x = rect.x + rect.width - width * 0.82;
-    let y = rect.y + 2.0;
+fn leopard_running_indicator_size(active: bool) -> (f64, f64) {
+    if active {
+        (12.3, 3.45)
+    } else {
+        (8.9, 2.7)
+    }
+}
+
+fn draw_leopard_running_indicator(
+    cr: &Context,
+    rect: Rect,
+    layout: &DockLayout,
+    theme: &Theme,
+    active: bool,
+) {
+    let y = leopard_running_indicator_center_y(&layout.shelf, theme);
+    let (width, height) = leopard_running_indicator_size(active);
+    let x = rect.center_x() - width / 2.0;
+    let color = theme
+        .shelf_highlight
+        .mix(theme.indicator, if active { 0.08 } else { 0.05 });
 
     cr.save().ok();
-    rounded_rect(cr, x, y, width, height, height / 2.0);
-    set_color(cr, color);
+    rounded_rect(cr, x - 2.1, y - height * 0.80, width + 4.2, height * 1.60, height * 0.92);
+    cr.set_source_rgba(
+        1.0,
+        1.0,
+        1.0,
+        if active { 0.20 } else { 0.11 },
+    );
+    let _ = cr.fill();
+    cr.restore().ok();
+
+    cr.save().ok();
+    rounded_rect(cr, x - 0.9, y - height * 0.56, width + 1.8, height * 1.12, height * 0.64);
+    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.14 } else { 0.07 });
+    let _ = cr.fill();
+    cr.restore().ok();
+
+    cr.save().ok();
+    rounded_rect(cr, x, y - height / 2.0, width, height, height / 2.0);
+    let fill = LinearGradient::new(0.0, y - height / 2.0, 0.0, y + height / 2.0);
+    add_stop(&fill, 0.00, theme.shelf_highlight.with_alpha(if active { 0.78 } else { 0.60 }));
+    add_stop(&fill, 0.24, color.with_alpha(if active { 0.90 } else { 0.78 }));
+    add_stop(
+        &fill,
+        1.00,
+        theme
+            .shelf_highlight
+            .mix(theme.indicator, if active { 0.18 } else { 0.10 })
+            .with_alpha(if active { 0.84 } else { 0.68 }),
+    );
+    let _ = cr.set_source(&fill);
     let _ = cr.fill_preserve();
-    cr.set_line_width(1.2);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.84);
+    cr.set_line_width(0.7);
+    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.34 } else { 0.22 });
     let _ = cr.stroke();
+    cr.restore().ok();
+
+    cr.save().ok();
+    rounded_rect(
+        cr,
+        x + width * 0.18,
+        y - height * 0.28,
+        width * 0.64,
+        height * 0.22,
+        height * 0.20,
+    );
+    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.56 } else { 0.34 });
+    let _ = cr.fill();
+    cr.restore().ok();
+}
+
+fn draw_leopard_active_indicator(cr: &Context, rect: Rect, layout: &DockLayout, theme: &Theme) {
+    let y = leopard_active_indicator_center_y(rect, &layout.shelf, theme);
+    let x = rect.center_x();
+    let color = theme.indicator;
+
+    cr.save().ok();
+    cr.arc(x, y, 6.1, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(color.red, color.green, color.blue, 0.12);
+    let _ = cr.fill();
+    cr.restore().ok();
+
+    cr.save().ok();
+    cr.arc(x, y, 3.8, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.94);
+    let _ = cr.fill();
+    cr.restore().ok();
+
+    cr.save().ok();
+    cr.arc(x, y, 1.9, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(color.red, color.green, color.blue, 0.74);
+    let _ = cr.fill();
+    cr.restore().ok();
+}
+
+fn leopard_running_indicator_center_y(shelf: &Rect, theme: &Theme) -> f64 {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let face_height = geom.bottom_y - geom.lip_y;
+    let inner_margin = (face_height * 0.28).clamp(0.9, 1.8);
+    (geom.lip_y + face_height * 0.50).clamp(geom.lip_y + inner_margin, geom.bottom_y - inner_margin)
+}
+
+fn leopard_active_indicator_center_y(rect: Rect, shelf: &Rect, theme: &Theme) -> f64 {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let shelf_drop = geom.bottom_y + (shelf.height * (0.15 + theme.depth * 0.01)).clamp(6.8, 8.8);
+    let icon_drop = rect.y + rect.height + (rect.height * 0.14).clamp(7.0, 10.0);
+    shelf_drop.max(icon_drop)
+}
+
+fn draw_badge(cr: &Context, rect: Rect, count: u32, color: Color) {
+    let text = count.min(99).to_string();
+    let width = 19.0_f64.max(12.0 + text.len() as f64 * 7.2);
+    let height = 17.0;
+    let x = rect.x + rect.width - width * 0.76;
+    let y = rect.y + 3.0;
+
+    cr.save().ok();
+    rounded_rect(cr, x, y, width, height, height * 0.48);
+    let fill = LinearGradient::new(0.0, y, 0.0, y + height);
+    add_stop(
+        &fill,
+        0.00,
+        color.mix(Color::rgba(1.0, 1.0, 1.0, 1.0), 0.22).with_alpha(0.98),
+    );
+    add_stop(&fill, 0.56, color.with_alpha(0.98));
+    add_stop(
+        &fill,
+        1.00,
+        color.mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.12).with_alpha(0.98),
+    );
+    let _ = cr.set_source(&fill);
+    let _ = cr.fill_preserve();
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.64);
+    let _ = cr.stroke();
+
+    cr.save().ok();
+    rounded_rect(cr, x + 1.2, y + 1.0, width - 2.4, height * 0.38, height * 0.20);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.20);
+    let _ = cr.fill();
+    cr.restore().ok();
+
     cr.select_font_face("Sans", FontSlant::Normal, FontWeight::Bold);
-    cr.set_font_size(12.0);
+    cr.set_font_size(11.0);
     let extents = cr.text_extents(&text).ok();
     cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
     let text_x = extents
@@ -703,6 +2026,7 @@ mod tests {
     use crate::model::{DockItem, DockModel};
     use crate::theme::Theme;
     use gtk::cairo::Format;
+    use std::fs::File;
 
     #[test]
     fn renderer_paints_non_empty_surface() {
@@ -732,4 +2056,486 @@ mod tests {
         let data = surface.data().unwrap();
         assert!(data.iter().any(|byte| *byte != 0));
     }
+
+    #[test]
+    #[ignore = "writes a local PNG preview for renderer tuning"]
+    fn export_leopard_preview_png() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![
+                preview_item("terminal.desktop", "Terminal", None),
+                preview_item("browser.desktop", "Browser", None),
+                preview_item("mail.desktop", "Mail", Some(1)),
+                preview_item("calendar.desktop", "Calendar", None),
+                preview_item("editor.desktop", "Editor", None),
+                preview_item("notes.desktop", "Notes", None),
+                preview_item("settings.desktop", "Settings", Some(2)),
+            ],
+        };
+        let size = Renderer::desired_size(&model, &config.dock, &theme, None);
+        let surface = ImageSurface::create(Format::ARgb32, size.0, size.1).unwrap();
+        let mut renderer = Renderer::new();
+
+        renderer.draw_for_test(&surface, &model, &config.dock, &theme);
+
+        let output = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("most-recent-render.png");
+        let mut file = File::create(output).unwrap();
+        surface.write_to_png(&mut file).unwrap();
+    }
+
+    #[test]
+    fn reserved_thickness_stays_compact_for_leopard_theme() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel::default();
+
+        let reserved = Renderer::reserved_thickness(&model, &config.dock, &theme);
+
+        assert!(reserved < config.dock.icon_size + 40);
+    }
+
+    #[test]
+    fn leopard_plank_has_transparent_top_corner_and_visible_front_body() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let mut surface = ImageSurface::create(Format::ARgb32, 240, 110).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let shelf = Rect {
+            x: 24.0,
+            y: 20.0,
+            width: 192.0,
+            height: 48.0,
+        };
+
+        draw_procedural_shelf_layer(&cr, &shelf, &theme);
+        drop(cr);
+
+        assert_eq!(alpha_at(&mut surface, 25, 21), 0);
+        assert!(alpha_at(&mut surface, 120, 22) > 0);
+        assert!(alpha_at(&mut surface, 120, 34) > 40);
+        assert!(alpha_at(&mut surface, 120, 66) > 120);
+        assert!(brightness_at(&mut surface, 120, 37) > brightness_at(&mut surface, 120, 25));
+        assert!(alpha_at(&mut surface, 120, 66) > alpha_at(&mut surface, 120, 40));
+    }
+
+    #[test]
+    fn leopard_icon_reflections_stay_above_lip() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![DockItem {
+                id: "test.desktop".to_string(),
+                name: "Test".to_string(),
+                desktop_id: Some("test.desktop".to_string()),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: None,
+                pinned: true,
+                windows: Vec::new(),
+                active: false,
+                urgent: false,
+                badge: None,
+            }],
+        };
+        let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+        let geom = compute_perspective_shelf_geometry(&layout.shelf, &theme);
+        let mut icons = IconCache::disabled();
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
+        let cr = Context::new(&surface).unwrap();
+
+        draw_icon_reflections_on_shelf(&cr, &model, &layout, &theme, &mut icons);
+        drop(cr);
+
+        assert!(rect_has_alpha(
+            &mut surface,
+            Rect {
+                x: layout.icons[0].rect.x,
+                y: layout.icons[0].rect.y + layout.icons[0].rect.height,
+                width: layout.icons[0].rect.width,
+                height: (geom.lip_y - (layout.icons[0].rect.y + layout.icons[0].rect.height) - 2.0)
+                    .max(1.0),
+            }
+        ));
+        assert!(!rect_has_alpha(
+            &mut surface,
+            Rect {
+                x: layout.shelf.x,
+                y: geom.lip_y + 1.0,
+                width: layout.shelf.width,
+                height: (layout.shelf.y + layout.shelf.height - geom.lip_y - 1.0).max(1.0),
+            }
+        ));
+    }
+
+    #[test]
+    fn leopard_reflections_are_visible_at_icon_bottom() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![DockItem {
+                id: "test.desktop".to_string(),
+                name: "Test".to_string(),
+                desktop_id: Some("test.desktop".to_string()),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: None,
+                pinned: true,
+                windows: Vec::new(),
+                active: false,
+                urgent: false,
+                badge: None,
+            }],
+        };
+        let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+        let mut icons = IconCache::disabled();
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let icon = layout.icons[0].rect;
+
+        draw_icon_reflections_on_shelf(&cr, &model, &layout, &theme, &mut icons);
+        drop(cr);
+
+        assert!(rect_has_alpha(
+            &mut surface,
+            Rect {
+                x: icon.x,
+                y: icon.y + icon.height,
+                width: icon.width,
+                height: (icon.height * 0.10).max(2.0),
+            }
+        ));
+    }
+
+    #[test]
+    fn leopard_default_layout_has_visible_floor_below_icons() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![DockItem {
+                id: "test.desktop".to_string(),
+                name: "Test".to_string(),
+                desktop_id: Some("test.desktop".to_string()),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: None,
+                pinned: true,
+                windows: Vec::new(),
+                active: false,
+                urgent: false,
+                badge: None,
+            }],
+        };
+
+        let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+        let geom = compute_perspective_shelf_geometry(&layout.shelf, &theme);
+        let icon = layout.icons[0].rect;
+        let floor_depth = geom.lip_y - (icon.y + icon.height);
+
+        assert!(floor_depth > icon.height * 0.08);
+        assert!(floor_depth < icon.height * 0.23);
+    }
+
+    #[test]
+    fn leopard_default_layout_has_visible_front_body_thickness() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![DockItem {
+                id: "test.desktop".to_string(),
+                name: "Test".to_string(),
+                desktop_id: Some("test.desktop".to_string()),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: None,
+                pinned: true,
+                windows: Vec::new(),
+                active: false,
+                urgent: false,
+                badge: None,
+            }],
+        };
+
+        let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+        let geom = compute_perspective_shelf_geometry(&layout.shelf, &theme);
+        let front_body = geom.bottom_y - geom.lip_y;
+        let (_, active_led_height) = leopard_running_indicator_size(true);
+        let fascia_to_led_ratio = front_body / active_led_height;
+
+        assert!(fascia_to_led_ratio > 1.10);
+        assert!(fascia_to_led_ratio < 1.32);
+    }
+
+    #[test]
+    fn leopard_front_face_is_inset_for_closed_side_caps() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![DockItem {
+                id: "test.desktop".to_string(),
+                name: "Test".to_string(),
+                desktop_id: Some("test.desktop".to_string()),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: None,
+                pinned: true,
+                windows: Vec::new(),
+                active: false,
+                urgent: false,
+                badge: None,
+            }],
+        };
+
+        let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+        let geom = compute_perspective_shelf_geometry(&layout.shelf, &theme);
+        let body = leopard_wedge_body_geometry(&layout.shelf, &theme);
+        let cap_width = geom.front_left.x - geom.lip_left.x;
+
+        assert!(geom.front_left.x > geom.lip_left.x);
+        assert!(geom.front_right.x < geom.lip_right.x);
+        assert!(cap_width > layout.icons[0].rect.height * 0.010);
+        assert!(cap_width < layout.icons[0].rect.height * 0.06);
+        assert!((body.face_left_bottom.x - geom.front_left.x).abs() < 0.001);
+        assert!((body.face_right_bottom.x - geom.front_right.x).abs() < 0.001);
+        assert!((body.face_left_bottom.y - geom.bottom_y).abs() < 0.001);
+    }
+
+    #[test]
+    fn leopard_front_body_reaches_outer_corner_join() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let mut surface = ImageSurface::create(Format::ARgb32, 240, 110).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let shelf = Rect {
+            x: 24.0,
+            y: 20.0,
+            width: 192.0,
+            height: 48.0,
+        };
+        let geom = compute_perspective_shelf_geometry(&shelf, &theme);
+
+        draw_procedural_shelf_layer(&cr, &shelf, &theme);
+        drop(cr);
+
+        assert!(
+            alpha_at(
+                &mut surface,
+                (geom.lip_left.x + 1.5).round() as i32,
+                (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.45).round() as i32,
+            ) > 0
+        );
+        assert!(
+            alpha_at(
+                &mut surface,
+                (geom.lip_right.x - 1.5).round() as i32,
+                (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.45).round() as i32,
+            ) > 0
+        );
+    }
+
+    #[test]
+    fn leopard_default_layout_has_raised_rear_edge() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![DockItem {
+                id: "test.desktop".to_string(),
+                name: "Test".to_string(),
+                desktop_id: Some("test.desktop".to_string()),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: None,
+                pinned: true,
+                windows: Vec::new(),
+                active: false,
+                urgent: false,
+                badge: None,
+            }],
+        };
+
+        let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+        let geom = compute_perspective_shelf_geometry(&layout.shelf, &theme);
+        let icon = layout.icons[0].rect;
+        let rear_rise = (icon.y + icon.height) - geom.back_left.y;
+
+        assert!(rear_rise > icon.height * 0.44);
+    }
+
+    #[test]
+    fn leopard_reflection_is_clipped_to_reflection_band() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![DockItem {
+                id: "test.desktop".to_string(),
+                name: "Test".to_string(),
+                desktop_id: Some("test.desktop".to_string()),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: None,
+                pinned: true,
+                windows: Vec::new(),
+                active: false,
+                urgent: false,
+                badge: None,
+            }],
+        };
+        let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+        let mut icons = IconCache::disabled();
+        let mut icon_surface = render_icon_surface(&model, &layout, &mut icons).unwrap();
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let reflection = shelf_plane_reflection_rect(&layout, &theme);
+
+        draw_shelf_plane_reflections(&cr, &layout, &theme, &mut icon_surface);
+        drop(cr);
+
+        assert!(rect_has_alpha(&mut surface, reflection));
+        assert!(!rect_has_alpha(
+            &mut surface,
+            Rect {
+                x: reflection.x,
+                y: reflection.y + reflection.height + 1.0,
+                width: reflection.width,
+                height: 3.0,
+            }
+        ));
+    }
+
+    #[test]
+    fn leopard_running_indicator_lands_inside_front_body() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let shelf = Rect {
+            x: 18.0,
+            y: 36.0,
+            width: 164.0,
+            height: 30.0,
+        };
+        let icon = Rect {
+            x: 66.0,
+            y: 2.0,
+            width: 64.0,
+            height: 64.0,
+        };
+        let layout = DockLayout {
+            icons: Vec::new(),
+            label: None,
+            shelf,
+            size: (200, 80),
+        };
+        let mut surface = ImageSurface::create(Format::ARgb32, 200, 80).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let y = leopard_running_indicator_center_y(&shelf, &theme);
+        let geom = compute_perspective_shelf_geometry(&shelf, &theme);
+
+        draw_leopard_running_indicator(&cr, icon, &layout, &theme, true);
+        drop(cr);
+
+        assert!(y > geom.lip_y);
+        assert!(y < shelf.y + shelf.height);
+        assert!(
+            alpha_at(
+                &mut surface,
+                icon.center_x().round() as i32,
+                y.round() as i32
+            ) > 0
+        );
+    }
+
+    #[test]
+    fn leopard_active_indicator_lands_below_shelf() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let shelf = Rect {
+            x: 18.0,
+            y: 36.0,
+            width: 164.0,
+            height: 30.0,
+        };
+        let icon = Rect {
+            x: 66.0,
+            y: 2.0,
+            width: 64.0,
+            height: 64.0,
+        };
+        let layout = DockLayout {
+            icons: Vec::new(),
+            label: None,
+            shelf,
+            size: (200, 80),
+        };
+        let mut surface = ImageSurface::create(Format::ARgb32, 200, 80).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let y = leopard_active_indicator_center_y(icon, &shelf, &theme);
+        let running_y = leopard_running_indicator_center_y(&shelf, &theme);
+
+        draw_leopard_active_indicator(&cr, icon, &layout, &theme);
+        drop(cr);
+
+        assert!(y > shelf.y + shelf.height);
+        assert!(y > icon.y + icon.height + 6.5);
+        assert!(y > running_y + 7.0);
+        assert!(
+            alpha_at(
+                &mut surface,
+                icon.center_x().round() as i32,
+                y.round() as i32
+            ) > 0
+        );
+    }
+
+    fn alpha_at(surface: &mut ImageSurface, x: i32, y: i32) -> u8 {
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        data[y as usize * stride + x as usize * 4 + 3]
+    }
+
+    fn brightness_at(surface: &mut ImageSurface, x: i32, y: i32) -> u16 {
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        let offset = y as usize * stride + x as usize * 4;
+        u16::from(data[offset]) + u16::from(data[offset + 1]) + u16::from(data[offset + 2])
+    }
+
+    fn rect_has_alpha(surface: &mut ImageSurface, rect: Rect) -> bool {
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let width = surface.width().max(0);
+        let height = surface.height().max(0);
+        let min_x = rect.x.max(0.0).floor() as i32;
+        let max_x = (rect.x + rect.width).min(width as f64).ceil() as i32;
+        let min_y = rect.y.max(0.0).floor() as i32;
+        let max_y = (rect.y + rect.height).min(height as f64).ceil() as i32;
+        let data = surface.data().unwrap();
+        (min_y..max_y).any(|y| {
+            (min_x..max_x).any(|x| {
+                let offset = y as usize * stride + x as usize * 4 + 3;
+                data[offset] != 0
+            })
+        })
+    }
 }
+
+    fn preview_item(id: &str, name: &str, badge: Option<u32>) -> DockItem {
+        DockItem {
+            id: id.to_string(),
+            name: name.to_string(),
+            desktop_id: Some(id.to_string()),
+            startup_wm_class: None,
+            icon_name: None,
+            window_icon: None,
+            pinned: true,
+            windows: Vec::new(),
+            active: false,
+            urgent: false,
+            badge,
+        }
+    }
