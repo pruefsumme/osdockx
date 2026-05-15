@@ -2,11 +2,8 @@
 
 OSDockX is a clean-room Rust dock for Linux desktops, currently focused on
 XFCE4 on X11. The first milestone prioritizes the pre-Mavericks OSX dock look:
-a translucent glass shelf, icon magnification, reflections, running indicators,
+an opaque shelf, icon magnification, reflections, running indicators,
 and notification badges.
-
-The code under `resources/` is reference material only. The implementation in
-`src/` is new code.
 
 ## Build
 
