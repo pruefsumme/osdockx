@@ -370,8 +370,8 @@ fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
         shelf,
         theme
             .shelf_top
-            .mix(theme.shelf_bottom, 0.16)
-            .with_alpha(0.20 + theme.floor_opacity * 0.08),
+            .mix(theme.shelf_bottom, 0.28)
+            .with_alpha(0.66 + theme.floor_opacity * 0.10),
         0.0006 + theme.material_roughness * 0.0012,
         |cr| {
             leopard_glass_plane_path(cr, shelf, theme);
@@ -388,59 +388,62 @@ fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
         0.00,
         theme
             .shelf_top
-            .mix(theme.shelf_bottom, 0.22)
-            .with_alpha(0.08),
+            .mix(theme.shelf_bottom, 0.34)
+            .with_alpha(0.32),
     );
     add_stop(
         &glass,
         0.22,
         theme
             .shelf_top
-            .mix(theme.shelf_highlight, 0.05)
-            .with_alpha(0.14),
+            .mix(theme.shelf_bottom, 0.24)
+            .mix(theme.shelf_highlight, 0.02)
+            .with_alpha(0.40),
     );
     add_stop(
         &glass,
         0.70,
         theme
             .shelf_top
-            .mix(theme.shelf_highlight, 0.14)
-            .with_alpha(0.30),
+            .mix(theme.shelf_bottom, 0.16)
+            .mix(theme.shelf_highlight, 0.05)
+            .with_alpha(0.52),
     );
     add_stop(
         &glass,
         1.00,
         theme
-            .shelf_highlight
-            .mix(theme.shelf_top, 0.18)
-            .with_alpha(0.44),
+            .shelf_top
+            .mix(theme.shelf_highlight, 0.02)
+            .mix(theme.shelf_bottom, 0.12)
+            .with_alpha(0.66),
     );
     let _ = cr.set_source(&glass);
     let _ = cr.paint();
 
     let center = LinearGradient::new(geom.back_left.x, 0.0, geom.back_right.x, 0.0);
-    center.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.0);
-    center.add_color_stop_rgba(0.26, 1.0, 1.0, 1.0, 0.010);
-    center.add_color_stop_rgba(0.50, 1.0, 1.0, 1.0, 0.022);
-    center.add_color_stop_rgba(0.74, 1.0, 1.0, 1.0, 0.010);
-    center.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+    center.add_color_stop_rgba(0.00, 0.86, 0.88, 0.91, 0.0);
+    center.add_color_stop_rgba(0.26, 0.86, 0.88, 0.91, 0.008);
+    center.add_color_stop_rgba(0.50, 0.86, 0.88, 0.91, 0.014);
+    center.add_color_stop_rgba(0.74, 0.86, 0.88, 0.91, 0.008);
+    center.add_color_stop_rgba(1.00, 0.86, 0.88, 0.91, 0.0);
     let _ = cr.set_source(&center);
     let _ = cr.paint();
 
     let edge_vignette = LinearGradient::new(geom.back_left.x, 0.0, geom.back_right.x, 0.0);
-    edge_vignette.add_color_stop_rgba(0.00, 0.30, 0.38, 0.48, 0.006);
-    edge_vignette.add_color_stop_rgba(0.12, 0.30, 0.38, 0.48, 0.002);
+    edge_vignette.add_color_stop_rgba(0.00, 0.30, 0.38, 0.48, 0.012);
+    edge_vignette.add_color_stop_rgba(0.12, 0.30, 0.38, 0.48, 0.004);
     edge_vignette.add_color_stop_rgba(0.50, 1.0, 1.0, 1.0, 0.0);
-    edge_vignette.add_color_stop_rgba(0.88, 0.30, 0.38, 0.48, 0.002);
-    edge_vignette.add_color_stop_rgba(1.00, 0.30, 0.38, 0.48, 0.006);
+    edge_vignette.add_color_stop_rgba(0.88, 0.30, 0.38, 0.48, 0.004);
+    edge_vignette.add_color_stop_rgba(1.00, 0.30, 0.38, 0.48, 0.012);
     let _ = cr.set_source(&edge_vignette);
     let _ = cr.paint();
 
     let front_gloss = LinearGradient::new(0.0, geom.back_left.y, 0.0, geom.lip_left.y);
-    front_gloss.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.0);
-    front_gloss.add_color_stop_rgba(0.54, 1.0, 1.0, 1.0, 0.016);
-    front_gloss.add_color_stop_rgba(0.82, 1.0, 1.0, 1.0, 0.072);
-    front_gloss.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+    front_gloss.add_color_stop_rgba(0.00, 0.87, 0.89, 0.92, 0.0);
+    front_gloss.add_color_stop_rgba(0.44, 0.87, 0.89, 0.92, 0.022);
+    front_gloss.add_color_stop_rgba(0.82, 0.87, 0.89, 0.92, 0.060);
+    front_gloss.add_color_stop_rgba(1.00, 0.87, 0.89, 0.92, 0.0);
     let _ = cr.set_source(&front_gloss);
     let _ = cr.paint();
     cr.restore().ok();
@@ -474,10 +477,12 @@ fn draw_leopard_connector_wall(
         return;
     }
 
+    let face_height = (bottom_y - geom.lip_y).max(1.0);
+
     let base = theme
         .shelf_top
-        .mix(theme.shelf_bottom, 0.26)
-        .with_alpha(0.26 + theme.floor_opacity * 0.12);
+        .mix(theme.shelf_bottom, 0.42)
+        .with_alpha(0.88 + theme.floor_opacity * 0.06);
 
     fill_crystal_material(cr, shelf, base, 0.0007 + theme.material_roughness * 0.0012, |cr| {
         leopard_wedge_body_path(cr, geom, body);
@@ -487,38 +492,104 @@ fn draw_leopard_connector_wall(
     leopard_wedge_body_path(cr, geom, body);
     cr.clip();
 
-    let wall = LinearGradient::new(0.0, top_y, 0.0, bottom_y);
+    let wall = LinearGradient::new(
+        0.0,
+        geom.lip_y - face_height * 0.16,
+        0.0,
+        bottom_y,
+    );
     add_stop(
         &wall,
         0.00,
         theme
             .shelf_top
-            .mix(theme.shelf_bottom, 0.28)
-            .with_alpha(0.24),
+            .mix(theme.shelf_bottom, 0.34)
+            .mix(Color::rgba(0.82, 0.86, 0.90, 1.0), 0.10)
+            .with_alpha(0.50),
     );
     add_stop(
         &wall,
-        0.42,
+        0.18,
+        theme
+            .shelf_top
+            .mix(theme.shelf_bottom, 0.40)
+            .with_alpha(0.70),
+    );
+    add_stop(
+        &wall,
+        0.56,
         theme
             .shelf_bottom
-            .mix(theme.shelf_top, 0.10)
-            .with_alpha(0.36),
+            .mix(Color::rgba(0.50, 0.58, 0.68, 1.0), 0.34)
+            .with_alpha(0.88),
     );
     add_stop(
         &wall,
         1.00,
         theme
             .shelf_bottom
-            .mix(Color::rgba(0.02, 0.03, 0.04, 1.0), 0.30)
-            .with_alpha(0.56),
+            .mix(Color::rgba(0.21, 0.27, 0.36, 1.0), 0.50)
+            .with_alpha(0.99),
     );
     let _ = cr.set_source(&wall);
     let _ = cr.paint();
 
+    let front_curve = LinearGradient::new(
+        0.0,
+        geom.lip_y - face_height * 0.10,
+        0.0,
+        geom.lip_y + face_height * 0.56,
+    );
+    front_curve.add_color_stop_rgba(0.00, 0.88, 0.90, 0.93, 0.0);
+    front_curve.add_color_stop_rgba(0.16, 0.88, 0.90, 0.93, 0.11);
+    front_curve.add_color_stop_rgba(0.28, 0.88, 0.90, 0.93, 0.14);
+    front_curve.add_color_stop_rgba(0.54, 0.88, 0.90, 0.93, 0.03);
+    front_curve.add_color_stop_rgba(1.00, 0.88, 0.90, 0.93, 0.0);
+    let _ = cr.set_source(&front_curve);
+    let _ = cr.paint();
+
+    let cap_shadow = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
+    add_stop(
+        &cap_shadow,
+        0.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.08, 0.11, 0.16, 1.0), 0.34)
+            .with_alpha(0.18),
+    );
+    add_stop(
+        &cap_shadow,
+        0.12,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.08, 0.11, 0.16, 1.0), 0.24)
+            .with_alpha(0.08),
+    );
+    add_stop(&cap_shadow, 0.24, theme.shelf_bottom.with_alpha(0.0));
+    add_stop(&cap_shadow, 0.76, theme.shelf_bottom.with_alpha(0.0));
+    add_stop(
+        &cap_shadow,
+        0.88,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.08, 0.11, 0.16, 1.0), 0.24)
+            .with_alpha(0.08),
+    );
+    add_stop(
+        &cap_shadow,
+        1.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.08, 0.11, 0.16, 1.0), 0.34)
+            .with_alpha(0.18),
+    );
+    let _ = cr.set_source(&cap_shadow);
+    let _ = cr.paint();
+
     let sheen = LinearGradient::new(0.0, top_y, 0.0, bottom_y);
-    sheen.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.10);
-    sheen.add_color_stop_rgba(0.22, 1.0, 1.0, 1.0, 0.04);
-    sheen.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+    sheen.add_color_stop_rgba(0.00, 0.88, 0.90, 0.93, 0.08);
+    sheen.add_color_stop_rgba(0.20, 0.88, 0.90, 0.93, 0.03);
+    sheen.add_color_stop_rgba(1.00, 0.88, 0.90, 0.93, 0.0);
     let _ = cr.set_source(&sheen);
     let _ = cr.paint();
     cr.restore().ok();
@@ -529,33 +600,18 @@ fn leopard_wedge_body_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    cr.new_path();
-    append_polygon_path(
-        cr,
-        &[
-            geom.front_left,
-            geom.front_right,
-            body.face_right_bottom,
-            body.face_left_bottom,
-        ],
-    );
-    append_polygon_path(
+    let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
+    rounded_polygon_path(
         cr,
         &[
             geom.back_left,
-            geom.lip_left,
-            geom.front_left,
-            body.face_left_bottom,
-        ],
-    );
-    append_polygon_path(
-        cr,
-        &[
             geom.back_right,
             geom.lip_right,
-            geom.front_right,
             body.face_right_bottom,
+            body.face_left_bottom,
+            geom.lip_left,
         ],
+        (face_height * 0.66).clamp(2.8, 7.6),
     );
 }
 
@@ -564,28 +620,25 @@ fn leopard_front_face_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    cr.new_path();
-    append_polygon_path(
+    let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
+    let face_top_left = Point {
+        x: geom.lip_left.x + (geom.front_left.x - geom.lip_left.x) * 0.30,
+        y: geom.front_left.y,
+    };
+    let face_top_right = Point {
+        x: geom.lip_right.x + (geom.front_right.x - geom.lip_right.x) * 0.30,
+        y: geom.front_right.y,
+    };
+    rounded_polygon_path(
         cr,
         &[
-            geom.front_left,
-            geom.front_right,
+            face_top_left,
+            face_top_right,
             body.face_right_bottom,
             body.face_left_bottom,
         ],
+        (face_height * 0.96).clamp(3.4, 8.8),
     );
-}
-
-fn append_polygon_path(cr: &Context, points: &[Point]) {
-    if points.is_empty() {
-        return;
-    }
-
-    cr.move_to(points[0].x, points[0].y);
-    for point in &points[1..] {
-        cr.line_to(point.x, point.y);
-    }
-    cr.close_path();
 }
 
 fn draw_glass_highlight_overlay(cr: &Context, shelf: &Rect, theme: &Theme) {
@@ -595,23 +648,23 @@ fn draw_glass_highlight_overlay(cr: &Context, shelf: &Rect, theme: &Theme) {
     leopard_glass_plane_path(cr, shelf, theme);
     cr.clip();
 
-    let band_y = geom.back_left.y + (geom.lip_left.y - geom.back_left.y) * 0.72;
+    let band_y = geom.back_left.y + (geom.lip_left.y - geom.back_left.y) * 0.54;
     let band = LinearGradient::new(
         0.0,
-        band_y - shelf.height * 0.10,
+        band_y - shelf.height * 0.18,
         0.0,
-        band_y + shelf.height * 0.11,
+        band_y + shelf.height * 0.24,
     );
-    band.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.0);
-    band.add_color_stop_rgba(0.50, 1.0, 1.0, 1.0, 0.11 * theme.highlight_strength);
-    band.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+    band.add_color_stop_rgba(0.00, 0.88, 0.90, 0.93, 0.0);
+    band.add_color_stop_rgba(0.48, 0.88, 0.90, 0.93, 0.09 * theme.highlight_strength);
+    band.add_color_stop_rgba(1.00, 0.88, 0.90, 0.93, 0.0);
     let _ = cr.set_source(&band);
     let _ = cr.paint();
 
     let top_sheen = LinearGradient::new(geom.back_left.x, 0.0, geom.back_right.x, 0.0);
-    top_sheen.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.0);
-    top_sheen.add_color_stop_rgba(0.50, 1.0, 1.0, 1.0, 0.012 * theme.highlight_strength);
-    top_sheen.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+    top_sheen.add_color_stop_rgba(0.00, 0.88, 0.90, 0.93, 0.0);
+    top_sheen.add_color_stop_rgba(0.50, 0.88, 0.90, 0.93, 0.014 * theme.highlight_strength);
+    top_sheen.add_color_stop_rgba(1.00, 0.88, 0.90, 0.93, 0.0);
     let _ = cr.set_source(&top_sheen);
     let _ = cr.paint();
     cr.restore().ok();
@@ -628,7 +681,7 @@ fn draw_leopard_shelf_strokes(cr: &Context, shelf: &Rect, theme: &Theme) {
         cr,
         theme
             .shelf_highlight
-            .with_alpha(0.18 * theme.highlight_strength),
+            .with_alpha(0.22 * theme.highlight_strength),
     );
     let _ = cr.stroke();
 
@@ -636,9 +689,9 @@ fn draw_leopard_shelf_strokes(cr: &Context, shelf: &Rect, theme: &Theme) {
     cr.set_line_width(0.9);
     let side_fade = LinearGradient::new(geom.front_left.x, 0.0, geom.front_right.x, 0.0);
     add_stop(&side_fade, 0.00, theme.shelf_stroke.with_alpha(0.0));
-    add_stop(&side_fade, 0.14, theme.shelf_stroke.with_alpha(0.015));
-    add_stop(&side_fade, 0.50, theme.shelf_stroke.with_alpha(0.045));
-    add_stop(&side_fade, 0.86, theme.shelf_stroke.with_alpha(0.015));
+    add_stop(&side_fade, 0.14, theme.shelf_stroke.with_alpha(0.020));
+    add_stop(&side_fade, 0.50, theme.shelf_stroke.with_alpha(0.050));
+    add_stop(&side_fade, 0.86, theme.shelf_stroke.with_alpha(0.020));
     add_stop(&side_fade, 1.00, theme.shelf_stroke.with_alpha(0.0));
     let _ = cr.set_source(&side_fade);
     let _ = cr.stroke();
@@ -652,19 +705,19 @@ fn draw_leopard_shelf_strokes(cr: &Context, shelf: &Rect, theme: &Theme) {
         cr,
         theme
             .shelf_highlight
-            .with_alpha(0.12 * theme.highlight_strength),
+            .with_alpha(0.10 * theme.highlight_strength),
     );
     let _ = cr.stroke();
 
     cr.move_to(body.face_left_bottom.x + 0.8, body.face_left_bottom.y - 0.6);
     cr.line_to(body.face_right_bottom.x - 0.8, body.face_right_bottom.y - 0.6);
-    cr.set_line_width(0.9);
+    cr.set_line_width(1.0);
     set_color(
         cr,
         theme
             .shelf_stroke
             .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.18)
-            .with_alpha(0.12),
+                .with_alpha(0.26),
     );
     let _ = cr.stroke();
 }
@@ -673,28 +726,28 @@ fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
     let body = leopard_wedge_body_geometry(shelf, theme);
 
-    cr.move_to(geom.lip_left.x + 0.5, geom.lip_left.y + 0.30);
-    cr.line_to(geom.lip_right.x - 0.5, geom.lip_right.y + 0.30);
-    cr.set_line_width(1.0);
+    cr.move_to(geom.lip_left.x + 0.4, geom.lip_left.y + 0.46);
+    cr.line_to(geom.lip_right.x - 0.4, geom.lip_right.y + 0.46);
+    cr.set_line_width(1.55);
     let lip_highlight = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
     add_stop(&lip_highlight, 0.00, theme.shelf_highlight.with_alpha(0.0));
-    add_stop(&lip_highlight, 0.12, theme.shelf_highlight.with_alpha(0.20));
+    add_stop(&lip_highlight, 0.12, theme.shelf_highlight.with_alpha(0.15));
     add_stop(
         &lip_highlight,
         0.50,
         theme
             .shelf_highlight
-            .mix(theme.shelf_top, 0.08)
-            .with_alpha(0.52 * theme.highlight_strength + 0.08),
+            .mix(theme.shelf_top, 0.12)
+            .with_alpha(0.28 * theme.highlight_strength + 0.12),
     );
-    add_stop(&lip_highlight, 0.88, theme.shelf_highlight.with_alpha(0.20));
+    add_stop(&lip_highlight, 0.88, theme.shelf_highlight.with_alpha(0.15));
     add_stop(&lip_highlight, 1.00, theme.shelf_highlight.with_alpha(0.0));
     let _ = cr.set_source(&lip_highlight);
     let _ = cr.stroke();
 
-    cr.move_to(geom.lip_left.x + 0.7, geom.lip_left.y + 1.15);
-    cr.line_to(geom.lip_right.x - 0.7, geom.lip_right.y + 1.15);
-    cr.set_line_width(0.9);
+    cr.move_to(geom.lip_left.x + 0.6, geom.lip_left.y + 1.55);
+    cr.line_to(geom.lip_right.x - 0.6, geom.lip_right.y + 1.55);
+    cr.set_line_width(1.00);
     let lip_shadow = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
     add_stop(&lip_shadow, 0.00, theme.shelf_stroke.with_alpha(0.0));
     add_stop(&lip_shadow, 0.18, theme.shelf_stroke.with_alpha(0.08));
@@ -704,7 +757,7 @@ fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
         theme
             .shelf_stroke
             .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.22)
-            .with_alpha(0.18),
+            .with_alpha(0.20),
     );
     add_stop(&lip_shadow, 0.82, theme.shelf_stroke.with_alpha(0.08));
     add_stop(&lip_shadow, 1.00, theme.shelf_stroke.with_alpha(0.0));
@@ -715,18 +768,61 @@ fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
     leopard_front_face_path(cr, &geom, &body);
     cr.clip();
 
+    let face_height = (geom.bottom_y - geom.front_left.y).max(1.0);
+    let face_fill = LinearGradient::new(0.0, geom.front_left.y, 0.0, geom.bottom_y);
+    add_stop(
+        &face_fill,
+        0.00,
+        theme
+            .shelf_top
+            .mix(Color::rgba(0.84, 0.87, 0.91, 1.0), 0.20)
+            .with_alpha(0.54),
+    );
+    add_stop(
+        &face_fill,
+        0.34,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.52, 0.60, 0.69, 1.0), 0.32)
+            .with_alpha(0.82),
+    );
+    add_stop(
+        &face_fill,
+        1.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.24, 0.30, 0.38, 1.0), 0.50)
+            .with_alpha(0.99),
+    );
+    let _ = cr.set_source(&face_fill);
+    let _ = cr.paint();
+
+    let face_roll = LinearGradient::new(
+        0.0,
+        geom.lip_y - face_height * 0.08,
+        0.0,
+        geom.lip_y + face_height * 0.62,
+    );
+    face_roll.add_color_stop_rgba(0.00, 0.88, 0.90, 0.93, 0.0);
+    face_roll.add_color_stop_rgba(0.14, 0.88, 0.90, 0.93, 0.14);
+    face_roll.add_color_stop_rgba(0.30, 0.88, 0.90, 0.93, 0.09);
+    face_roll.add_color_stop_rgba(0.54, 0.88, 0.90, 0.93, 0.02);
+    face_roll.add_color_stop_rgba(1.00, 0.88, 0.90, 0.93, 0.0);
+    let _ = cr.set_source(&face_roll);
+    let _ = cr.paint();
+
     let recess = LinearGradient::new(0.0, geom.lip_y + 0.2, 0.0, geom.bottom_y);
-    recess.add_color_stop_rgba(0.00, 0.12, 0.14, 0.18, 0.10);
-    recess.add_color_stop_rgba(0.22, 0.12, 0.14, 0.18, 0.04);
-    recess.add_color_stop_rgba(0.72, 0.12, 0.14, 0.18, 0.01);
+    recess.add_color_stop_rgba(0.00, 0.12, 0.14, 0.18, 0.12);
+    recess.add_color_stop_rgba(0.22, 0.12, 0.14, 0.18, 0.06);
+    recess.add_color_stop_rgba(0.72, 0.12, 0.14, 0.18, 0.02);
     recess.add_color_stop_rgba(1.00, 0.12, 0.14, 0.18, 0.0);
     let _ = cr.set_source(&recess);
     let _ = cr.paint();
 
     let glaze = LinearGradient::new(0.0, geom.lip_y + 0.7, 0.0, geom.bottom_y);
-    glaze.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.045);
-    glaze.add_color_stop_rgba(0.28, 1.0, 1.0, 1.0, 0.016);
-    glaze.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+    glaze.add_color_stop_rgba(0.00, 0.89, 0.92, 0.95, 0.036);
+    glaze.add_color_stop_rgba(0.28, 0.89, 0.92, 0.95, 0.012);
+    glaze.add_color_stop_rgba(1.00, 0.89, 0.92, 0.95, 0.0);
     let _ = cr.set_source(&glaze);
     let _ = cr.paint();
     cr.restore().ok();
@@ -1082,16 +1178,16 @@ fn compute_perspective_shelf_geometry(shelf: &Rect, theme: &Theme) -> Perspectiv
     let slant = (shelf.height * theme.shelf_slant_ratio)
         .clamp(shelf.height * 0.32, shelf.height * 0.46);
     let rear_inset = slant * (0.80 + theme.depth * 0.16);
-    let front_inset = slant * 0.04;
-    let cap_inset = ((rear_inset - front_inset) * 0.18)
-        .clamp(shelf.height * 0.04, shelf.height * 0.10);
-    let back_rise = (shelf.height * (0.09 + theme.tilt * 0.045))
-        .clamp(shelf.height * 0.09, shelf.height * 0.16);
+    let front_inset = slant * 0.025;
+    let cap_inset = ((rear_inset - front_inset) * 0.054)
+        .clamp(shelf.height * 0.020, shelf.height * 0.040);
+    let back_rise = (shelf.height * (0.104 + theme.tilt * 0.036))
+        .clamp(shelf.height * 0.104, shelf.height * 0.145);
     let back_y = shelf.y - back_rise;
-    let bottom_y = shelf.y + shelf.height;
-    let front_face_height = (shelf.height * theme.front_lip_ratio * 0.96)
-        .clamp(shelf.height * 0.10, shelf.height * 0.18);
-    let lip_y = bottom_y - front_face_height;
+    let front_face_height = (shelf.height * theme.front_lip_ratio * 0.49)
+        .clamp(shelf.height * 0.080, shelf.height * 0.160);
+    let lip_y = shelf.y + shelf.height - front_face_height;
+    let bottom_y = shelf.y + shelf.height + (shelf.height * 0.024).clamp(0.9, 1.5);
     PerspectiveShelfGeometry {
         back_left: Point {
             x: shelf.x + rear_inset,
@@ -1127,7 +1223,7 @@ fn leopard_glass_plane_path(cr: &Context, shelf: &Rect, theme: &Theme) {
     rounded_polygon_path(
         cr,
         &[geom.back_left, geom.back_right, geom.lip_right, geom.lip_left],
-        (shelf.height * 0.06).clamp(1.4, 3.2),
+        (shelf.height * 0.18).clamp(3.2, 7.0),
     );
 }
 
@@ -1276,7 +1372,7 @@ fn draw_icon_reflections_on_shelf(
         let item = &model.items[icon.item_index];
         let max_height = (geom.lip_y
             - (icon.rect.y + icon.rect.height)
-            - layout.shelf.height * 0.06)
+            - layout.shelf.height * 0.055)
             .max(icon.rect.height * 0.07);
         draw_icon_reflection(cr, item, icon.rect, max_height, theme, icons);
     }
@@ -1292,7 +1388,7 @@ fn draw_icon_reflection(
     theme: &Theme,
     icons: &mut IconCache,
 ) {
-    let default_height = icon_rect.height * (theme.reflection_height * 0.84).clamp(0.20, 0.42);
+    let default_height = icon_rect.height * (theme.reflection_height * 0.90).clamp(0.22, 0.44);
     let reflection_height = default_height.min(max_height.max(icon_rect.height * 0.07));
     if reflection_height <= 1.0 {
         return;
@@ -1309,22 +1405,22 @@ fn draw_icon_reflection(
     icon_surface.flush();
 
     let reflection_y = icon_rect.y + icon_rect.height;
-    let alpha = (theme.reflection_opacity * 0.82).clamp(0.08, 0.24);
-    let blur = 1.8 + theme.reflection_blur * 3.2;
+    let alpha = (theme.reflection_opacity * 0.94).clamp(0.10, 0.26);
+    let blur = 1.8 + theme.reflection_blur * 3.0;
     let passes = [
         (0.0, 0.0, alpha),
-        (-blur * 0.28, blur * 0.12, alpha * 0.32),
-        (blur * 0.28, blur * 0.12, alpha * 0.32),
-        (0.0, blur * 0.34, alpha * 0.16),
+        (-blur * 0.28, blur * 0.10, alpha * 0.34),
+        (blur * 0.28, blur * 0.10, alpha * 0.34),
+        (0.0, blur * 0.24, alpha * 0.18),
     ];
 
     for (dx, dy, pass_alpha) in passes {
         cr.save().ok();
         rounded_rect(
             cr,
-            icon_rect.x - 1.5,
+            icon_rect.x - 1.6,
             reflection_y,
-            icon_rect.width + 3.0,
+            icon_rect.width + 3.2,
             reflection_height,
             (icon_rect.width * 0.08).min(5.0),
         );
@@ -1337,8 +1433,8 @@ fn draw_icon_reflection(
         if cr.set_source_surface(&icon_surface, 0.0, 0.0).is_ok() {
             let fade = LinearGradient::new(0.0, 0.0, 0.0, icon_rect.height);
             fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.0);
-            fade.add_color_stop_rgba(0.55, 1.0, 1.0, 1.0, pass_alpha * 0.05);
-            fade.add_color_stop_rgba(0.82, 1.0, 1.0, 1.0, pass_alpha * 0.30);
+            fade.add_color_stop_rgba(0.44, 1.0, 1.0, 1.0, pass_alpha * 0.08);
+            fade.add_color_stop_rgba(0.76, 1.0, 1.0, 1.0, pass_alpha * 0.36);
             fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, pass_alpha);
             let _ = cr.mask(&fade);
         }
@@ -1605,6 +1701,14 @@ fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool) {
     cr.restore().ok();
 }
 
+fn leopard_running_indicator_size(active: bool) -> (f64, f64) {
+    if active {
+        (12.3, 3.45)
+    } else {
+        (8.9, 2.7)
+    }
+}
+
 fn draw_leopard_running_indicator(
     cr: &Context,
     rect: Rect,
@@ -1613,8 +1717,7 @@ fn draw_leopard_running_indicator(
     active: bool,
 ) {
     let y = leopard_running_indicator_center_y(&layout.shelf, theme);
-    let width = if active { 10.2 } else { 7.4 };
-    let height = if active { 2.8 } else { 2.2 };
+    let (width, height) = leopard_running_indicator_size(active);
     let x = rect.center_x() - width / 2.0;
     let color = theme
         .shelf_highlight
@@ -1677,19 +1780,19 @@ fn draw_leopard_active_indicator(cr: &Context, rect: Rect, layout: &DockLayout, 
     let color = theme.indicator;
 
     cr.save().ok();
-    cr.arc(x, y, 5.0, 0.0, std::f64::consts::TAU);
+    cr.arc(x, y, 6.1, 0.0, std::f64::consts::TAU);
     cr.set_source_rgba(color.red, color.green, color.blue, 0.12);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
-    cr.arc(x, y, 3.1, 0.0, std::f64::consts::TAU);
+    cr.arc(x, y, 3.8, 0.0, std::f64::consts::TAU);
     cr.set_source_rgba(1.0, 1.0, 1.0, 0.94);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
-    cr.arc(x, y, 1.55, 0.0, std::f64::consts::TAU);
+    cr.arc(x, y, 1.9, 0.0, std::f64::consts::TAU);
     cr.set_source_rgba(color.red, color.green, color.blue, 0.74);
     let _ = cr.fill();
     cr.restore().ok();
@@ -2012,10 +2115,10 @@ mod tests {
 
         assert_eq!(alpha_at(&mut surface, 25, 21), 0);
         assert!(alpha_at(&mut surface, 120, 22) > 0);
-        assert!(alpha_at(&mut surface, 120, 34) > 72);
+        assert!(alpha_at(&mut surface, 120, 34) > 40);
         assert!(alpha_at(&mut surface, 120, 66) > 120);
         assert!(brightness_at(&mut surface, 120, 37) > brightness_at(&mut surface, 120, 25));
-        assert!(brightness_at(&mut surface, 120, 66) < brightness_at(&mut surface, 120, 40));
+        assert!(alpha_at(&mut surface, 120, 66) > alpha_at(&mut surface, 120, 40));
     }
 
     #[test]
@@ -2134,7 +2237,7 @@ mod tests {
         let floor_depth = geom.lip_y - (icon.y + icon.height);
 
         assert!(floor_depth > icon.height * 0.08);
-        assert!(floor_depth < icon.height * 0.18);
+        assert!(floor_depth < icon.height * 0.23);
     }
 
     #[test]
@@ -2160,9 +2263,11 @@ mod tests {
         let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
         let geom = compute_perspective_shelf_geometry(&layout.shelf, &theme);
         let front_body = geom.bottom_y - geom.lip_y;
+        let (_, active_led_height) = leopard_running_indicator_size(true);
+        let fascia_to_led_ratio = front_body / active_led_height;
 
-        assert!(front_body > layout.icons[0].rect.height * 0.09);
-        assert!(front_body < layout.icons[0].rect.height * 0.18);
+        assert!(fascia_to_led_ratio > 1.10);
+        assert!(fascia_to_led_ratio < 1.32);
     }
 
     #[test]
@@ -2192,8 +2297,8 @@ mod tests {
 
         assert!(geom.front_left.x > geom.lip_left.x);
         assert!(geom.front_right.x < geom.lip_right.x);
-        assert!(cap_width > layout.icons[0].rect.height * 0.02);
-        assert!(cap_width < layout.icons[0].rect.height * 0.10);
+        assert!(cap_width > layout.icons[0].rect.height * 0.010);
+        assert!(cap_width < layout.icons[0].rect.height * 0.06);
         assert!((body.face_left_bottom.x - geom.front_left.x).abs() < 0.001);
         assert!((body.face_right_bottom.x - geom.front_right.x).abs() < 0.001);
         assert!((body.face_left_bottom.y - geom.bottom_y).abs() < 0.001);
