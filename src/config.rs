@@ -143,14 +143,14 @@ impl Default for ThemeConfig {
             badge: "#e4202dff".to_string(),
             reflection_opacity: 0.34,
             reflection_height: 0.66,
-            shelf_height_ratio: 0.78,
+            shelf_height_ratio: 0.84,
             shelf_slant_ratio: 0.50,
             icon_gap_ratio: 0.04,
-            side_margin_ratio: 0.56,
-            shelf_horizon_ratio: 0.46,
-            front_lip_ratio: 0.05,
+            side_margin_ratio: 0.68,
+            shelf_horizon_ratio: 0.50,
+            front_lip_ratio: 0.14,
             reflection_band_ratio: 0.20,
-            tilt: 0.58,
+            tilt: 0.64,
             depth: 0.76,
             bevel: 0.16,
             floor_opacity: 0.78,
@@ -367,15 +367,15 @@ fn approx(left: f64, right: f64) -> bool {
 }
 
 const fn default_side_margin_ratio() -> f64 {
-    0.74
+    0.68
 }
 
 const fn default_shelf_horizon_ratio() -> f64 {
-    0.46
+    0.50
 }
 
 const fn default_front_lip_ratio() -> f64 {
-    0.05
+    0.14
 }
 
 const fn default_reflection_band_ratio() -> f64 {
@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(config.theme.preset, "leopard");
         assert_eq!(config.theme.renderer, Some(RenderMode::Procedural2d));
         assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
-        assert_eq!(config.theme.shelf_height_ratio, 0.78);
+        assert_eq!(config.theme.shelf_height_ratio, 0.84);
         assert_eq!(config.theme.icon_floor_offset, 0.0);
     }
 
@@ -519,8 +519,8 @@ mod tests {
 
         assert_eq!(config.theme.preset, "leopard");
         assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
-        assert_eq!(config.theme.shelf_height_ratio, 0.78);
-        assert_eq!(config.theme.shelf_horizon_ratio, 0.46);
+        assert_eq!(config.theme.shelf_height_ratio, 0.84);
+        assert_eq!(config.theme.shelf_horizon_ratio, 0.50);
         assert_eq!(config.theme.shelf_top, "#f2f7fdff");
         assert_eq!(config.theme.shelf_bottom, "#9aadbeff");
     }
@@ -566,7 +566,7 @@ mod tests {
         let config = config.normalized();
 
         assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
-        assert_eq!(config.theme.shelf_height_ratio, 0.78);
+        assert_eq!(config.theme.shelf_height_ratio, 0.84);
         assert_eq!(config.theme.reflection_opacity, 0.34);
     }
 
