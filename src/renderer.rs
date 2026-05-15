@@ -447,6 +447,9 @@ fn draw_leopard_undercarriage(cr: &Context, shelf: &Rect, theme: &Theme) {
         },
     );
 
+    draw_leopard_corner_bridge(cr, shelf, theme, true);
+    draw_leopard_corner_bridge(cr, shelf, theme, false);
+
     cr.save().ok();
     leopard_undercarriage_path(cr, shelf, theme);
     cr.clip();
@@ -489,6 +492,55 @@ fn draw_leopard_undercarriage(cr: &Context, shelf: &Rect, theme: &Theme) {
     let _ = cr.set_source(&center);
     let _ = cr.paint();
 
+    cr.restore().ok();
+}
+
+fn draw_leopard_corner_bridge(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
+    let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let points = if left {
+        [geom.back_left, geom.lip_left, geom.base_left]
+    } else {
+        [geom.back_right, geom.lip_right, geom.base_right]
+    };
+    let x = if left { geom.base_left.x } else { geom.base_right.x };
+
+    cr.save().ok();
+    create_polygon_mask(cr, &points);
+    cr.clip();
+
+    let bridge = LinearGradient::new(0.0, geom.back_left.y, 0.0, geom.bottom_y);
+    add_stop(
+        &bridge,
+        0.00,
+        theme
+            .shelf_top
+            .mix(theme.shelf_bottom, 0.56)
+            .with_alpha(0.20),
+    );
+    add_stop(
+        &bridge,
+        0.48,
+        theme
+            .shelf_bottom
+            .mix(theme.shelf_top, 0.18)
+            .with_alpha(0.54),
+    );
+    add_stop(
+        &bridge,
+        1.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.02, 0.03, 0.04, 1.0), 0.28)
+            .with_alpha(0.84),
+    );
+    let _ = cr.set_source(&bridge);
+    let _ = cr.paint();
+
+    cr.move_to(x, geom.back_left.y + 0.8);
+    cr.line_to(x, geom.bottom_y - 0.6);
+    cr.set_line_width(0.9);
+    set_color(cr, theme.shelf_stroke.with_alpha(0.12));
+    let _ = cr.stroke();
     cr.restore().ok();
 }
 
@@ -968,10 +1020,10 @@ fn crystal_shelf_geometry(shelf: &Rect, theme: &Theme) -> CrystalShelfGeometry {
 fn compute_perspective_shelf_geometry(shelf: &Rect, theme: &Theme) -> PerspectiveShelfGeometry {
     let slant = (shelf.height * theme.shelf_slant_ratio).max(shelf.height * 0.46);
     let rear_inset = slant * (1.08 + theme.depth * 0.22);
-    let front_inset = slant * 0.08;
-    let base_inset = slant * 0.22;
-    let back_rise = (shelf.height * (0.18 + theme.tilt * 0.08))
-        .clamp(shelf.height * 0.18, shelf.height * 0.28);
+    let front_inset = slant * 0.06;
+    let base_inset = slant * 0.12;
+    let back_rise = (shelf.height * (0.17 + theme.tilt * 0.07))
+        .clamp(shelf.height * 0.17, shelf.height * 0.25);
     let back_y = shelf.y - back_rise;
     let bottom_y = shelf.y + shelf.height;
     let front_face_height = (shelf.height * theme.front_lip_ratio)
@@ -995,11 +1047,11 @@ fn compute_perspective_shelf_geometry(shelf: &Rect, theme: &Theme) -> Perspectiv
             y: lip_y,
         },
         lip_left: Point {
-            x: shelf.x + front_inset * 1.35,
+            x: shelf.x + front_inset,
             y: lip_y,
         },
         lip_right: Point {
-            x: shelf.x + shelf.width - front_inset * 1.35,
+            x: shelf.x + shelf.width - front_inset,
             y: lip_y,
         },
         base_left: Point {
@@ -1029,7 +1081,7 @@ fn leopard_undercarriage_path(cr: &Context, shelf: &Rect, theme: &Theme) {
     rounded_polygon_path(
         cr,
         &[geom.lip_left, geom.lip_right, geom.base_right, geom.base_left],
-        shelf.height * 0.16,
+        shelf.height * 0.10,
     );
 }
 
@@ -1503,51 +1555,63 @@ fn draw_leopard_running_indicator(
     active: bool,
 ) {
     let y = leopard_running_indicator_center_y(&layout.shelf, theme);
-    let width = if active { 10.0 } else { 7.2 };
-    let height = if active { 3.2 } else { 2.6 };
+    let width = if active { 12.0 } else { 8.8 };
+    let height = if active { 3.5 } else { 2.9 };
     let x = rect.center_x() - width / 2.0;
-    let color = theme.indicator.mix(theme.shelf_highlight, if active { 0.18 } else { 0.08 });
+    let color = theme
+        .indicator
+        .mix(theme.shelf_highlight, if active { 0.34 } else { 0.18 });
 
     cr.save().ok();
-    rounded_rect(cr, x - 2.2, y - height * 0.70, width + 4.4, height * 1.50, height * 0.92);
+    rounded_rect(cr, x - 3.0, y - height * 0.84, width + 6.0, height * 1.76, height);
     cr.set_source_rgba(
         color.red,
         color.green,
         color.blue,
-        if active { 0.20 } else { 0.12 },
+        if active { 0.28 } else { 0.16 },
     );
+    let _ = cr.fill();
+    cr.restore().ok();
+
+    cr.save().ok();
+    rounded_rect(cr, x - 1.4, y - height * 0.62, width + 2.8, height * 1.24, height * 0.70);
+    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.16 } else { 0.08 });
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
     rounded_rect(cr, x, y - height / 2.0, width, height, height / 2.0);
     let fill = LinearGradient::new(0.0, y - height / 2.0, 0.0, y + height / 2.0);
-    add_stop(&fill, 0.00, theme.shelf_highlight.with_alpha(if active { 0.38 } else { 0.20 }));
-    add_stop(&fill, 0.38, color.with_alpha(if active { 0.94 } else { 0.70 }));
+    add_stop(&fill, 0.00, theme.shelf_highlight.with_alpha(if active { 0.72 } else { 0.44 }));
+    add_stop(
+        &fill,
+        0.28,
+        color.with_alpha(if active { 1.0 } else { 0.92 }),
+    );
     add_stop(
         &fill,
         1.00,
         color
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.22)
-            .with_alpha(if active { 0.98 } else { 0.78 }),
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.16)
+            .with_alpha(if active { 1.0 } else { 0.88 }),
     );
     let _ = cr.set_source(&fill);
     let _ = cr.fill_preserve();
     cr.set_line_width(0.8);
-    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.32 } else { 0.18 });
+    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.44 } else { 0.28 });
     let _ = cr.stroke();
     cr.restore().ok();
 
     cr.save().ok();
     rounded_rect(
         cr,
-        x + width * 0.18,
-        y - height * 0.30,
-        width * 0.64,
-        height * 0.30,
-        height * 0.18,
+        x + width * 0.16,
+        y - height * 0.34,
+        width * 0.68,
+        height * 0.32,
+        height * 0.20,
     );
-    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.44 } else { 0.22 });
+    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.70 } else { 0.46 });
     let _ = cr.fill();
     cr.restore().ok();
 }
@@ -1585,7 +1649,7 @@ fn leopard_running_indicator_center_y(shelf: &Rect, theme: &Theme) -> f64 {
 
 fn leopard_active_indicator_center_y(shelf: &Rect, theme: &Theme) -> f64 {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
-    geom.bottom_y + (shelf.height * (0.08 + theme.depth * 0.01)).clamp(3.6, 5.4)
+    geom.bottom_y + (shelf.height * (0.13 + theme.depth * 0.01)).clamp(5.8, 7.6)
 }
 
 fn draw_badge(cr: &Context, rect: Rect, count: u32, color: Color) {
@@ -1963,7 +2027,7 @@ mod tests {
         let icon = layout.icons[0].rect;
         let floor_depth = geom.lip_y - (icon.y + icon.height);
 
-        assert!(floor_depth > icon.height * 0.30);
+        assert!(floor_depth > icon.height * 0.28);
     }
 
     #[test]
@@ -1990,6 +2054,39 @@ mod tests {
         let geom = compute_perspective_shelf_geometry(&layout.shelf, &theme);
 
         assert!(geom.bottom_y - geom.lip_y > layout.icons[0].rect.height * 0.10);
+    }
+
+    #[test]
+    fn leopard_front_body_reaches_outer_corner_join() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let mut surface = ImageSurface::create(Format::ARgb32, 240, 110).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let shelf = Rect {
+            x: 24.0,
+            y: 20.0,
+            width: 192.0,
+            height: 48.0,
+        };
+        let geom = compute_perspective_shelf_geometry(&shelf, &theme);
+
+        draw_procedural_shelf_layer(&cr, &shelf, &theme);
+        drop(cr);
+
+        assert!(
+            alpha_at(
+                &mut surface,
+                (geom.lip_left.x + 1.5).round() as i32,
+                (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.45).round() as i32,
+            ) > 0
+        );
+        assert!(
+            alpha_at(
+                &mut surface,
+                (geom.lip_right.x - 1.5).round() as i32,
+                (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.45).round() as i32,
+            ) > 0
+        );
     }
 
     #[test]
@@ -2128,11 +2225,13 @@ mod tests {
         let mut surface = ImageSurface::create(Format::ARgb32, 200, 80).unwrap();
         let cr = Context::new(&surface).unwrap();
         let y = leopard_active_indicator_center_y(&shelf, &theme);
+        let running_y = leopard_running_indicator_center_y(&shelf, &theme);
 
         draw_leopard_active_indicator(&cr, icon, &layout, &theme);
         drop(cr);
 
         assert!(y > shelf.y + shelf.height);
+        assert!(y > running_y + 4.5);
         assert!(
             alpha_at(
                 &mut surface,
