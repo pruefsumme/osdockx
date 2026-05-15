@@ -53,12 +53,20 @@ impl ThemePack {
     pub fn builtin(id: &str, config: &ThemeConfig) -> Self {
         let mut config = config.clone();
         config.preset = normalized_theme_id(id);
-        let renderer = config.renderer.unwrap_or(RenderMode::Scene3d);
+        let renderer = config.renderer.unwrap_or(match config.preset.as_str() {
+            "osx-glass-3d" => RenderMode::Scene3d,
+            _ => RenderMode::Procedural2d,
+        });
         config.renderer = Some(renderer);
         let theme = Theme::from_config(&config).with_renderer(renderer);
+        let name = match config.preset.as_str() {
+            "osx-glass-3d" => "OSX Glass 3D",
+            "osx-crystal-2.5d" => "OSX Crystal 2.5D",
+            _ => "OSDockX Theme",
+        };
         Self {
             id: config.preset.clone(),
-            name: "OSX Glass 3D".to_string(),
+            name: name.to_string(),
             renderer,
             root: None,
             assets: ThemeAssets::default(),
@@ -106,7 +114,7 @@ impl Default for ThemePackToml {
         Self {
             id: String::new(),
             name: String::new(),
-            renderer: RenderMode::Scene3d,
+            renderer: RenderMode::Procedural2d,
             theme: ThemeConfig::default(),
             assets: ThemeAssetsToml::default(),
         }
@@ -126,26 +134,47 @@ impl ThemeAssetsToml {
 }
 
 fn apply_user_theme_overrides(theme: &mut ThemeConfig, overrides: &ThemeConfig) {
-    theme.shelf_top = overrides.shelf_top.clone();
-    theme.shelf_bottom = overrides.shelf_bottom.clone();
-    theme.shelf_stroke = overrides.shelf_stroke.clone();
-    theme.shelf_highlight = overrides.shelf_highlight.clone();
-    theme.indicator = overrides.indicator.clone();
-    theme.badge = overrides.badge.clone();
-    theme.reflection_opacity = overrides.reflection_opacity;
-    theme.reflection_height = overrides.reflection_height;
-    theme.shelf_height_ratio = overrides.shelf_height_ratio;
-    theme.shelf_slant_ratio = overrides.shelf_slant_ratio;
-    theme.icon_gap_ratio = overrides.icon_gap_ratio;
-    theme.tilt = overrides.tilt;
-    theme.depth = overrides.depth;
-    theme.bevel = overrides.bevel;
-    theme.floor_opacity = overrides.floor_opacity;
-    theme.shadow_strength = overrides.shadow_strength;
-    theme.highlight_strength = overrides.highlight_strength;
-    theme.reflection_blur = overrides.reflection_blur;
-    theme.material_roughness = overrides.material_roughness;
-    theme.icon_floor_offset = overrides.icon_floor_offset;
+    let defaults = ThemeConfig::default();
+    macro_rules! override_string {
+        ($field:ident) => {
+            if overrides.$field != defaults.$field {
+                theme.$field = overrides.$field.clone();
+            }
+        };
+    }
+    macro_rules! override_copy {
+        ($field:ident) => {
+            if overrides.$field != defaults.$field {
+                theme.$field = overrides.$field;
+            }
+        };
+    }
+
+    override_string!(shelf_top);
+    override_string!(shelf_bottom);
+    override_string!(shelf_stroke);
+    override_string!(shelf_highlight);
+    override_copy!(shelf_style);
+    override_string!(indicator);
+    override_string!(badge);
+    override_copy!(reflection_opacity);
+    override_copy!(reflection_height);
+    override_copy!(shelf_height_ratio);
+    override_copy!(shelf_slant_ratio);
+    override_copy!(icon_gap_ratio);
+    override_copy!(side_margin_ratio);
+    override_copy!(shelf_horizon_ratio);
+    override_copy!(front_lip_ratio);
+    override_copy!(reflection_band_ratio);
+    override_copy!(tilt);
+    override_copy!(depth);
+    override_copy!(bevel);
+    override_copy!(floor_opacity);
+    override_copy!(shadow_strength);
+    override_copy!(highlight_strength);
+    override_copy!(reflection_blur);
+    override_copy!(material_roughness);
+    override_copy!(icon_floor_offset);
 }
 
 fn resolve_asset(root: Option<&Path>, asset: Option<&str>) -> Option<PathBuf> {
@@ -182,7 +211,7 @@ fn theme_roots() -> Vec<PathBuf> {
 
 fn normalized_theme_id(id: &str) -> String {
     match id.trim() {
-        "" | "osx-glass" => "osx-glass-3d".to_string(),
+        "" | "osx-glass" => "osx-crystal-2.5d".to_string(),
         value => value.to_string(),
     }
 }
@@ -190,9 +219,10 @@ fn normalized_theme_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Color;
 
     #[test]
-    fn builtin_migrates_old_osx_id() {
+    fn builtin_migrates_old_osx_id_to_crystal_default() {
         let mut config = ThemeConfig {
             preset: "osx-glass".to_string(),
             ..ThemeConfig::default()
@@ -201,8 +231,8 @@ mod tests {
 
         let pack = ThemePack::builtin(&config.preset, &config);
 
-        assert_eq!(pack.id, "osx-glass-3d");
-        assert_eq!(pack.renderer, RenderMode::Scene3d);
+        assert_eq!(pack.id, "osx-crystal-2.5d");
+        assert_eq!(pack.renderer, RenderMode::Procedural2d);
     }
 
     #[test]
@@ -239,6 +269,7 @@ icon_gap_ratio = 0.1
         let pack = ThemePack::from_path(&theme_path, &ThemeConfig::default()).unwrap();
 
         assert_eq!(pack.renderer, RenderMode::Texture2d);
+        assert_eq!(pack.theme.shelf_bottom, Color::rgba(0.0, 0.0, 0.0, 1.0));
         assert_eq!(
             pack.assets.fallback_texture,
             Some(dir.path().join("assets/shelf.png"))

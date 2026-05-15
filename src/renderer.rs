@@ -1,4 +1,4 @@
-use crate::config::DockConfig;
+use crate::config::{DockConfig, ShelfStyle};
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
 use crate::model::{DockItem, DockModel, WindowIcon};
 use crate::theme::{Color, Theme};
@@ -88,29 +88,28 @@ impl Renderer {
     pub fn reserved_thickness(model: &DockModel, config: &DockConfig, theme: &Theme) -> u32 {
         let _ = model;
         let icon_size = config.icon_size as f64;
-        (icon_size + icon_size * theme.shelf_height_ratio * 0.72 + 8.0).ceil() as u32
+        let shelf_height = icon_size * theme.shelf_height_ratio;
+        let visible_shelf = shelf_height * (1.0 - theme.shelf_horizon_ratio);
+        (icon_size + visible_shelf + 12.0).ceil() as u32
     }
 
     pub fn visual_regions(
         model: &DockModel,
         config: &DockConfig,
         theme: &Theme,
-        _hover: Option<Point>,
+        hover: Option<Point>,
     ) -> Vec<Rect> {
         let params = layout_params(config, theme);
-        let layout = compute_layout(model, None, params);
+        let layout = compute_layout(model, hover, params);
         let icon_expansion = config.icon_size as f64 * config.zoom_strength + 10.0;
         let mut regions = Vec::with_capacity(layout.icons.len() * 2 + 4);
-        regions.push(Rect {
-            x: 0.0,
-            y: 0.0,
-            width: layout.size.0 as f64,
-            height: params.label_height + 10.0,
-        });
-        regions.push(expand(layout.shelf, 8.0));
+        regions.push(expand(layout.shelf, 5.0));
+        if theme.shelf_style == ShelfStyle::CrystalGlass && theme.reflection_opacity > 0.0 {
+            regions.push(expand(crystal_reflection_rect(&layout, theme), 3.0));
+        }
         for icon in &layout.icons {
             regions.push(expand(icon.rect, icon_expansion));
-            if theme.reflection_height > 0.0 {
+            if theme.reflection_height > 0.0 && theme.shelf_style != ShelfStyle::CrystalGlass {
                 regions.push(expand(
                     Rect {
                         x: icon.rect.x,
@@ -178,6 +177,14 @@ impl Renderer {
         shelf_layer: ShelfLayer,
     ) {
         clear(cr);
+        let mut crystal_icon_surface = if theme.shelf_style == ShelfStyle::CrystalGlass
+            && theme.reflection_opacity > 0.0
+            && shelf_layer != ShelfLayer::None
+        {
+            render_icon_surface(model, layout, icons)
+        } else {
+            None
+        };
         match shelf_layer {
             ShelfLayer::None => {}
             ShelfLayer::Procedural => draw_procedural_shelf_layer(cr, &layout.shelf, theme),
@@ -187,7 +194,11 @@ impl Renderer {
                 }
             }
         }
-        draw_reflections(cr, model, layout, theme, icons);
+        if let Some(icon_surface) = crystal_icon_surface.as_mut() {
+            draw_crystal_reflections(cr, layout, theme, icon_surface);
+        } else {
+            draw_reflections(cr, model, layout, theme, icons);
+        }
         draw_icons(cr, model, layout, theme, icons);
         draw_hover_label(cr, model, layout);
     }
@@ -246,6 +257,9 @@ fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
         gap: icon_size * theme.icon_gap_ratio,
         reflection_height: icon_size * theme.reflection_height,
         shelf_height: icon_size * theme.shelf_height_ratio,
+        side_margin: icon_size * theme.side_margin_ratio,
+        shelf_horizon_ratio: theme.shelf_horizon_ratio,
+        icon_floor_offset: icon_size * theme.icon_floor_offset,
         label_height: 24.0_f64.max(icon_size * 0.34),
     }
 }
@@ -276,13 +290,13 @@ fn draw_shadow(cr: &Context, shelf: &Rect) {
     cr.save().ok();
     rounded_rect(
         cr,
-        shelf.x + shelf.height * 0.18,
-        shelf.y + shelf.height * 0.58,
-        shelf.width - shelf.height * 0.36,
-        shelf.height * 0.54,
-        shelf.height * 0.18,
+        shelf.x + shelf.height * 0.14,
+        shelf.y + shelf.height * 0.70,
+        shelf.width - shelf.height * 0.28,
+        shelf.height * 0.46,
+        shelf.height * 0.16,
     );
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.22);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.28);
     let _ = cr.fill();
     cr.restore().ok();
 }
@@ -308,6 +322,150 @@ fn draw_texture_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) -> bool {
 }
 
 fn draw_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
+    match theme.shelf_style {
+        ShelfStyle::CrystalGlass => draw_crystal_shelf(cr, shelf, theme),
+        ShelfStyle::LegacyGlass => draw_legacy_shelf(cr, shelf, theme),
+    }
+}
+
+fn draw_crystal_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.save().ok();
+
+    cr.move_to(shelf.x + geom.slant, shelf.y);
+    cr.line_to(shelf.x + shelf.width - geom.slant, shelf.y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
+    cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
+    cr.close_path();
+    let top_gradient = LinearGradient::new(0.0, shelf.y, 0.0, geom.horizon_y);
+    add_stop(
+        &top_gradient,
+        0.00,
+        theme
+            .shelf_highlight
+            .mix(theme.shelf_top, 0.30)
+            .with_alpha(1.0),
+    );
+    add_stop(&top_gradient, 0.28, theme.shelf_top.with_alpha(1.0));
+    add_stop(
+        &top_gradient,
+        1.00,
+        theme
+            .shelf_bottom
+            .mix(theme.shelf_top, 0.34)
+            .with_alpha(1.0),
+    );
+    let _ = cr.set_source(&top_gradient);
+    let _ = cr.fill_preserve();
+    cr.set_line_width(1.0);
+    set_color(cr, theme.shelf_stroke.with_alpha(0.92));
+    let _ = cr.stroke();
+
+    crystal_floor_path(cr, shelf, theme);
+    let face_gradient = LinearGradient::new(0.0, geom.horizon_y, 0.0, geom.bottom_y);
+    add_stop(
+        &face_gradient,
+        0.00,
+        theme
+            .shelf_bottom
+            .mix(theme.shelf_top, 0.30)
+            .with_alpha(1.0),
+    );
+    add_stop(&face_gradient, 0.42, theme.shelf_bottom.with_alpha(1.0));
+    add_stop(
+        &face_gradient,
+        1.00,
+        theme
+            .shelf_bottom
+            .mix(
+                Color::rgba(0.03, 0.05, 0.08, 1.0),
+                0.50 + theme.depth * 0.18,
+            )
+            .with_alpha(1.0),
+    );
+    let _ = cr.set_source(&face_gradient);
+    let _ = cr.fill();
+
+    draw_crystal_side_facet(cr, shelf, theme, true);
+    draw_crystal_side_facet(cr, shelf, theme, false);
+
+    cr.move_to(shelf.x + 2.0, geom.lip_y);
+    cr.line_to(shelf.x + shelf.width - 2.0, geom.lip_y);
+    cr.line_to(shelf.x + shelf.width - 5.0, geom.bottom_y);
+    cr.line_to(shelf.x + 5.0, geom.bottom_y);
+    cr.close_path();
+    let lip_gradient = LinearGradient::new(0.0, geom.lip_y, 0.0, geom.bottom_y);
+    add_stop(
+        &lip_gradient,
+        0.00,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.02, 0.03, 0.04, 1.0), 0.48)
+            .with_alpha(1.0),
+    );
+    add_stop(&lip_gradient, 1.00, Color::rgba(0.02, 0.03, 0.04, 1.0));
+    let _ = cr.set_source(&lip_gradient);
+    let _ = cr.fill();
+
+    cr.move_to(shelf.x + geom.slant, shelf.y + 0.7);
+    cr.line_to(shelf.x + shelf.width - geom.slant, shelf.y + 0.7);
+    cr.set_line_width(1.5);
+    set_color(
+        cr,
+        theme
+            .shelf_highlight
+            .with_alpha(0.62 * theme.highlight_strength),
+    );
+    let _ = cr.stroke();
+
+    cr.move_to(shelf.x + geom.slant * 0.48, geom.horizon_y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.48, geom.horizon_y);
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.22 * theme.highlight_strength);
+    let _ = cr.stroke();
+
+    cr.move_to(shelf.x + 5.0, geom.bottom_y - 0.5);
+    cr.line_to(shelf.x + shelf.width - 5.0, geom.bottom_y - 0.5);
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.64);
+    let _ = cr.stroke();
+
+    cr.restore().ok();
+}
+
+fn draw_crystal_side_facet(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.save().ok();
+    if left {
+        cr.move_to(shelf.x + geom.slant, shelf.y);
+        cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
+        cr.line_to(shelf.x, geom.bottom_y);
+        cr.line_to(
+            shelf.x + geom.slant * 0.22,
+            geom.horizon_y + shelf.height * 0.10,
+        );
+    } else {
+        cr.move_to(shelf.x + shelf.width - geom.slant, shelf.y);
+        cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
+        cr.line_to(shelf.x + shelf.width, geom.bottom_y);
+        cr.line_to(
+            shelf.x + shelf.width - geom.slant * 0.22,
+            geom.horizon_y + shelf.height * 0.10,
+        );
+    }
+    cr.close_path();
+    set_color(
+        cr,
+        theme
+            .shelf_bottom
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.36)
+            .with_alpha(0.96),
+    );
+    let _ = cr.fill();
+    cr.restore().ok();
+}
+
+fn draw_legacy_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
     let slant = shelf.height * theme.shelf_slant_ratio;
     let horizon_y = shelf.y + shelf.height * 0.40;
     let bottom_y = shelf.y + shelf.height;
@@ -363,6 +521,136 @@ fn draw_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
     cr.restore().ok();
 }
 
+fn render_icon_surface(
+    model: &DockModel,
+    layout: &DockLayout,
+    icons: &mut IconCache,
+) -> Option<ImageSurface> {
+    let width = layout.size.0.max(1);
+    let height = layout.size.1.max(1);
+    let surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+    let cr = Context::new(&surface).ok()?;
+    draw_icon_art(&cr, model, layout, icons, 1.0);
+    surface.flush();
+    Some(surface)
+}
+
+fn draw_crystal_reflections(
+    cr: &Context,
+    layout: &DockLayout,
+    theme: &Theme,
+    icon_surface: &mut ImageSurface,
+) {
+    let reflection = crystal_reflection_rect(layout, theme);
+    if reflection.height <= 1.0 || reflection.width <= 1.0 {
+        return;
+    }
+
+    let horizon_y = crystal_shelf_geometry(&layout.shelf, theme).horizon_y;
+    let band_height = reflection.height.ceil().max(1.0) as i32;
+    let source_y = (horizon_y - band_height as f64).max(0.0).floor() as i32;
+    let Some(mirror) = mirrored_band_surface(icon_surface, source_y, band_height) else {
+        return;
+    };
+
+    cr.save().ok();
+    crystal_floor_path(cr, &layout.shelf, theme);
+    cr.clip();
+    cr.rectangle(
+        reflection.x,
+        reflection.y,
+        reflection.width,
+        reflection.height,
+    );
+    cr.clip();
+    if cr.set_source_surface(&mirror, 0.0, reflection.y).is_ok() {
+        let fade = LinearGradient::new(0.0, reflection.y, 0.0, reflection.y + reflection.height);
+        let alpha = theme.reflection_opacity.min(0.30);
+        fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha);
+        fade.add_color_stop_rgba(0.65, 1.0, 1.0, 1.0, alpha * 0.38);
+        fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+        let _ = cr.mask(&fade);
+    }
+    cr.restore().ok();
+}
+
+fn mirrored_band_surface(
+    source: &mut ImageSurface,
+    source_y: i32,
+    band_height: i32,
+) -> Option<ImageSurface> {
+    let width = source.width().max(1);
+    let source_height = source.height().max(1);
+    let source_y = source_y.clamp(0, source_height - 1);
+    let band_height = band_height.clamp(1, source_height - source_y);
+    let mut mirror = ImageSurface::create(Format::ARgb32, width, band_height).ok()?;
+    source.flush();
+
+    {
+        let source_stride = source.stride() as usize;
+        let mirror_stride = mirror.stride() as usize;
+        let row_bytes = width as usize * 4;
+        let source_data = source.data().ok()?;
+        let mut mirror_data = mirror.data().ok()?;
+        for y in 0..band_height as usize {
+            let src_y = source_y as usize + band_height as usize - 1 - y;
+            let src_start = src_y * source_stride;
+            let dst_start = y * mirror_stride;
+            mirror_data[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&source_data[src_start..src_start + row_bytes]);
+        }
+    }
+
+    mirror.mark_dirty();
+    Some(mirror)
+}
+
+fn crystal_reflection_rect(layout: &DockLayout, theme: &Theme) -> Rect {
+    let geom = crystal_shelf_geometry(&layout.shelf, theme);
+    let height = (layout.shelf.height * theme.reflection_band_ratio)
+        .min(geom.bottom_y - geom.horizon_y)
+        .max(0.0);
+    Rect {
+        x: layout.shelf.x,
+        y: geom.horizon_y,
+        width: layout.shelf.width,
+        height,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CrystalShelfGeometry {
+    slant: f64,
+    horizon_y: f64,
+    lip_y: f64,
+    bottom_y: f64,
+}
+
+fn crystal_shelf_geometry(shelf: &Rect, theme: &Theme) -> CrystalShelfGeometry {
+    let slant = shelf.height * theme.shelf_slant_ratio;
+    let horizon_y = shelf.y + shelf.height * theme.shelf_horizon_ratio;
+    let bottom_y = shelf.y + shelf.height;
+    let lip_height = (shelf.height * theme.front_lip_ratio)
+        .max(2.0)
+        .min(shelf.height * 0.34);
+    CrystalShelfGeometry {
+        slant,
+        horizon_y,
+        lip_y: bottom_y - lip_height,
+        bottom_y,
+    }
+}
+
+fn crystal_floor_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    cr.move_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
+    cr.line_to(shelf.x + shelf.width, geom.bottom_y);
+    cr.line_to(shelf.x, geom.bottom_y);
+    cr.close_path();
+}
+
 fn draw_reflections(
     cr: &Context,
     model: &DockModel,
@@ -407,20 +695,32 @@ fn draw_icons(
     theme: &Theme,
     icons: &mut IconCache,
 ) {
+    draw_icon_art(cr, model, layout, icons, 1.0);
     for icon in &layout.icons {
         let item = &model.items[icon.item_index];
-        cr.save().ok();
-        cr.translate(icon.rect.x, icon.rect.y);
-        cr.scale(icon.rect.width / icon.rect.height, 1.0);
-        draw_icon_source(cr, item, icon.rect.height as i32, icons, 1.0);
-        cr.restore().ok();
-
         if item.is_running() {
             draw_indicator(cr, icon.rect, theme.indicator, item.active);
         }
         if let Some(badge) = item.badge {
             draw_badge(cr, icon.rect, badge, theme.badge);
         }
+    }
+}
+
+fn draw_icon_art(
+    cr: &Context,
+    model: &DockModel,
+    layout: &DockLayout,
+    icons: &mut IconCache,
+    alpha: f64,
+) {
+    for icon in &layout.icons {
+        let item = &model.items[icon.item_index];
+        cr.save().ok();
+        cr.translate(icon.rect.x, icon.rect.y);
+        cr.scale(icon.rect.width / icon.rect.height, 1.0);
+        draw_icon_source(cr, item, icon.rect.height as i32, icons, alpha);
+        cr.restore().ok();
     }
 }
 
@@ -814,5 +1114,114 @@ mod tests {
 
         let data = surface.data().unwrap();
         assert!(data.iter().any(|byte| *byte != 0));
+    }
+
+    #[test]
+    fn reserved_thickness_stays_compact_for_crystal_theme() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel::default();
+
+        let reserved = Renderer::reserved_thickness(&model, &config.dock, &theme);
+
+        assert!(reserved < config.dock.icon_size + 40);
+    }
+
+    #[test]
+    fn crystal_shelf_has_transparent_top_corner_and_dark_lip() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let mut surface = ImageSurface::create(Format::ARgb32, 240, 110).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let shelf = Rect {
+            x: 24.0,
+            y: 20.0,
+            width: 192.0,
+            height: 48.0,
+        };
+
+        draw_procedural_shelf_layer(&cr, &shelf, &theme);
+        drop(cr);
+
+        assert_eq!(alpha_at(&mut surface, 25, 21), 0);
+        assert!(alpha_at(&mut surface, 120, 22) > 0);
+        assert_eq!(alpha_at(&mut surface, 120, 34), 255);
+        assert_eq!(alpha_at(&mut surface, 120, 66), 255);
+        assert!(brightness_at(&mut surface, 120, 66) < brightness_at(&mut surface, 120, 34));
+    }
+
+    #[test]
+    fn crystal_reflection_is_clipped_to_reflection_band() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let model = DockModel {
+            items: vec![DockItem {
+                id: "test.desktop".to_string(),
+                name: "Test".to_string(),
+                desktop_id: Some("test.desktop".to_string()),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: None,
+                pinned: true,
+                windows: Vec::new(),
+                active: false,
+                urgent: false,
+                badge: None,
+            }],
+        };
+        let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+        let mut icons = IconCache::disabled();
+        let mut icon_surface = render_icon_surface(&model, &layout, &mut icons).unwrap();
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let reflection = crystal_reflection_rect(&layout, &theme);
+
+        draw_crystal_reflections(&cr, &layout, &theme, &mut icon_surface);
+        drop(cr);
+
+        assert!(rect_has_alpha(&mut surface, reflection));
+        assert!(!rect_has_alpha(
+            &mut surface,
+            Rect {
+                x: reflection.x,
+                y: reflection.y + reflection.height + 1.0,
+                width: reflection.width,
+                height: 3.0,
+            }
+        ));
+    }
+
+    fn alpha_at(surface: &mut ImageSurface, x: i32, y: i32) -> u8 {
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        data[y as usize * stride + x as usize * 4 + 3]
+    }
+
+    fn brightness_at(surface: &mut ImageSurface, x: i32, y: i32) -> u16 {
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        let offset = y as usize * stride + x as usize * 4;
+        u16::from(data[offset]) + u16::from(data[offset + 1]) + u16::from(data[offset + 2])
+    }
+
+    fn rect_has_alpha(surface: &mut ImageSurface, rect: Rect) -> bool {
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let width = surface.width().max(0);
+        let height = surface.height().max(0);
+        let min_x = rect.x.max(0.0).floor() as i32;
+        let max_x = (rect.x + rect.width).min(width as f64).ceil() as i32;
+        let min_y = rect.y.max(0.0).floor() as i32;
+        let max_y = (rect.y + rect.height).min(height as f64).ceil() as i32;
+        let data = surface.data().unwrap();
+        (min_y..max_y).any(|y| {
+            (min_x..max_x).any(|x| {
+                let offset = y as usize * stride + x as usize * 4 + 3;
+                data[offset] != 0
+            })
+        })
     }
 }

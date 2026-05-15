@@ -50,6 +50,7 @@ struct Runtime {
     last_size: Option<(i32, i32)>,
     last_geometry: Option<DockGeometry>,
     last_shape_size: Option<(i32, i32)>,
+    last_shape_label: Option<usize>,
 }
 
 impl Runtime {
@@ -146,6 +147,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_size: None,
         last_geometry: None,
         last_shape_size: None,
+        last_shape_label: None,
     };
     runtime.refresh_model();
 
@@ -171,6 +173,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     gl_area.set_vexpand(false);
     gl_area.set_has_depth_buffer(true);
     gl_area.set_auto_render(false);
+    gl_area.set_visible(state.borrow().theme.renderer == RenderMode::Scene3d);
 
     let drawing = DrawingArea::new();
     drawing.add_css_class("osdock-surface");
@@ -213,6 +216,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_refresh(&state, &window, &drawing, &gl_area);
 
     window.present();
+    queue_gl_render_if_enabled(&state, &gl_area);
     Ok(())
 }
 
@@ -322,7 +326,7 @@ fn wire_motion(
                 }
             }
             sync_dock_window(&state, &window, &drawing, &gl_area, false);
-            gl_area.queue_render();
+            queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
             log_slow("motion", started.elapsed());
         });
@@ -340,7 +344,7 @@ fn wire_motion(
                 autohide = state.config.dock.autohide;
                 delay = state.config.dock.hide_delay_ms;
             }
-            gl_area.queue_render();
+            queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
 
             if autohide {
@@ -396,7 +400,7 @@ fn wire_refresh(
             state.refresh_model();
         }
         sync_dock_window(&state, &window, &drawing, &gl_area, true);
-        gl_area.queue_render();
+        queue_gl_render_if_enabled(&state, &gl_area);
         drawing.queue_draw();
         glib::ControlFlow::Continue
     });
@@ -477,12 +481,31 @@ fn sync_dock_window(
     }
 
     let mut state = state.borrow_mut();
+    gl_area.set_visible(state.theme.renderer == RenderMode::Scene3d);
     move_dock(&mut state);
-    if force_shape || size_changed || state.last_shape_size != Some(size) {
+    let shape_label = current_label_index(&state);
+    if force_shape
+        || size_changed
+        || state.last_shape_size != Some(size)
+        || state.last_shape_label != shape_label
+    {
         shape_dock(&mut state);
         state.last_shape_size = Some(size);
+        state.last_shape_label = shape_label;
     }
     log_slow("sync-window", started.elapsed());
+}
+
+fn current_label_index(state: &Runtime) -> Option<usize> {
+    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, state.hover)
+        .label
+        .map(|label| label.item_index)
+}
+
+fn queue_gl_render_if_enabled(state: &Rc<RefCell<Runtime>>, gl_area: &GLArea) {
+    if state.borrow().theme.renderer == RenderMode::Scene3d {
+        gl_area.queue_render();
+    }
 }
 
 fn shelf_layer_for(state: &Runtime) -> ShelfLayer {

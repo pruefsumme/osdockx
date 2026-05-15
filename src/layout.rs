@@ -64,6 +64,9 @@ pub struct LayoutParams {
     pub gap: f64,
     pub reflection_height: f64,
     pub shelf_height: f64,
+    pub side_margin: f64,
+    pub shelf_horizon_ratio: f64,
+    pub icon_floor_offset: f64,
     pub label_height: f64,
 }
 
@@ -71,16 +74,17 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
     let count = model.items.len();
     if count == 0 {
         let height = (params.shelf_height + 10.0).ceil() as i32;
+        let width = (params.side_margin.max(8.0) * 2.0 + 180.0).ceil() as i32;
         return DockLayout {
             icons: Vec::new(),
             label: None,
             shelf: Rect {
-                x: 8.0,
+                x: params.side_margin.max(8.0),
                 y: 5.0,
                 width: 180.0,
                 height: params.shelf_height,
             },
-            size: (196, height.max(64)),
+            size: (width, height.max(64)),
         };
     }
 
@@ -88,7 +92,8 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
     let influence = params.icon_size * 2.3;
     let rest_step = params.icon_size + params.gap;
     let content_width = rest_step * count as f64 - params.gap;
-    let padding = params.icon_size * max_scale * 0.30 + 12.0;
+    let zoom_padding = params.icon_size * params.zoom_strength * 0.40 + 8.0;
+    let padding = params.side_margin.max(zoom_padding);
     let width = content_width + padding * 2.0;
 
     let centers = (0..count)
@@ -106,7 +111,8 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
     let top_padding = 5.0;
     let baseline_y = top_padding + label_band + params.icon_size * (max_scale - 1.0);
     let icon_bottom = baseline_y + params.icon_size;
-    let shelf_y = icon_bottom - params.icon_size * 0.12;
+    let shelf_y =
+        icon_bottom + params.icon_floor_offset - params.shelf_height * params.shelf_horizon_ratio;
     let height = shelf_y + params.shelf_height + 5.0;
 
     let mut icons = Vec::with_capacity(count);
@@ -143,9 +149,9 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
         icons,
         label,
         shelf: Rect {
-            x: 10.0,
+            x: params.side_margin * 0.35,
             y: shelf_y,
-            width: width - 20.0,
+            width: width - params.side_margin * 0.70,
             height: params.shelf_height,
         },
         size: (width.ceil() as i32, height.ceil() as i32),
@@ -193,6 +199,9 @@ mod tests {
             gap: 10.0,
             reflection_height: 24.0,
             shelf_height: 28.0,
+            side_margin: 38.0,
+            shelf_horizon_ratio: 0.50,
+            icon_floor_offset: 0.0,
             label_height: 24.0,
         };
         let rest = compute_layout(&model, None, params);
@@ -220,11 +229,39 @@ mod tests {
             gap: 8.0,
             reflection_height: 27.0,
             shelf_height: 22.0,
+            side_margin: 38.0,
+            shelf_horizon_ratio: 0.50,
+            icon_floor_offset: 0.0,
             label_height: 24.0,
         };
         let layout = compute_layout(&model, Some(Point { x: 160.0, y: 40.0 }), params);
 
         assert!(layout.size.1 < 190);
         assert!(layout.shelf.y > layout.icons[0].rect.y);
+    }
+
+    #[test]
+    fn shelf_horizon_aligns_with_resting_icon_floor() {
+        let model = DockModel {
+            items: vec![item("a"), item("b")],
+        };
+        let params = LayoutParams {
+            icon_size: 64.0,
+            zoom_strength: 0.72,
+            gap: 8.0,
+            reflection_height: 27.0,
+            shelf_height: 24.0,
+            side_margin: 64.0 * 0.60,
+            shelf_horizon_ratio: 0.50,
+            icon_floor_offset: 0.0,
+            label_height: 24.0,
+        };
+
+        let layout = compute_layout(&model, None, params);
+        let horizon_y = layout.shelf.y + layout.shelf.height * params.shelf_horizon_ratio;
+        let icon_bottom = layout.icons[0].rect.y + layout.icons[0].rect.height;
+
+        assert!((horizon_y - icon_bottom).abs() < 0.001);
+        assert!(layout.icons[0].rect.x >= params.side_margin * 0.20);
     }
 }

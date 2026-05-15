@@ -503,22 +503,6 @@ void main() {
 }
 "#;
 
-trait ColorMix {
-    fn mix(self, other: Color, amount: f64) -> Color;
-}
-
-impl ColorMix for Color {
-    fn mix(self, other: Color, amount: f64) -> Color {
-        let amount = amount.clamp(0.0, 1.0);
-        Color::rgba(
-            self.red + (other.red - self.red) * amount,
-            self.green + (other.green - self.green) * amount,
-            self.blue + (other.blue - self.blue) * amount,
-            self.alpha + (other.alpha - self.alpha) * amount,
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,11 +511,5 @@ mod tests {
     fn f32_bytes_preserves_length() {
         let values = [0.0_f32, 1.0, -1.0, 0.5];
         assert_eq!(f32_bytes(&values).len(), values.len() * 4);
-    }
-
-    #[test]
-    fn color_mix_interpolates_channels() {
-        let mixed = Color::rgba(0.0, 0.0, 0.0, 1.0).mix(Color::rgba(1.0, 0.5, 0.0, 0.5), 0.5);
-        assert_eq!(mixed, Color::rgba(0.5, 0.25, 0.0, 0.75));
     }
 }
