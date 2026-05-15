@@ -695,6 +695,7 @@ name = "osdockx"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cairo-rs",
  "directories",
  "gdk4-x11",
  "gio-unix",

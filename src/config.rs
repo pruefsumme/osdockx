@@ -135,30 +135,30 @@ impl Default for ThemeConfig {
             preset: "leopard".to_string(),
             renderer: Some(RenderMode::Procedural2d),
             shelf_style: ShelfStyle::LeopardPlank,
-            shelf_top: "#f2f7fdff".to_string(),
-            shelf_bottom: "#9aadbeff".to_string(),
-            shelf_stroke: "#73889cff".to_string(),
+            shelf_top: "#f4f8fdff".to_string(),
+            shelf_bottom: "#b6c4d0ff".to_string(),
+            shelf_stroke: "#6f8192ff".to_string(),
             shelf_highlight: "#ffffffff".to_string(),
             indicator: "#6fd3ffff".to_string(),
             badge: "#e4202dff".to_string(),
-            reflection_opacity: 0.34,
-            reflection_height: 0.66,
-            shelf_height_ratio: 0.82,
-            shelf_slant_ratio: 0.50,
+            reflection_opacity: 0.24,
+            reflection_height: 0.46,
+            shelf_height_ratio: 0.62,
+            shelf_slant_ratio: 0.42,
             icon_gap_ratio: 0.04,
             side_margin_ratio: 0.82,
-            shelf_horizon_ratio: 0.50,
-            front_lip_ratio: 0.14,
-            reflection_band_ratio: 0.20,
-            tilt: 0.64,
-            depth: 0.76,
-            bevel: 0.16,
-            floor_opacity: 0.78,
-            shadow_strength: 0.36,
-            highlight_strength: 0.74,
-            reflection_blur: 0.32,
-            material_roughness: 0.18,
-            icon_floor_offset: 0.0,
+            shelf_horizon_ratio: 0.62,
+            front_lip_ratio: 0.18,
+            reflection_band_ratio: 0.16,
+            tilt: 0.52,
+            depth: 0.58,
+            bevel: 0.10,
+            floor_opacity: 0.66,
+            shadow_strength: 0.24,
+            highlight_strength: 0.58,
+            reflection_blur: 0.44,
+            material_roughness: 0.10,
+            icon_floor_offset: -0.02,
             shelf_texture: None,
             shelf_overlay: None,
             noise_texture: None,
@@ -371,15 +371,15 @@ const fn default_side_margin_ratio() -> f64 {
 }
 
 const fn default_shelf_horizon_ratio() -> f64 {
-    0.50
+    0.62
 }
 
 const fn default_front_lip_ratio() -> f64 {
-    0.14
+    0.18
 }
 
 const fn default_reflection_band_ratio() -> f64 {
-    0.20
+    0.16
 }
 
 #[cfg(test)]
@@ -455,12 +455,13 @@ mod tests {
         };
 
         let config = config.normalized();
+        let defaults = ThemeConfig::default();
 
         assert_eq!(config.theme.preset, "leopard");
         assert_eq!(config.theme.renderer, Some(RenderMode::Procedural2d));
         assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
-        assert_eq!(config.theme.shelf_height_ratio, 0.82);
-        assert_eq!(config.theme.icon_floor_offset, 0.0);
+        assert_eq!(config.theme.shelf_height_ratio, defaults.shelf_height_ratio);
+        assert_eq!(config.theme.icon_floor_offset, defaults.icon_floor_offset);
     }
 
     #[test]
@@ -516,13 +517,14 @@ mod tests {
         };
 
         let config = config.normalized();
+        let defaults = ThemeConfig::default();
 
         assert_eq!(config.theme.preset, "leopard");
         assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
-        assert_eq!(config.theme.shelf_height_ratio, 0.82);
-        assert_eq!(config.theme.shelf_horizon_ratio, 0.50);
-        assert_eq!(config.theme.shelf_top, "#f2f7fdff");
-        assert_eq!(config.theme.shelf_bottom, "#9aadbeff");
+        assert_eq!(config.theme.shelf_height_ratio, defaults.shelf_height_ratio);
+        assert_eq!(config.theme.shelf_horizon_ratio, defaults.shelf_horizon_ratio);
+        assert_eq!(config.theme.shelf_top, defaults.shelf_top);
+        assert_eq!(config.theme.shelf_bottom, defaults.shelf_bottom);
     }
 
     #[test]
@@ -564,10 +566,11 @@ mod tests {
         };
 
         let config = config.normalized();
+        let defaults = ThemeConfig::default();
 
         assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
-        assert_eq!(config.theme.shelf_height_ratio, 0.82);
-        assert_eq!(config.theme.reflection_opacity, 0.34);
+        assert_eq!(config.theme.shelf_height_ratio, defaults.shelf_height_ratio);
+        assert_eq!(config.theme.reflection_opacity, defaults.reflection_opacity);
     }
 
     #[test]

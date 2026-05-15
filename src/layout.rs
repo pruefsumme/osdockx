@@ -114,6 +114,7 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
     let shelf_y =
         icon_bottom + params.icon_floor_offset - params.shelf_height * params.shelf_horizon_ratio;
     let height = shelf_y + params.shelf_height + 5.0;
+    let shelf_overhang = params.side_margin * 0.78;
 
     let icons = layout_icons_on_floor_plane(&centers, &scales, params.icon_size, icon_bottom);
 
@@ -136,9 +137,9 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
         icons,
         label,
         shelf: Rect {
-            x: params.side_margin * 0.35,
+            x: (padding - shelf_overhang).max(0.0),
             y: shelf_y,
-            width: width - params.side_margin * 0.70,
+            width: content_width + shelf_overhang * 2.0,
             height: params.shelf_height,
         },
         size: (width.ceil() as i32, height.ceil() as i32),
@@ -278,5 +279,34 @@ mod tests {
         assert!((horizon_y - icon_bottom - params.icon_floor_offset).abs() < 0.001);
         assert!(layout.shelf.x < layout.icons[0].rect.x);
         assert!(layout.shelf.x + layout.shelf.width > last_icon.rect.x + last_icon.rect.width);
+    }
+
+    #[test]
+    fn shelf_adds_side_overhang_without_changing_icon_spacing() {
+        let model = DockModel {
+            items: vec![item("a"), item("b"), item("c")],
+        };
+        let params = LayoutParams {
+            icon_size: 64.0,
+            zoom_strength: 0.72,
+            gap: 8.0,
+            reflection_height: 27.0,
+            shelf_height: 24.0,
+            side_margin: 64.0 * 0.82,
+            shelf_horizon_ratio: 0.50,
+            icon_floor_offset: 0.0,
+            label_height: 24.0,
+        };
+
+        let layout = compute_layout(&model, None, params);
+        let first_icon = &layout.icons[0].rect;
+        let last_icon = &layout.icons[2].rect;
+        let left_overhang = first_icon.x - layout.shelf.x;
+        let right_overhang = (layout.shelf.x + layout.shelf.width) - (last_icon.x + last_icon.width);
+        let icon_spacing = layout.icons[1].rect.center_x() - layout.icons[0].rect.center_x();
+
+        assert!(left_overhang > params.side_margin * 0.70);
+        assert!((left_overhang - right_overhang).abs() < 0.001);
+        assert!((icon_spacing - (params.icon_size + params.gap)).abs() < 0.001);
     }
 }
