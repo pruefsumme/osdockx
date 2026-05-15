@@ -333,19 +333,19 @@ fn approx(left: f64, right: f64) -> bool {
 }
 
 const fn default_side_margin_ratio() -> f64 {
-    0.60
+    0.68
 }
 
 const fn default_shelf_horizon_ratio() -> f64 {
-    0.50
+    0.44
 }
 
 const fn default_front_lip_ratio() -> f64 {
-    0.10
+    0.22
 }
 
 const fn default_reflection_band_ratio() -> f64 {
-    0.42
+    0.34
 }
 
 #[cfg(test)]
