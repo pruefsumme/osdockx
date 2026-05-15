@@ -104,12 +104,12 @@ impl Renderer {
         let icon_expansion = config.icon_size as f64 * config.zoom_strength + 10.0;
         let mut regions = Vec::with_capacity(layout.icons.len() * 2 + 4);
         regions.push(expand(layout.shelf, 5.0));
-        if theme.shelf_style == ShelfStyle::CrystalGlass && theme.reflection_opacity > 0.0 {
-            regions.push(expand(crystal_reflection_rect(&layout, theme), 3.0));
+        if uses_shelf_plane_reflections(theme) && theme.reflection_opacity > 0.0 {
+            regions.push(expand(shelf_plane_reflection_rect(&layout, theme), 3.0));
         }
         for icon in &layout.icons {
             regions.push(expand(icon.rect, icon_expansion));
-            if theme.reflection_height > 0.0 && theme.shelf_style != ShelfStyle::CrystalGlass {
+            if theme.reflection_height > 0.0 && !uses_shelf_plane_reflections(theme) {
                 regions.push(expand(
                     Rect {
                         x: icon.rect.x,
@@ -177,7 +177,7 @@ impl Renderer {
         shelf_layer: ShelfLayer,
     ) {
         clear(cr);
-        let mut crystal_icon_surface = if theme.shelf_style == ShelfStyle::CrystalGlass
+        let mut shelf_icon_surface = if uses_shelf_plane_reflections(theme)
             && theme.reflection_opacity > 0.0
             && shelf_layer != ShelfLayer::None
         {
@@ -194,8 +194,8 @@ impl Renderer {
                 }
             }
         }
-        if let Some(icon_surface) = crystal_icon_surface.as_mut() {
-            draw_crystal_reflections(cr, layout, theme, icon_surface);
+        if let Some(icon_surface) = shelf_icon_surface.as_mut() {
+            draw_shelf_plane_reflections(cr, layout, theme, icon_surface);
         } else {
             draw_reflections(cr, model, layout, theme, icons);
         }
@@ -323,89 +323,121 @@ fn draw_texture_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) -> bool {
 
 fn draw_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
     match theme.shelf_style {
+        ShelfStyle::LeopardPlank => draw_leopard_plank(cr, shelf, theme),
         ShelfStyle::CrystalGlass => draw_crystal_shelf(cr, shelf, theme),
         ShelfStyle::LegacyGlass => draw_legacy_shelf(cr, shelf, theme),
     }
+}
+
+fn draw_leopard_plank(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.save().ok();
+
+    let front_material = theme
+        .shelf_bottom
+        .mix(theme.shelf_top, 0.18)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, front_material, 0.055, |cr| {
+        leopard_front_path(cr, shelf, theme);
+    });
+
+    draw_leopard_side_facet(cr, shelf, theme, true);
+    draw_leopard_side_facet(cr, shelf, theme, false);
+
+    let lip_material = theme
+        .shelf_bottom
+        .mix(Color::rgba(0.03, 0.04, 0.05, 1.0), 0.34)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, lip_material, 0.035, |cr| {
+        leopard_lip_path(cr, shelf, theme);
+    });
+
+    let top_material = theme
+        .shelf_top
+        .mix(theme.shelf_bottom, 0.16)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, top_material, 0.060, |cr| {
+        leopard_top_path(cr, shelf, theme);
+    });
+    leopard_top_path(cr, shelf, theme);
+    cr.set_line_width(1.0);
+    set_color(cr, theme.shelf_stroke.with_alpha(0.74));
+    let _ = cr.stroke();
+
+    cr.move_to(shelf.x + geom.slant * 0.88, shelf.y + 0.7);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.88, shelf.y + 0.7);
+    cr.set_line_width(1.2);
+    set_color(
+        cr,
+        theme
+            .shelf_highlight
+            .with_alpha(0.56 * theme.highlight_strength),
+    );
+    let _ = cr.stroke();
+
+    cr.move_to(shelf.x + geom.slant * 0.18, geom.horizon_y + 0.4);
+    cr.line_to(
+        shelf.x + shelf.width - geom.slant * 0.18,
+        geom.horizon_y + 0.4,
+    );
+    cr.set_line_width(1.0);
+    set_color(
+        cr,
+        theme
+            .shelf_highlight
+            .with_alpha(0.18 * theme.highlight_strength),
+    );
+    let _ = cr.stroke();
+
+    cr.move_to(shelf.x + 5.0, geom.lip_y + 0.5);
+    cr.line_to(shelf.x + shelf.width - 5.0, geom.lip_y + 0.5);
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(0.02, 0.03, 0.04, 0.28);
+    let _ = cr.stroke();
+
+    cr.move_to(shelf.x + 4.5, geom.bottom_y - 0.6);
+    cr.line_to(shelf.x + shelf.width - 4.5, geom.bottom_y - 0.6);
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.46);
+    let _ = cr.stroke();
+
+    cr.restore().ok();
 }
 
 fn draw_crystal_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
     let geom = crystal_shelf_geometry(shelf, theme);
     cr.save().ok();
 
-    cr.move_to(shelf.x + geom.slant, shelf.y);
-    cr.line_to(shelf.x + shelf.width - geom.slant, shelf.y);
-    cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
-    cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
-    cr.close_path();
-    let top_gradient = LinearGradient::new(0.0, shelf.y, 0.0, geom.horizon_y);
-    add_stop(
-        &top_gradient,
-        0.00,
-        theme
-            .shelf_highlight
-            .mix(theme.shelf_top, 0.30)
-            .with_alpha(1.0),
-    );
-    add_stop(&top_gradient, 0.28, theme.shelf_top.with_alpha(1.0));
-    add_stop(
-        &top_gradient,
-        1.00,
-        theme
-            .shelf_bottom
-            .mix(theme.shelf_top, 0.34)
-            .with_alpha(1.0),
-    );
-    let _ = cr.set_source(&top_gradient);
-    let _ = cr.fill_preserve();
+    let top_material = theme
+        .shelf_top
+        .mix(theme.shelf_bottom, 0.38)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, top_material, 0.24, |cr| {
+        crystal_top_path(cr, shelf, theme);
+    });
+    crystal_top_path(cr, shelf, theme);
     cr.set_line_width(1.0);
-    set_color(cr, theme.shelf_stroke.with_alpha(0.92));
+    set_color(cr, theme.shelf_stroke.with_alpha(0.86));
     let _ = cr.stroke();
 
-    crystal_floor_path(cr, shelf, theme);
-    let face_gradient = LinearGradient::new(0.0, geom.horizon_y, 0.0, geom.bottom_y);
-    add_stop(
-        &face_gradient,
-        0.00,
-        theme
-            .shelf_bottom
-            .mix(theme.shelf_top, 0.30)
-            .with_alpha(1.0),
-    );
-    add_stop(&face_gradient, 0.42, theme.shelf_bottom.with_alpha(1.0));
-    add_stop(
-        &face_gradient,
-        1.00,
-        theme
-            .shelf_bottom
-            .mix(
-                Color::rgba(0.03, 0.05, 0.08, 1.0),
-                0.50 + theme.depth * 0.18,
-            )
-            .with_alpha(1.0),
-    );
-    let _ = cr.set_source(&face_gradient);
-    let _ = cr.fill();
+    let face_material = theme
+        .shelf_bottom
+        .mix(theme.shelf_top, 0.10)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, face_material, 0.18, |cr| {
+        crystal_floor_path(cr, shelf, theme);
+    });
 
     draw_crystal_side_facet(cr, shelf, theme, true);
     draw_crystal_side_facet(cr, shelf, theme, false);
 
-    cr.move_to(shelf.x + 2.0, geom.lip_y);
-    cr.line_to(shelf.x + shelf.width - 2.0, geom.lip_y);
-    cr.line_to(shelf.x + shelf.width - 5.0, geom.bottom_y);
-    cr.line_to(shelf.x + 5.0, geom.bottom_y);
-    cr.close_path();
-    let lip_gradient = LinearGradient::new(0.0, geom.lip_y, 0.0, geom.bottom_y);
-    add_stop(
-        &lip_gradient,
-        0.00,
-        theme
-            .shelf_bottom
-            .mix(Color::rgba(0.02, 0.03, 0.04, 1.0), 0.48)
-            .with_alpha(1.0),
-    );
-    add_stop(&lip_gradient, 1.00, Color::rgba(0.02, 0.03, 0.04, 1.0));
-    let _ = cr.set_source(&lip_gradient);
-    let _ = cr.fill();
+    let lip_material = theme
+        .shelf_bottom
+        .mix(Color::rgba(0.02, 0.03, 0.04, 1.0), 0.56)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, lip_material, 0.10, |cr| {
+        crystal_lip_path(cr, shelf, theme);
+    });
 
     cr.move_to(shelf.x + geom.slant, shelf.y + 0.7);
     cr.line_to(shelf.x + shelf.width - geom.slant, shelf.y + 0.7);
@@ -434,34 +466,80 @@ fn draw_crystal_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
 }
 
 fn draw_crystal_side_facet(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
-    let geom = crystal_shelf_geometry(shelf, theme);
-    cr.save().ok();
-    if left {
-        cr.move_to(shelf.x + geom.slant, shelf.y);
-        cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
-        cr.line_to(shelf.x, geom.bottom_y);
-        cr.line_to(
-            shelf.x + geom.slant * 0.22,
-            geom.horizon_y + shelf.height * 0.10,
-        );
-    } else {
-        cr.move_to(shelf.x + shelf.width - geom.slant, shelf.y);
-        cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
-        cr.line_to(shelf.x + shelf.width, geom.bottom_y);
-        cr.line_to(
-            shelf.x + shelf.width - geom.slant * 0.22,
-            geom.horizon_y + shelf.height * 0.10,
-        );
-    }
-    cr.close_path();
-    set_color(
-        cr,
-        theme
-            .shelf_bottom
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.36)
-            .with_alpha(0.96),
-    );
+    let side_material = theme
+        .shelf_bottom
+        .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.36)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, side_material, 0.12, |cr| {
+        crystal_side_path(cr, shelf, theme, left);
+    });
+}
+
+fn draw_leopard_side_facet(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
+    let side_material = theme
+        .shelf_bottom
+        .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.18)
+        .with_alpha(1.0);
+    fill_crystal_material(cr, shelf, side_material, 0.040, |cr| {
+        leopard_side_path(cr, shelf, theme, left);
+    });
+}
+
+fn fill_crystal_material<F>(
+    cr: &Context,
+    bounds: &Rect,
+    base: Color,
+    texture_strength: f64,
+    path: F,
+) where
+    F: Fn(&Context),
+{
+    path(cr);
+    set_color(cr, base);
     let _ = cr.fill();
+
+    cr.save().ok();
+    path(cr);
+    cr.clip();
+    draw_plank_texture(cr, bounds, base, texture_strength);
+    cr.restore().ok();
+}
+
+fn draw_plank_texture(cr: &Context, bounds: &Rect, base: Color, strength: f64) {
+    if strength <= 0.0 {
+        return;
+    }
+
+    cr.save().ok();
+    cr.set_line_width(1.0);
+    let min_y = bounds.y.floor() as i32;
+    let max_y = (bounds.y + bounds.height).ceil() as i32;
+    for y in min_y..=max_y {
+        let noise = (((y * 37 + 17).rem_euclid(23)) as f64 / 22.0) - 0.5;
+        let mix = (noise.abs() * 0.075 + 0.018).min(0.09);
+        let color = if noise >= 0.0 {
+            base.mix(Color::rgba(1.0, 1.0, 1.0, 1.0), mix)
+        } else {
+            base.mix(Color::rgba(0.0, 0.0, 0.0, 1.0), mix)
+        };
+        set_color(cr, color.with_alpha(strength * (0.22 + noise.abs() * 0.16)));
+        let yy = y as f64 + 0.5;
+        cr.move_to(bounds.x, yy);
+        cr.line_to(bounds.x + bounds.width, yy);
+        let _ = cr.stroke();
+    }
+
+    cr.set_line_width(1.0);
+    let min_x = bounds.x.floor() as i32;
+    let max_x = (bounds.x + bounds.width).ceil() as i32;
+    for x in (min_x..=max_x).step_by(13) {
+        let alpha = strength * 0.018;
+        cr.set_source_rgba(1.0, 1.0, 1.0, alpha);
+        let xx = x as f64 + 0.5;
+        cr.move_to(xx, bounds.y);
+        cr.line_to(xx, bounds.y + bounds.height);
+        let _ = cr.stroke();
+    }
     cr.restore().ok();
 }
 
@@ -535,13 +613,13 @@ fn render_icon_surface(
     Some(surface)
 }
 
-fn draw_crystal_reflections(
+fn draw_shelf_plane_reflections(
     cr: &Context,
     layout: &DockLayout,
     theme: &Theme,
     icon_surface: &mut ImageSurface,
 ) {
-    let reflection = crystal_reflection_rect(layout, theme);
+    let reflection = shelf_plane_reflection_rect(layout, theme);
     if reflection.height <= 1.0 || reflection.width <= 1.0 {
         return;
     }
@@ -554,7 +632,7 @@ fn draw_crystal_reflections(
     };
 
     cr.save().ok();
-    crystal_floor_path(cr, &layout.shelf, theme);
+    shelf_plane_reflection_clip_path(cr, &layout.shelf, theme);
     cr.clip();
     cr.rectangle(
         reflection.x,
@@ -566,9 +644,15 @@ fn draw_crystal_reflections(
     if cr.set_source_surface(&mirror, 0.0, reflection.y).is_ok() {
         let fade = LinearGradient::new(0.0, reflection.y, 0.0, reflection.y + reflection.height);
         let alpha = theme.reflection_opacity.min(0.30);
-        fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha);
-        fade.add_color_stop_rgba(0.65, 1.0, 1.0, 1.0, alpha * 0.38);
-        fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+        if theme.shelf_style == ShelfStyle::LeopardPlank {
+            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha * 0.12);
+            fade.add_color_stop_rgba(0.58, 1.0, 1.0, 1.0, alpha * 0.42);
+            fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, alpha);
+        } else {
+            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha);
+            fade.add_color_stop_rgba(0.65, 1.0, 1.0, 1.0, alpha * 0.38);
+            fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
+        }
         let _ = cr.mask(&fade);
     }
     cr.restore().ok();
@@ -605,17 +689,46 @@ fn mirrored_band_surface(
     Some(mirror)
 }
 
-fn crystal_reflection_rect(layout: &DockLayout, theme: &Theme) -> Rect {
+fn shelf_plane_reflection_rect(layout: &DockLayout, theme: &Theme) -> Rect {
     let geom = crystal_shelf_geometry(&layout.shelf, theme);
-    let height = (layout.shelf.height * theme.reflection_band_ratio)
-        .min(geom.bottom_y - geom.horizon_y)
-        .max(0.0);
-    Rect {
-        x: layout.shelf.x,
-        y: geom.horizon_y,
-        width: layout.shelf.width,
-        height,
+    match theme.shelf_style {
+        ShelfStyle::LeopardPlank => {
+            let height = (layout.shelf.height * theme.reflection_band_ratio)
+                .min(geom.horizon_y - layout.shelf.y - 1.0)
+                .max(0.0);
+            Rect {
+                x: layout.shelf.x,
+                y: geom.horizon_y - height,
+                width: layout.shelf.width,
+                height,
+            }
+        }
+        _ => {
+            let height = (layout.shelf.height * theme.reflection_band_ratio)
+                .min(geom.bottom_y - geom.horizon_y)
+                .max(0.0);
+            Rect {
+                x: layout.shelf.x,
+                y: geom.horizon_y,
+                width: layout.shelf.width,
+                height,
+            }
+        }
     }
+}
+
+fn shelf_plane_reflection_clip_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    match theme.shelf_style {
+        ShelfStyle::LeopardPlank => leopard_top_path(cr, shelf, theme),
+        _ => crystal_floor_path(cr, shelf, theme),
+    }
+}
+
+fn uses_shelf_plane_reflections(theme: &Theme) -> bool {
+    matches!(
+        theme.shelf_style,
+        ShelfStyle::LeopardPlank | ShelfStyle::CrystalGlass
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -641,6 +754,66 @@ fn crystal_shelf_geometry(shelf: &Rect, theme: &Theme) -> CrystalShelfGeometry {
     }
 }
 
+fn leopard_top_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    cr.move_to(shelf.x + geom.slant * 0.88, shelf.y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.88, shelf.y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.18, geom.horizon_y);
+    cr.line_to(shelf.x + geom.slant * 0.18, geom.horizon_y);
+    cr.close_path();
+}
+
+fn leopard_front_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    let lower_inset = shelf.height * 0.05;
+    cr.new_path();
+    cr.move_to(shelf.x + geom.slant * 0.18, geom.horizon_y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.18, geom.horizon_y);
+    cr.line_to(shelf.x + shelf.width - lower_inset, geom.bottom_y);
+    cr.line_to(shelf.x + lower_inset, geom.bottom_y);
+    cr.close_path();
+}
+
+fn leopard_lip_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    let lower_inset = shelf.height * 0.08;
+    cr.new_path();
+    cr.move_to(shelf.x + 4.0, geom.lip_y);
+    cr.line_to(shelf.x + shelf.width - 4.0, geom.lip_y);
+    cr.line_to(shelf.x + shelf.width - lower_inset, geom.bottom_y);
+    cr.line_to(shelf.x + lower_inset, geom.bottom_y);
+    cr.close_path();
+}
+
+fn leopard_side_path(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    let lower_inset = shelf.height * 0.05;
+    cr.new_path();
+    if left {
+        cr.move_to(shelf.x + geom.slant * 0.88, shelf.y);
+        cr.line_to(shelf.x + geom.slant * 0.18, geom.horizon_y);
+        cr.line_to(shelf.x + lower_inset, geom.bottom_y);
+        cr.line_to(shelf.x + geom.slant * 0.44, geom.lip_y);
+    } else {
+        cr.move_to(shelf.x + shelf.width - geom.slant * 0.88, shelf.y);
+        cr.line_to(shelf.x + shelf.width - geom.slant * 0.18, geom.horizon_y);
+        cr.line_to(shelf.x + shelf.width - lower_inset, geom.bottom_y);
+        cr.line_to(shelf.x + shelf.width - geom.slant * 0.44, geom.lip_y);
+    }
+    cr.close_path();
+}
+
+fn crystal_top_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    cr.move_to(shelf.x + geom.slant, shelf.y);
+    cr.line_to(shelf.x + shelf.width - geom.slant, shelf.y);
+    cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
+    cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
+    cr.close_path();
+}
+
 fn crystal_floor_path(cr: &Context, shelf: &Rect, theme: &Theme) {
     let geom = crystal_shelf_geometry(shelf, theme);
     cr.new_path();
@@ -648,6 +821,39 @@ fn crystal_floor_path(cr: &Context, shelf: &Rect, theme: &Theme) {
     cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
     cr.line_to(shelf.x + shelf.width, geom.bottom_y);
     cr.line_to(shelf.x, geom.bottom_y);
+    cr.close_path();
+}
+
+fn crystal_lip_path(cr: &Context, shelf: &Rect, theme: &Theme) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    cr.move_to(shelf.x + 2.0, geom.lip_y);
+    cr.line_to(shelf.x + shelf.width - 2.0, geom.lip_y);
+    cr.line_to(shelf.x + shelf.width - 5.0, geom.bottom_y);
+    cr.line_to(shelf.x + 5.0, geom.bottom_y);
+    cr.close_path();
+}
+
+fn crystal_side_path(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    cr.new_path();
+    if left {
+        cr.move_to(shelf.x + geom.slant, shelf.y);
+        cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
+        cr.line_to(shelf.x, geom.bottom_y);
+        cr.line_to(
+            shelf.x + geom.slant * 0.22,
+            geom.horizon_y + shelf.height * 0.10,
+        );
+    } else {
+        cr.move_to(shelf.x + shelf.width - geom.slant, shelf.y);
+        cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
+        cr.line_to(shelf.x + shelf.width, geom.bottom_y);
+        cr.line_to(
+            shelf.x + shelf.width - geom.slant * 0.22,
+            geom.horizon_y + shelf.height * 0.10,
+        );
+    }
     cr.close_path();
 }
 
@@ -699,7 +905,11 @@ fn draw_icons(
     for icon in &layout.icons {
         let item = &model.items[icon.item_index];
         if item.is_running() {
-            draw_indicator(cr, icon.rect, theme.indicator, item.active);
+            if theme.shelf_style == ShelfStyle::LeopardPlank {
+                draw_leopard_indicator(cr, icon.rect, layout, theme, item.active);
+            } else {
+                draw_indicator(cr, icon.rect, theme.indicator, item.active);
+            }
         }
         if let Some(badge) = item.badge {
             draw_badge(cr, icon.rect, badge, theme.badge);
@@ -889,6 +1099,58 @@ fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool) {
     );
     let _ = cr.fill();
     cr.restore().ok();
+}
+
+fn draw_leopard_indicator(
+    cr: &Context,
+    rect: Rect,
+    layout: &DockLayout,
+    theme: &Theme,
+    active: bool,
+) {
+    let y = leopard_indicator_center_y(&layout.shelf, theme);
+    let radius_x = if active { 5.4 } else { 3.4 };
+    let radius_y = if active { 1.75 } else { 1.25 };
+    let color = theme.indicator;
+
+    cr.save().ok();
+    cr.translate(rect.center_x(), y);
+    cr.scale(radius_x * 2.1, radius_y * 2.4);
+    cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(
+        color.red,
+        color.green,
+        color.blue,
+        if active { 0.18 } else { 0.10 },
+    );
+    let _ = cr.fill();
+    cr.restore().ok();
+
+    cr.save().ok();
+    cr.translate(rect.center_x(), y);
+    cr.scale(radius_x, radius_y);
+    cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(
+        color.red,
+        color.green,
+        color.blue,
+        if active { 0.92 } else { 0.58 },
+    );
+    let _ = cr.fill();
+    cr.restore().ok();
+
+    cr.save().ok();
+    cr.translate(rect.center_x(), y - radius_y * 0.22);
+    cr.scale(radius_x * 0.48, radius_y * 0.30);
+    cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.58 } else { 0.34 });
+    let _ = cr.fill();
+    cr.restore().ok();
+}
+
+fn leopard_indicator_center_y(shelf: &Rect, theme: &Theme) -> f64 {
+    let geom = crystal_shelf_geometry(shelf, theme);
+    (geom.lip_y - shelf.height * 0.08).clamp(geom.horizon_y + 2.0, geom.bottom_y - 2.5)
 }
 
 fn draw_badge(cr: &Context, rect: Rect, count: u32, color: Color) {
@@ -1117,7 +1379,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_thickness_stays_compact_for_crystal_theme() {
+    fn reserved_thickness_stays_compact_for_leopard_theme() {
         let config = Config::default().normalized();
         let theme = Theme::from_config(&config.theme);
         let model = DockModel::default();
@@ -1128,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn crystal_shelf_has_transparent_top_corner_and_dark_lip() {
+    fn leopard_plank_has_transparent_top_corner_and_dark_lip() {
         let config = Config::default().normalized();
         let theme = Theme::from_config(&config.theme);
         let mut surface = ImageSurface::create(Format::ARgb32, 240, 110).unwrap();
@@ -1147,11 +1409,17 @@ mod tests {
         assert!(alpha_at(&mut surface, 120, 22) > 0);
         assert_eq!(alpha_at(&mut surface, 120, 34), 255);
         assert_eq!(alpha_at(&mut surface, 120, 66), 255);
+        assert!(
+            (brightness_at(&mut surface, 120, 25) as i32
+                - brightness_at(&mut surface, 120, 37) as i32)
+                .abs()
+                < 70
+        );
         assert!(brightness_at(&mut surface, 120, 66) < brightness_at(&mut surface, 120, 34));
     }
 
     #[test]
-    fn crystal_reflection_is_clipped_to_reflection_band() {
+    fn leopard_reflection_is_clipped_to_reflection_band() {
         let config = Config::default().normalized();
         let theme = Theme::from_config(&config.theme);
         let model = DockModel {
@@ -1175,9 +1443,9 @@ mod tests {
         let mut surface =
             ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
         let cr = Context::new(&surface).unwrap();
-        let reflection = crystal_reflection_rect(&layout, &theme);
+        let reflection = shelf_plane_reflection_rect(&layout, &theme);
 
-        draw_crystal_reflections(&cr, &layout, &theme, &mut icon_surface);
+        draw_shelf_plane_reflections(&cr, &layout, &theme, &mut icon_surface);
         drop(cr);
 
         assert!(rect_has_alpha(&mut surface, reflection));
@@ -1190,6 +1458,46 @@ mod tests {
                 height: 3.0,
             }
         ));
+    }
+
+    #[test]
+    fn leopard_indicator_lands_inside_shelf_region() {
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let shelf = Rect {
+            x: 18.0,
+            y: 36.0,
+            width: 164.0,
+            height: 30.0,
+        };
+        let icon = Rect {
+            x: 66.0,
+            y: 2.0,
+            width: 64.0,
+            height: 64.0,
+        };
+        let layout = DockLayout {
+            icons: Vec::new(),
+            label: None,
+            shelf,
+            size: (200, 80),
+        };
+        let mut surface = ImageSurface::create(Format::ARgb32, 200, 80).unwrap();
+        let cr = Context::new(&surface).unwrap();
+        let y = leopard_indicator_center_y(&shelf, &theme);
+
+        draw_leopard_indicator(&cr, icon, &layout, &theme, true);
+        drop(cr);
+
+        assert!(y > shelf.y);
+        assert!(y < shelf.y + shelf.height);
+        assert!(
+            alpha_at(
+                &mut surface,
+                icon.center_x().round() as i32,
+                y.round() as i32
+            ) > 0
+        );
     }
 
     fn alpha_at(surface: &mut ImageSurface, x: i32, y: i32) -> u8 {

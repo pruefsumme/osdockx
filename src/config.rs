@@ -90,6 +90,8 @@ pub enum RenderMode {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ShelfStyle {
     #[default]
+    #[serde(rename = "leopard-plank")]
+    LeopardPlank,
     #[serde(rename = "crystal-glass")]
     CrystalGlass,
     #[serde(rename = "legacy-glass")]
@@ -132,31 +134,31 @@ impl Default for ThemeConfig {
         Self {
             preset: "osx-crystal-2.5d".to_string(),
             renderer: Some(RenderMode::Procedural2d),
-            shelf_style: ShelfStyle::CrystalGlass,
-            shelf_top: "#edf3faff".to_string(),
-            shelf_bottom: "#566270ff".to_string(),
-            shelf_stroke: "#263442ff".to_string(),
+            shelf_style: ShelfStyle::LeopardPlank,
+            shelf_top: "#e8eef4ff".to_string(),
+            shelf_bottom: "#a7b2bdff".to_string(),
+            shelf_stroke: "#6f7f8dff".to_string(),
             shelf_highlight: "#ffffffff".to_string(),
-            indicator: "#7dd7ffff".to_string(),
+            indicator: "#6fd3ffff".to_string(),
             badge: "#e4202dff".to_string(),
-            reflection_opacity: 0.24,
+            reflection_opacity: 0.14,
             reflection_height: 0.34,
-            shelf_height_ratio: 0.52,
-            shelf_slant_ratio: 0.34,
+            shelf_height_ratio: 0.42,
+            shelf_slant_ratio: 0.46,
             icon_gap_ratio: 0.12,
-            side_margin_ratio: 0.68,
-            shelf_horizon_ratio: 0.44,
-            front_lip_ratio: 0.22,
-            reflection_band_ratio: 0.34,
+            side_margin_ratio: 0.74,
+            shelf_horizon_ratio: 0.48,
+            front_lip_ratio: 0.16,
+            reflection_band_ratio: 0.24,
             tilt: 0.58,
-            depth: 0.98,
-            bevel: 0.34,
+            depth: 0.86,
+            bevel: 0.24,
             floor_opacity: 0.62,
-            shadow_strength: 0.56,
-            highlight_strength: 0.80,
+            shadow_strength: 0.42,
+            highlight_strength: 0.66,
             reflection_blur: 0.18,
             material_roughness: 0.34,
-            icon_floor_offset: 0.0,
+            icon_floor_offset: 0.05,
             shelf_texture: None,
             shelf_overlay: None,
             noise_texture: None,
@@ -274,32 +276,60 @@ fn migrate_old_osx_defaults(theme: &mut ThemeConfig) {
 }
 
 fn is_previous_generated_crystal_default(theme: &ThemeConfig) -> bool {
+    is_previous_thin_crystal_default(theme) || is_previous_full_crystal_default(theme)
+}
+
+fn has_generated_crystal_base(theme: &ThemeConfig) -> bool {
     theme.preset == "osx-crystal-2.5d"
         && theme.renderer == Some(RenderMode::Procedural2d)
         && theme.shelf_style == ShelfStyle::CrystalGlass
+        && theme.shelf_highlight.eq_ignore_ascii_case("#ffffffff")
+        && theme.badge.eq_ignore_ascii_case("#e4202dff")
+        && approx(theme.reflection_height, 0.34)
+        && approx(theme.icon_gap_ratio, 0.12)
+        && approx(theme.tilt, 0.58)
+        && approx(theme.floor_opacity, 0.62)
+        && approx(theme.reflection_blur, 0.18)
+        && approx(theme.material_roughness, 0.34)
+}
+
+fn is_previous_thin_crystal_default(theme: &ThemeConfig) -> bool {
+    has_generated_crystal_base(theme)
         && theme.shelf_top.eq_ignore_ascii_case("#f8fcffff")
         && theme.shelf_bottom.eq_ignore_ascii_case("#4f6072e8")
         && theme.shelf_stroke.eq_ignore_ascii_case("#2f4055cc")
-        && theme.shelf_highlight.eq_ignore_ascii_case("#ffffffff")
         && theme.indicator.eq_ignore_ascii_case("#7dd7ffff")
-        && theme.badge.eq_ignore_ascii_case("#e4202dff")
         && approx(theme.reflection_opacity, 0.30)
-        && approx(theme.reflection_height, 0.34)
         && approx(theme.shelf_height_ratio, 0.36)
         && approx(theme.shelf_slant_ratio, 0.30)
-        && approx(theme.icon_gap_ratio, 0.12)
         && approx(theme.side_margin_ratio, 0.60)
         && approx(theme.shelf_horizon_ratio, 0.50)
         && approx(theme.front_lip_ratio, 0.10)
         && approx(theme.reflection_band_ratio, 0.42)
-        && approx(theme.tilt, 0.58)
         && approx(theme.depth, 0.78)
         && approx(theme.bevel, 0.28)
-        && approx(theme.floor_opacity, 0.62)
         && approx(theme.shadow_strength, 0.42)
         && approx(theme.highlight_strength, 0.72)
-        && approx(theme.reflection_blur, 0.18)
-        && approx(theme.material_roughness, 0.34)
+        && approx(theme.icon_floor_offset, 0.0)
+}
+
+fn is_previous_full_crystal_default(theme: &ThemeConfig) -> bool {
+    has_generated_crystal_base(theme)
+        && theme.shelf_top.eq_ignore_ascii_case("#edf3faff")
+        && theme.shelf_bottom.eq_ignore_ascii_case("#566270ff")
+        && theme.shelf_stroke.eq_ignore_ascii_case("#263442ff")
+        && theme.indicator.eq_ignore_ascii_case("#7dd7ffff")
+        && approx(theme.reflection_opacity, 0.24)
+        && approx(theme.shelf_height_ratio, 0.52)
+        && approx(theme.shelf_slant_ratio, 0.34)
+        && approx(theme.side_margin_ratio, 0.68)
+        && approx(theme.shelf_horizon_ratio, 0.44)
+        && approx(theme.front_lip_ratio, 0.22)
+        && approx(theme.reflection_band_ratio, 0.34)
+        && approx(theme.depth, 0.98)
+        && approx(theme.bevel, 0.34)
+        && approx(theme.shadow_strength, 0.56)
+        && approx(theme.highlight_strength, 0.80)
         && approx(theme.icon_floor_offset, 0.0)
 }
 
@@ -333,19 +363,19 @@ fn approx(left: f64, right: f64) -> bool {
 }
 
 const fn default_side_margin_ratio() -> f64 {
-    0.68
+    0.74
 }
 
 const fn default_shelf_horizon_ratio() -> f64 {
-    0.44
+    0.48
 }
 
 const fn default_front_lip_ratio() -> f64 {
-    0.22
+    0.16
 }
 
 const fn default_reflection_band_ratio() -> f64 {
-    0.34
+    0.24
 }
 
 #[cfg(test)]
@@ -383,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_previous_generated_gl_default_to_crystal_cairo() {
+    fn migrates_previous_generated_gl_default_to_leopard_plank() {
         let mut config = Config::default();
         config.theme = ThemeConfig {
             preset: "osx-glass-3d".to_string(),
@@ -424,7 +454,9 @@ mod tests {
 
         assert_eq!(config.theme.preset, "osx-crystal-2.5d");
         assert_eq!(config.theme.renderer, Some(RenderMode::Procedural2d));
-        assert_eq!(config.theme.shelf_style, ShelfStyle::CrystalGlass);
+        assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
+        assert_eq!(config.theme.shelf_height_ratio, 0.42);
+        assert_eq!(config.theme.icon_floor_offset, 0.05);
     }
 
     #[test]
@@ -442,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_previous_thin_crystal_default_to_fuller_plank() {
+    fn migrates_previous_thin_crystal_default_to_leopard_plank() {
         let mut config = Config::default();
         config.theme = ThemeConfig {
             preset: "osx-crystal-2.5d".to_string(),
@@ -482,9 +514,53 @@ mod tests {
         let config = config.normalized();
 
         assert_eq!(config.theme.preset, "osx-crystal-2.5d");
-        assert_eq!(config.theme.shelf_height_ratio, 0.52);
-        assert_eq!(config.theme.shelf_top, "#edf3faff");
-        assert_eq!(config.theme.shelf_bottom, "#566270ff");
+        assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
+        assert_eq!(config.theme.shelf_height_ratio, 0.42);
+        assert_eq!(config.theme.shelf_horizon_ratio, 0.48);
+        assert_eq!(config.theme.shelf_top, "#e8eef4ff");
+        assert_eq!(config.theme.shelf_bottom, "#a7b2bdff");
+    }
+
+    #[test]
+    fn migrates_previous_full_crystal_default_to_leopard_plank() {
+        let mut config = Config::default();
+        config.theme.shelf_style = ShelfStyle::CrystalGlass;
+        config.theme.shelf_top = "#edf3faff".to_string();
+        config.theme.shelf_bottom = "#566270ff".to_string();
+        config.theme.shelf_stroke = "#263442ff".to_string();
+        config.theme.indicator = "#7dd7ffff".to_string();
+        config.theme.reflection_opacity = 0.24;
+        config.theme.shelf_height_ratio = 0.52;
+        config.theme.shelf_slant_ratio = 0.34;
+        config.theme.side_margin_ratio = 0.68;
+        config.theme.shelf_horizon_ratio = 0.44;
+        config.theme.front_lip_ratio = 0.22;
+        config.theme.reflection_band_ratio = 0.34;
+        config.theme.depth = 0.98;
+        config.theme.bevel = 0.34;
+        config.theme.shadow_strength = 0.56;
+        config.theme.highlight_strength = 0.80;
+        config.theme.icon_floor_offset = 0.0;
+
+        let config = config.normalized();
+
+        assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
+        assert_eq!(config.theme.shelf_height_ratio, 0.42);
+        assert_eq!(config.theme.reflection_opacity, 0.14);
+    }
+
+    #[test]
+    fn preserves_custom_crystal_cairo_theme() {
+        let mut config = Config::default();
+        config.theme.shelf_style = ShelfStyle::CrystalGlass;
+        config.theme.shelf_height_ratio = 0.53;
+        config.theme.shelf_top = "#dfe8f1ff".to_string();
+
+        let config = config.normalized();
+
+        assert_eq!(config.theme.shelf_style, ShelfStyle::CrystalGlass);
+        assert_eq!(config.theme.shelf_height_ratio, 0.53);
+        assert_eq!(config.theme.shelf_top, "#dfe8f1ff");
     }
 
     #[test]

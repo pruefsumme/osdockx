@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn shelf_horizon_aligns_with_resting_icon_floor() {
+    fn shelf_horizon_uses_icon_floor_offset_and_extends_past_icons() {
         let model = DockModel {
             items: vec![item("a"), item("b")],
         };
@@ -251,17 +251,19 @@ mod tests {
             gap: 8.0,
             reflection_height: 27.0,
             shelf_height: 24.0,
-            side_margin: 64.0 * 0.60,
-            shelf_horizon_ratio: 0.50,
-            icon_floor_offset: 0.0,
+            side_margin: 64.0 * 0.74,
+            shelf_horizon_ratio: 0.48,
+            icon_floor_offset: 64.0 * 0.05,
             label_height: 24.0,
         };
 
         let layout = compute_layout(&model, None, params);
         let horizon_y = layout.shelf.y + layout.shelf.height * params.shelf_horizon_ratio;
         let icon_bottom = layout.icons[0].rect.y + layout.icons[0].rect.height;
+        let last_icon = layout.icons.last().unwrap();
 
-        assert!((horizon_y - icon_bottom).abs() < 0.001);
-        assert!(layout.icons[0].rect.x >= params.side_margin * 0.20);
+        assert!((horizon_y - icon_bottom - params.icon_floor_offset).abs() < 0.001);
+        assert!(layout.shelf.x < layout.icons[0].rect.x);
+        assert!(layout.shelf.x + layout.shelf.width > last_icon.rect.x + last_icon.rect.width);
     }
 }
