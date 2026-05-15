@@ -1,0 +1,34 @@
+id = "osx-glass-3d"
+name = "OSX Glass 3D"
+renderer = "scene-3d"
+
+[theme]
+preset = "osx-glass-3d"
+renderer = "scene-3d"
+shelf_style = "crystal-glass"
+shelf_top = "#f8fcffff"
+shelf_bottom = "#4f6072e8"
+shelf_stroke = "#2f4055cc"
+shelf_highlight = "#ffffffff"
+indicator = "#7dd7ffff"
+badge = "#e4202dff"
+reflection_opacity = 0.26
+reflection_height = 0.34
+shelf_height_ratio = 0.36
+shelf_slant_ratio = 0.30
+icon_gap_ratio = 0.12
+side_margin_ratio = 0.60
+shelf_horizon_ratio = 0.50
+front_lip_ratio = 0.10
+reflection_band_ratio = 0.42
+tilt = 0.58
+depth = 0.78
+bevel = 0.28
+floor_opacity = 0.62
+shadow_strength = 0.42
+highlight_strength = 0.72
+reflection_blur = 0.18
+material_roughness = 0.34
+icon_floor_offset = 0.08
+
+[assets]

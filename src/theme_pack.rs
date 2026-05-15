@@ -1,10 +1,18 @@
-use crate::config::{RenderMode, ThemeConfig};
+use crate::config::{RenderMode, ThemeConfig, config_dir};
 use crate::theme::{Theme, ThemeAssets};
 use directories::ProjectDirs;
 use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const REPO_THEME_PACKS: &[(&str, &str)] = &[
+    ("leopard", include_str!("../themes/leopard/theme.toml")),
+    (
+        "osx-glass-3d",
+        include_str!("../themes/osx-glass-3d/theme.toml"),
+    ),
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThemePack {
@@ -37,6 +45,20 @@ struct ThemeAssetsToml {
 }
 
 impl ThemePack {
+    pub fn export_builtin_theme_packs() -> anyhow::Result<()> {
+        for (id, contents) in REPO_THEME_PACKS {
+            let path = config_dir()?.join("themes").join(id).join("theme.toml");
+            if path.exists() {
+                continue;
+            }
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&path, contents)?;
+        }
+        Ok(())
+    }
+
     pub fn load(config: &ThemeConfig) -> Self {
         let id = normalized_theme_id(&config.preset);
         if let Some(path) = find_theme_pack(&id) {
@@ -61,7 +83,7 @@ impl ThemePack {
         let theme = Theme::from_config(&config).with_renderer(renderer);
         let name = match config.preset.as_str() {
             "osx-glass-3d" => "OSX Glass 3D",
-            "osx-crystal-2.5d" => "OSX Crystal 2.5D",
+            "leopard" => "Leopard",
             _ => "OSDockX Theme",
         };
         Self {
@@ -211,7 +233,7 @@ fn theme_roots() -> Vec<PathBuf> {
 
 fn normalized_theme_id(id: &str) -> String {
     match id.trim() {
-        "" | "osx-glass" => "osx-crystal-2.5d".to_string(),
+        "" | "osx-glass" | "osx-crystal-2.5d" => "leopard".to_string(),
         value => value.to_string(),
     }
 }
@@ -231,8 +253,17 @@ mod tests {
 
         let pack = ThemePack::builtin(&config.preset, &config);
 
-        assert_eq!(pack.id, "osx-crystal-2.5d");
+        assert_eq!(pack.id, "leopard");
         assert_eq!(pack.renderer, RenderMode::Procedural2d);
+    }
+
+    #[test]
+    fn repo_theme_packs_are_valid_toml() {
+        for (_, contents) in REPO_THEME_PACKS {
+            let parsed = toml::from_str::<ThemePackToml>(contents).unwrap();
+            assert!(!parsed.id.is_empty());
+            assert!(!parsed.name.is_empty());
+        }
     }
 
     #[test]

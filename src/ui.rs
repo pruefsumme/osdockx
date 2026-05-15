@@ -17,6 +17,7 @@ use gtk::{
     Overlay, gdk,
 };
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -37,6 +38,8 @@ pub fn run() -> anyhow::Result<()> {
 
 struct Runtime {
     config: Config,
+    config_path: PathBuf,
+    composited: bool,
     theme: Theme,
     desktop_index: DesktopIndex,
     backend: Option<X11Backend>,
@@ -111,18 +114,18 @@ impl Runtime {
 fn build_ui(app: &Application) -> anyhow::Result<()> {
     let (config, config_path) = Config::load_or_create()?;
     tracing::info!("using config {}", config_path.display());
+    if let Err(error) = ThemePack::export_builtin_theme_packs() {
+        tracing::warn!("could not export built-in theme packs: {error:#}");
+    }
 
     install_css();
 
     let composited = gdk::Display::default().is_some_and(|display| display.is_composited());
-    let theme_pack = ThemePack::load(&config.theme);
-    tracing::info!("using theme {} ({:?})", theme_pack.id, theme_pack.renderer);
-    let theme = if composited {
-        theme_pack.theme.clone()
-    } else {
+    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(&config, composited);
+    tracing::info!("using theme {} ({:?})", theme_id, theme_renderer);
+    if !composited {
         tracing::warn!("display is not composited; using opaque shelf fallback");
-        theme_pack.theme.clone().opaque_fallback()
-    };
+    }
     let desktop_index = DesktopIndex::load();
     let backend = match X11Backend::new() {
         Ok(backend) => Some(backend),
@@ -134,6 +137,8 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
 
     let mut runtime = Runtime {
         config,
+        config_path,
+        composited,
         theme,
         desktop_index,
         backend,
@@ -218,6 +223,17 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     window.present();
     queue_gl_render_if_enabled(&state, &gl_area);
     Ok(())
+}
+
+fn resolve_runtime_theme(config: &Config, composited: bool) -> (String, RenderMode, Theme) {
+    let theme_pack = ThemePack::load(&config.theme);
+    let id = theme_pack.id.clone();
+    let renderer = theme_pack.renderer;
+    if composited {
+        (id, renderer, theme_pack.theme)
+    } else {
+        (id, renderer, theme_pack.theme.opaque_fallback())
+    }
 }
 
 fn install_css() {
@@ -397,6 +413,7 @@ fn wire_refresh(
     glib::timeout_add_local(Duration::from_millis(refresh as u64), move || {
         {
             let mut state = state.borrow_mut();
+            refresh_config_and_theme(&mut state);
             state.refresh_model();
         }
         sync_dock_window(&state, &window, &drawing, &gl_area, true);
@@ -404,6 +421,37 @@ fn wire_refresh(
         drawing.queue_draw();
         glib::ControlFlow::Continue
     });
+}
+
+fn refresh_config_and_theme(state: &mut Runtime) {
+    match Config::load_from_path(&state.config_path) {
+        Ok(config) => {
+            if config != state.config {
+                tracing::info!("reloaded config {}", state.config_path.display());
+                state.config = config;
+                state.hidden = false;
+                state.last_size = None;
+                state.last_geometry = None;
+                state.last_shape_size = None;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                "could not reload config {}: {error:#}",
+                state.config_path.display()
+            );
+            return;
+        }
+    }
+
+    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(&state.config, state.composited);
+    if theme != state.theme {
+        tracing::info!("reloaded theme {} ({:?})", theme_id, theme_renderer);
+        state.theme = theme;
+        state.last_size = None;
+        state.last_geometry = None;
+        state.last_shape_size = None;
+    }
 }
 
 fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {

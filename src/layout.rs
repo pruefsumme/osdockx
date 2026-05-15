@@ -115,20 +115,7 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
         icon_bottom + params.icon_floor_offset - params.shelf_height * params.shelf_horizon_ratio;
     let height = shelf_y + params.shelf_height + 5.0;
 
-    let mut icons = Vec::with_capacity(count);
-    for (index, (rest_center, scale)) in centers.iter().zip(scales).enumerate() {
-        let size = params.icon_size * scale;
-        icons.push(IconLayout {
-            item_index: index,
-            rect: Rect {
-                x: *rest_center - size / 2.0,
-                y: baseline_y + params.icon_size - size,
-                width: size,
-                height: size,
-            },
-            scale,
-        });
-    }
+    let icons = layout_icons_on_floor_plane(&centers, &scales, params.icon_size, icon_bottom);
 
     let label = hover.and_then(|point| {
         icons
@@ -156,6 +143,32 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
         },
         size: (width.ceil() as i32, height.ceil() as i32),
     }
+}
+
+fn layout_icons_on_floor_plane(
+    centers: &[f64],
+    scales: &[f64],
+    icon_size: f64,
+    floor_y: f64,
+) -> Vec<IconLayout> {
+    centers
+        .iter()
+        .zip(scales)
+        .enumerate()
+        .map(|(index, (rest_center, scale))| {
+            let size = icon_size * scale;
+            IconLayout {
+                item_index: index,
+                rect: Rect {
+                    x: *rest_center - size / 2.0,
+                    y: floor_y - size,
+                    width: size,
+                    height: size,
+                },
+                scale: *scale,
+            }
+        })
+        .collect()
 }
 
 fn magnification(pointer_x: f64, center_x: f64, influence: f64, zoom_strength: f64) -> f64 {
