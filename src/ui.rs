@@ -48,7 +48,7 @@ const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
 const STARTUP_REVEAL_DURATION: Duration = Duration::from_millis(480);
 const SEPARATOR_RESIZE_CURSOR: &str = "ns-resize";
-const SEPARATOR_RESIZE_PIXELS_PER_ICON: f64 = 2.5;
+const SEPARATOR_RESIZE_PIXELS_PER_ICON: f64 = 2.0;
 const SEPARATOR_RESIZE_MIN_ICON_SIZE: u32 = 32;
 const SEPARATOR_RESIZE_MAX_ICON_SIZE: u32 = 128;
 
@@ -104,6 +104,7 @@ struct IconDrag {
 #[derive(Debug, Clone)]
 struct SeparatorResize {
     start_mouse_y: f64,
+    start_window_y: i32,
     start_icon_size: u32,
     current_icon_size: u32,
 }
@@ -269,13 +270,23 @@ fn separator_hit_test(state: &Runtime, point: Point) -> bool {
 fn begin_separator_resize(
     layout: &crate::layout::DockLayout,
     point: Point,
+    start_window_y: i32,
     start_icon_size: u32,
 ) -> Option<SeparatorResize> {
     separator_hit_test_in_layout(layout, point).then_some(SeparatorResize {
         start_mouse_y: point.y,
+        start_window_y,
         start_icon_size,
         current_icon_size: start_icon_size,
     })
+}
+
+fn separator_resize_drag_delta(
+    resize: &SeparatorResize,
+    current_window_y: i32,
+    offset_y: f64,
+) -> f64 {
+    (current_window_y - resize.start_window_y) as f64 + offset_y
 }
 
 fn resize_icon_size_for_drag(start_icon_size: u32, offset_y: f64) -> u32 {
@@ -686,30 +697,38 @@ fn wire_motion(
             let resizing;
             {
                 let mut state = state.borrow_mut();
-                separator_hover = separator_hit_test(&state, point);
                 resizing = state.separator_resize.is_some();
-                let next_hover = if state.context_menu.is_some()
-                    || state.drag.is_some()
-                    || resizing
-                    || separator_hover
-                {
-                    None
+                if resizing {
+                    separator_hover = false;
+                    state.hover = None;
                 } else {
-                    Renderer::hover_point_for(
-                        &state.model,
-                        &state.config.dock,
-                        &state.theme,
-                        point,
-                        state.hover.is_some(),
-                    )
-                };
-                if state.hidden {
-                    state.hidden = false;
-                    move_dock(&mut state);
+                    separator_hover = separator_hit_test(&state, point);
+                    let next_hover = if state.context_menu.is_some()
+                        || state.drag.is_some()
+                        || separator_hover
+                    {
+                        None
+                    } else {
+                        Renderer::hover_point_for(
+                            &state.model,
+                            &state.config.dock,
+                            &state.theme,
+                            point,
+                            state.hover.is_some(),
+                        )
+                    };
+                    if state.hidden {
+                        state.hidden = false;
+                        move_dock(&mut state);
+                    }
+                    state.hover = next_hover;
                 }
-                state.hover = next_hover;
             }
             set_separator_resize_cursor(&drawing, separator_hover || resizing);
+            if resizing {
+                log_slow("motion", started.elapsed());
+                return;
+            }
             sync_dock_window(&state, &window, &drawing, &gl_area, false);
             queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
@@ -724,13 +743,19 @@ fn wire_motion(
         motion.connect_leave(move |_| {
             let autohide;
             let delay;
+            let resizing;
             {
                 let mut state = state.borrow_mut();
+                resizing = state.separator_resize.is_some();
                 state.hover = None;
                 autohide = state.config.dock.autohide
                     && state.context_menu.is_none()
-                    && state.separator_resize.is_none();
+                    && !resizing;
                 delay = state.config.dock.hide_delay_ms;
+            }
+            if resizing {
+                set_separator_resize_cursor(&drawing, true);
+                return;
             }
             set_separator_resize_cursor(&drawing, false);
             queue_gl_render_if_enabled(&state, &gl_area);
@@ -952,13 +977,21 @@ fn wire_separator_resize_drag(
             let point = Point { x, y };
             let resize = {
                 let state = state.borrow();
+                if state.separator_resize.is_some() {
+                    return;
+                }
                 let layout = Renderer::layout_for(
                     &state.model,
                     &state.config.dock,
                     &state.theme,
                     None,
                 );
-                begin_separator_resize(&layout, point, state.config.dock.icon_size)
+                let start_window_y = state
+                    .last_geometry
+                    .or_else(|| state.desired_geometry())
+                    .map(|geometry| geometry.y)
+                    .unwrap_or_default();
+                begin_separator_resize(&layout, point, start_window_y, state.config.dock.icon_size)
             };
             let Some(resize) = resize else {
                 return;
@@ -1017,14 +1050,24 @@ fn wire_separator_resize_drag(
 }
 
 fn update_separator_resize(state: &mut Runtime, offset_y: f64) -> bool {
+    let current_window_y = state
+        .last_geometry
+        .or_else(|| state.desired_geometry())
+        .map(|geometry| geometry.y)
+        .unwrap_or_else(|| {
+            state
+                .separator_resize
+                .as_ref()
+                .map(|resize| resize.start_window_y)
+                .unwrap_or_default()
+        });
     let Some(resize) = state.separator_resize.as_mut() else {
         return false;
     };
 
-    let current_mouse_y = resize.start_mouse_y + offset_y;
     let new_size = resize_icon_size_for_drag(
         resize.start_icon_size,
-        current_mouse_y - resize.start_mouse_y,
+        separator_resize_drag_delta(resize, current_window_y, offset_y),
     );
     resize.current_icon_size = new_size;
     if state.config.dock.icon_size == new_size {
@@ -2261,7 +2304,8 @@ fn shape_dock(state: &mut Runtime) {
     let size = state.desired_size();
     let mut visual_regions =
         Renderer::visual_regions(&state.model, &state.config.dock, &state.theme, state.hover);
-    let mut input_regions = Renderer::input_regions(&state.model, &state.config.dock, &state.theme);
+    let mut input_regions =
+        Renderer::input_regions(&state.model, &state.config.dock, &state.theme, state.hover);
     if let Some(icon_motion) = icon_motion_frame(state) {
         for motion_rect in icon_motion.rects {
             let rect = padded_rect(motion_rect.rect, 10.0);
@@ -2457,11 +2501,25 @@ mod tests {
             y: separator.rect.y + separator.rect.height * 0.5,
         };
 
-        let resize = begin_separator_resize(&layout, point, 64).expect("resize mode");
+        let resize = begin_separator_resize(&layout, point, 480, 64).expect("resize mode");
 
         assert_eq!(resize.start_mouse_y, point.y);
+        assert_eq!(resize.start_window_y, 480);
         assert_eq!(resize.start_icon_size, 64);
         assert_eq!(resize.current_icon_size, 64);
+    }
+
+    #[test]
+    fn separator_resize_drag_delta_stays_anchored_when_window_moves() {
+        let resize = SeparatorResize {
+            start_mouse_y: 40.0,
+            start_window_y: 900,
+            start_icon_size: 64,
+            current_icon_size: 64,
+        };
+
+        assert_eq!(separator_resize_drag_delta(&resize, 890, 10.0), 0.0);
+        assert_eq!(separator_resize_drag_delta(&resize, 880, 18.0), -2.0);
     }
 
     #[test]
@@ -2478,6 +2536,12 @@ mod tests {
     fn separator_resize_clamps_icon_size() {
         assert_eq!(resize_icon_size_for_drag(64, -500.0), SEPARATOR_RESIZE_MAX_ICON_SIZE);
         assert_eq!(resize_icon_size_for_drag(64, 500.0), SEPARATOR_RESIZE_MIN_ICON_SIZE);
+    }
+
+    #[test]
+    fn small_drag_deltas_keep_same_effective_icon_size() {
+        assert_eq!(resize_icon_size_for_drag(64, 0.8), 64);
+        assert_eq!(resize_icon_size_for_drag(64, -0.8), 64);
     }
 
     #[test]

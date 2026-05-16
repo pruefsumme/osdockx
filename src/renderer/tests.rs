@@ -5,6 +5,24 @@ use crate::theme::Theme;
 use gtk::cairo::Format;
 use std::fs::File;
 
+fn single_item_model() -> DockModel {
+    DockModel {
+        items: vec![DockItem {
+            id: "test.desktop".to_string(),
+            name: "Test".to_string(),
+            desktop_id: Some("test.desktop".to_string()),
+            startup_wm_class: None,
+            icon_name: None,
+            window_icon: None,
+            pinned: true,
+            windows: Vec::new(),
+            active: false,
+            urgent: false,
+            badge: None,
+        }],
+    }
+}
+
 #[test]
 fn renderer_paints_non_empty_surface() {
     let config = Config::default().normalized();
@@ -72,6 +90,48 @@ fn reserved_thickness_stays_compact_for_leopard_theme() {
     let reserved = Renderer::reserved_thickness(&model, &config.dock, &theme);
 
     assert!(reserved < config.dock.icon_size + 40);
+}
+
+#[test]
+fn hover_starts_when_pointer_reaches_visible_icon_edge() {
+    let config = Config::default().normalized();
+    let theme = Theme::from_config(&config.theme);
+    let model = single_item_model();
+    let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+    let icon = layout.icons[0].rect;
+    let point = Point {
+        x: icon.x + 0.5,
+        y: icon.y + icon.height * 0.5,
+    };
+
+    assert_eq!(
+        Renderer::hover_point_for(&model, &config.dock, &theme, point, false),
+        Some(point)
+    );
+}
+
+#[test]
+fn hover_retains_when_pointer_stays_on_live_magnified_icon() {
+    let config = Config::default().normalized();
+    let theme = Theme::from_config(&config.theme);
+    let model = single_item_model();
+    let rest_layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+    let rest_icon = rest_layout.icons[0].rect;
+    let point = Point {
+        x: rest_icon.center_x() + rest_icon.width * 0.625,
+        y: rest_icon.y + rest_icon.height * 0.5,
+    };
+    let live_layout = Renderer::layout_for(&model, &config.dock, &theme, Some(point));
+    let live_icon = live_layout.icons[0].rect;
+    let input_regions = Renderer::input_regions(&model, &config.dock, &theme, Some(point));
+
+    assert!(live_icon.contains(point));
+    assert!(!center_ratio_rect(rest_icon, ICON_HOVER_RETAIN_RATIO).contains(point));
+    assert_eq!(
+        Renderer::hover_point_for(&model, &config.dock, &theme, point, true),
+        Some(point)
+    );
+    assert!(input_regions.iter().any(|region| region.contains(point)));
 }
 
 #[test]

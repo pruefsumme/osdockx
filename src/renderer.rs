@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 const SLOW_DRAW: Duration = Duration::from_millis(8);
 const ICON_CLICK_RATIO: f64 = 1.0;
-const ICON_HOVER_ENTER_RATIO: f64 = 0.96;
+const ICON_HOVER_ENTER_RATIO: f64 = 1.0;
 const ICON_HOVER_RETAIN_RATIO: f64 = 1.08;
 
 #[derive(Debug, Default)]
@@ -106,9 +106,14 @@ impl Renderer {
         regions
     }
 
-    pub fn input_regions(model: &DockModel, config: &DockConfig, theme: &Theme) -> Vec<Rect> {
+    pub fn input_regions(
+        model: &DockModel,
+        config: &DockConfig,
+        theme: &Theme,
+        hover: Option<Point>,
+    ) -> Vec<Rect> {
         let params = layout_params(config, theme);
-        let layout = compute_layout(model, None, params);
+        let layout = compute_layout(model, hover, params);
         let mut regions = Vec::with_capacity(layout.icons.len() + 1);
         regions.push(expand(layout.shelf, 2.0));
         for icon in &layout.icons {
@@ -129,7 +134,8 @@ impl Renderer {
         } else {
             ICON_HOVER_ENTER_RATIO
         };
-        icon_hit_test_with_ratio(model, config, theme, point, ratio).map(|_| point)
+        let hover_layout = retaining.then_some(point);
+        icon_hit_test_with_ratio(model, config, theme, hover_layout, point, ratio).map(|_| point)
     }
 
     pub fn icon_hit_test(
@@ -138,7 +144,7 @@ impl Renderer {
         theme: &Theme,
         point: Point,
     ) -> Option<usize> {
-        icon_hit_test_with_ratio(model, config, theme, point, ICON_CLICK_RATIO)
+        icon_hit_test_with_ratio(model, config, theme, None, point, ICON_CLICK_RATIO)
     }
 
     pub fn layout_for(
@@ -338,11 +344,12 @@ fn icon_hit_test_with_ratio(
     model: &DockModel,
     config: &DockConfig,
     theme: &Theme,
+    hover: Option<Point>,
     point: Point,
     ratio: f64,
 ) -> Option<usize> {
     let params = layout_params(config, theme);
-    let layout = compute_layout(model, None, params);
+    let layout = compute_layout(model, hover, params);
     layout
         .icons
         .iter()
