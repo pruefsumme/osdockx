@@ -22,7 +22,8 @@ use self::reflections::{
 use self::shelf::{
     compute_perspective_shelf_geometry, crystal_floor_path, crystal_shelf_geometry,
     draw_crystal_shelf, draw_front_lip, draw_glass_highlight_overlay, draw_glass_shelf_base,
-    draw_legacy_shelf, draw_leopard_plank, draw_leopard_shelf_strokes, draw_shadow,
+    draw_legacy_shelf, draw_leopard_plank, draw_leopard_shelf_strokes,
+    draw_shadow, draw_shelf_section_separator,
     leopard_glass_plane_path, leopard_wedge_body_geometry,
 };
 use crate::config::{DockConfig, ShelfStyle};
@@ -202,6 +203,7 @@ impl Renderer {
             draw_glass_highlight_overlay(cr, &layout.shelf, theme);
             draw_front_lip(cr, &layout.shelf, theme);
             draw_leopard_shelf_strokes(cr, &layout.shelf, theme);
+            draw_separator(cr, layout, theme);
             draw_icons(cr, model, layout, theme, icons);
             draw_hover_label(cr, model, layout);
             return;
@@ -232,6 +234,7 @@ impl Renderer {
         } else {
             draw_reflections(cr, model, layout, theme, icons);
         }
+        draw_separator(cr, layout, theme);
         draw_icons(cr, model, layout, theme, icons);
         draw_hover_label(cr, model, layout);
     }
@@ -446,6 +449,13 @@ fn draw_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
     }
 }
 
+fn draw_separator(cr: &Context, layout: &DockLayout, theme: &Theme) {
+    let Some(separator) = layout.separator.as_ref() else {
+        return;
+    };
+    draw_shelf_section_separator(cr, &layout.shelf, separator, theme);
+}
+
 fn draw_icons(
     cr: &Context,
     model: &DockModel,
@@ -456,6 +466,9 @@ fn draw_icons(
     draw_icon_art(cr, model, layout, icons, 1.0);
     for icon in &layout.icons {
         let item = &model.items[icon.item_index];
+        if !item.is_application() {
+            continue;
+        }
         if theme.shelf_style == ShelfStyle::LeopardPlank {
             if item.is_running() {
                 draw_leopard_running_indicator(cr, icon.rect, layout, theme, item.active);

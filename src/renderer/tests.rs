@@ -401,6 +401,8 @@ fn leopard_running_indicator_lands_inside_front_body() {
         icons: Vec::new(),
         label: None,
         shelf,
+        sections: Vec::new(),
+        separator: None,
         size: (200, 80),
     };
     let mut surface = ImageSurface::create(Format::ARgb32, 200, 80).unwrap();
@@ -436,6 +438,8 @@ fn leopard_active_indicator_lands_below_shelf() {
         icons: Vec::new(),
         label: None,
         shelf,
+        sections: Vec::new(),
+        separator: None,
         size: (200, 80),
     };
     let mut surface = ImageSurface::create(Format::ARgb32, 200, 80).unwrap();

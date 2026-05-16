@@ -260,6 +260,15 @@ fn pixmap_candidates(name: &str) -> Vec<PathBuf> {
 
 fn icon_lookup_keys(item: &DockItem) -> Vec<String> {
     let mut keys = Vec::new();
+    if item.is_downloads_applet() {
+        for icon_name in ["folder-download", "folder-downloads", "folder", "inode-directory"] {
+            push_icon_key(&mut keys, Some(icon_name));
+        }
+    } else if item.is_trash_applet() {
+        for icon_name in ["user-trash-full", "user-trash", "trashcan_full", "trashcan_empty"] {
+            push_icon_key(&mut keys, Some(icon_name));
+        }
+    }
     push_icon_key(&mut keys, item.icon_name.as_deref());
     push_icon_key(&mut keys, item.startup_wm_class.as_deref());
     push_icon_key(&mut keys, item.desktop_id.as_deref());

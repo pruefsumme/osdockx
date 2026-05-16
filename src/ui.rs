@@ -11,20 +11,25 @@ use crate::scene3d::Scene3dRenderer;
 use crate::shelf::ShelfRenderer;
 use crate::theme::Theme;
 use crate::theme_pack::ThemePack;
+use directories::UserDirs;
 use gdk_x11::X11Surface;
 use gtk::gio;
 use gtk::gio::prelude::FileExt;
 use gtk::glib::{self, Propagation, object::Cast};
+use gtk::pango::EllipsizeMode;
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
-    EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag, Label,
+    EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag, Image,
+    Label,
     Orientation, Overlay, Popover, PositionType, gdk,
 };
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const APP_ID: &str = "dev.osdockx.OSDockX";
 const EDGE_VISIBLE_PIXELS: i32 = 4;
@@ -35,6 +40,9 @@ const CONTEXT_MENU_SETTINGS_COUNT: usize = 3;
 const CONTEXT_MENU_SEPARATOR_HEIGHT: i32 = 12;
 const CONTEXT_MENU_CHROME_HEIGHT: i32 = 12;
 const CONTEXT_MENU_GAP: f64 = 18.0;
+const DOWNLOADS_STACK_WIDTH: i32 = 268;
+const DOWNLOADS_STACK_MAX_ITEMS: usize = 7;
+const DOWNLOADS_STACK_GAP: f64 = 22.0;
 const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
@@ -89,6 +97,14 @@ struct IconDrag {
 struct IconSlide {
     from: Vec<IconMotionRect>,
     started: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct DownloadStackEntry {
+    name: String,
+    path: PathBuf,
+    icon_name: String,
+    modified: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,12 +337,73 @@ fn install_css() {
             box-shadow: none;
             padding: 0;
         }
+        popover.osdock-stack-popover contents {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            padding: 0;
+        }
         .osdock-context-menu {
             background: alpha(#1b1c1f, 0.90);
             border: 1px solid alpha(#ffffff, 0.18);
             border-radius: 7px;
             box-shadow: 0 8px 20px alpha(#000000, 0.48);
             padding: 5px;
+        }
+        .osdock-downloads-stack {
+            background-image: linear-gradient(
+                to bottom,
+                alpha(#26282d, 0.98),
+                alpha(#0f1116, 0.96)
+            );
+            border: 1px solid alpha(#ffffff, 0.16);
+            border-radius: 12px;
+            box-shadow: 0 12px 28px alpha(#000000, 0.56);
+            padding: 10px;
+        }
+        .osdock-stack-title {
+            color: #eef1f7;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-shadow: 0 1px alpha(#000000, 0.60);
+            margin: 0 2px 4px 2px;
+        }
+        .osdock-stack-empty {
+            color: alpha(#e4e8ef, 0.72);
+            font-size: 12px;
+            margin: 4px 6px 6px 6px;
+        }
+        button.osdock-stack-item {
+            min-height: 38px;
+            min-width: 248px;
+            padding: 0;
+            margin: 0;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            box-shadow: none;
+            color: #f2f4f8;
+        }
+        button.osdock-stack-item:hover,
+        button.osdock-stack-item:focus {
+            background-image: linear-gradient(
+                to bottom,
+                alpha(#a3b0c8, 0.28),
+                alpha(#6f7d97, 0.20)
+            );
+        }
+        .osdock-stack-row {
+            padding: 6px 10px;
+        }
+        .osdock-stack-icon {
+            margin-right: 10px;
+        }
+        button.osdock-stack-item label {
+            color: #edf1f8;
+            font-size: 12px;
+            font-weight: 500;
+            text-shadow: 0 1px alpha(#000000, 0.58);
         }
         .osdock-menu-box {
             padding: 1px 0;
@@ -549,14 +626,33 @@ fn wire_clicks(
                 )
             };
             if let Some(index) = hit {
+                let item = {
+                    let state = state.borrow();
+                    state.model.items.get(index).cloned()
+                };
+                let Some(item) = item else {
+                    drawing.queue_draw();
+                    return;
+                };
                 if button == 3 {
-                    show_context_menu(&state, &window, &drawing, &gl_area, index, x, y);
+                    if item.is_application() {
+                        show_context_menu(&state, &window, &drawing, &gl_area, index, x, y);
+                    } else {
+                        let dismissed = dismiss_context_menu(&state);
+                        if dismissed {
+                            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                        }
+                    }
                 } else if button == 1 || button == 2 {
                     let dismissed = dismiss_context_menu(&state);
                     if dismissed {
                         sync_dock_window(&state, &window, &drawing, &gl_area, true);
                     }
-                    activate_item(&state, index, button);
+                    if item.is_application() {
+                        activate_item(&state, index, button);
+                    } else {
+                        activate_applet(&state, &window, &drawing, &gl_area, &item, index, button, x, y);
+                    }
                 }
             } else if button != 0 {
                 let dismissed = dismiss_context_menu(&state);
@@ -589,6 +685,10 @@ fn wire_icon_drag(
                 let state = state.borrow();
                 Renderer::icon_hit_test(&state.model, &state.config.dock, &state.theme, point)
                     .and_then(|index| {
+                        let item = state.model.items.get(index)?;
+                        if !item.is_application() {
+                            return None;
+                        }
                         let rect = Renderer::layout_for(
                             &state.model,
                             &state.config.dock,
@@ -599,7 +699,7 @@ fn wire_icon_drag(
                         .iter()
                         .find(|icon| icon.item_index == index)
                         .map(|icon| icon.rect)?;
-                        let item_key = state.model.items.get(index).map(DockItem::config_key)?;
+                        let item_key = item.config_key();
                         Some((item_key, rect))
                     })
             };
@@ -743,6 +843,13 @@ fn drag_target_index(state: &Runtime, point: Point) -> Option<usize> {
     Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
         .icons
         .iter()
+        .filter(|icon| {
+            state
+                .model
+                .items
+                .get(icon.item_index)
+                .is_some_and(|item| item.is_application())
+        })
         .min_by(|left, right| {
             let left_distance = (left.rect.center_x() - point.x).abs();
             let right_distance = (right.rect.center_x() - point.x).abs();
@@ -915,6 +1022,9 @@ fn show_context_menu(
     let Some(item) = item else {
         return;
     };
+    if !item.is_application() {
+        return;
+    }
     let app_actions = application_context_actions(&item);
     let item_key = item.config_key();
     let pinned = item.pinned;
@@ -1017,58 +1127,14 @@ fn show_context_menu(
     popover.set_child(Some(&menu));
     popover.set_parent(drawing);
 
-    {
-        let state = Rc::clone(state);
-        let drawing = drawing.clone();
-        let gl_area = gl_area.clone();
-        let popover_for_close = popover.clone();
-        popover.connect_closed(move |_| {
-            if let Ok(mut runtime) = state.try_borrow_mut()
-                && runtime
-                    .context_menu
-                    .as_ref()
-                    .is_some_and(|current| current == &popover_for_close)
-            {
-                runtime.context_menu = None;
-                runtime.hover = None;
-            }
-
-            let state = Rc::clone(&state);
-            let drawing = drawing.clone();
-            let gl_area = gl_area.clone();
-            let popover_for_cleanup = popover_for_close.clone();
-            glib::idle_add_local_once(move || {
-                if let Ok(mut runtime) = state.try_borrow_mut()
-                    && runtime
-                        .context_menu
-                        .as_ref()
-                        .is_some_and(|current| current == &popover_for_cleanup)
-                {
-                    runtime.context_menu = None;
-                    runtime.hover = None;
-                }
-
-                popover_for_cleanup.set_child(None::<&gtk::Widget>);
-                if popover_for_cleanup.parent().is_some() {
-                    popover_for_cleanup.unparent();
-                }
-                queue_gl_render_if_enabled(&state, &gl_area);
-                drawing.queue_draw();
-            });
-        });
-    }
-
-    {
-        let mut state = state.borrow_mut();
-        state.context_menu = Some(popover.clone());
-    }
-    popover.popup();
-    sync_dock_window(state, window, drawing, gl_area, true);
-    queue_gl_render_if_enabled(state, gl_area);
-    drawing.queue_draw();
+    present_runtime_popover(state, window, drawing, gl_area, &popover);
 }
 
 fn application_context_actions(item: &DockItem) -> Vec<ApplicationContextAction> {
+    if !item.is_application() {
+        return Vec::new();
+    }
+
     let mut actions = Vec::new();
 
     if item.desktop_id.is_some() {
@@ -1141,6 +1207,268 @@ fn context_menu_separator() -> GtkBox {
     separator.set_halign(Align::Fill);
     separator.set_size_request(-1, CONTEXT_MENU_SEPARATOR_HEIGHT);
     separator
+}
+
+fn downloads_stack_button(label: &str, icon_name: &str) -> Button {
+    let button = Button::builder().has_frame(false).build();
+    button.add_css_class("osdock-stack-item");
+
+    let row = GtkBox::new(Orientation::Horizontal, 0);
+    row.add_css_class("osdock-stack-row");
+    let icon = Image::from_icon_name(icon_name);
+    icon.add_css_class("osdock-stack-icon");
+    icon.set_pixel_size(24);
+    let text = Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_hexpand(true);
+    text.set_halign(Align::Start);
+    text.set_ellipsize(EllipsizeMode::Middle);
+    text.set_max_width_chars(26);
+    row.append(&icon);
+    row.append(&text);
+    button.set_child(Some(&row));
+    button
+}
+
+fn present_runtime_popover(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    popover: &Popover,
+) {
+    {
+        let state = Rc::clone(state);
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let popover_for_close = popover.clone();
+        popover.connect_closed(move |_| {
+            if let Ok(mut runtime) = state.try_borrow_mut()
+                && runtime
+                    .context_menu
+                    .as_ref()
+                    .is_some_and(|current| current == &popover_for_close)
+            {
+                runtime.context_menu = None;
+                runtime.hover = None;
+            }
+
+            let state = Rc::clone(&state);
+            let drawing = drawing.clone();
+            let gl_area = gl_area.clone();
+            let popover_for_cleanup = popover_for_close.clone();
+            glib::idle_add_local_once(move || {
+                if let Ok(mut runtime) = state.try_borrow_mut()
+                    && runtime
+                        .context_menu
+                        .as_ref()
+                        .is_some_and(|current| current == &popover_for_cleanup)
+                {
+                    runtime.context_menu = None;
+                    runtime.hover = None;
+                }
+
+                popover_for_cleanup.set_child(None::<&gtk::Widget>);
+                if popover_for_cleanup.parent().is_some() {
+                    popover_for_cleanup.unparent();
+                }
+                queue_gl_render_if_enabled(&state, &gl_area);
+                drawing.queue_draw();
+            });
+        });
+    }
+
+    {
+        let mut state = state.borrow_mut();
+        state.context_menu = Some(popover.clone());
+    }
+    popover.popup();
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn show_downloads_stack(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    index: usize,
+    x: f64,
+    y: f64,
+) {
+    let (icon_rect, dock_width) = {
+        let state = state.borrow();
+        let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+        let icon_rect = layout
+            .icons
+            .iter()
+            .find(|icon| icon.item_index == index)
+            .map(|icon| icon.rect);
+        (icon_rect, layout.size.0)
+    };
+    let downloads_dir = downloads_directory();
+    let entries = downloads_dir
+        .as_deref()
+        .map(|dir| recent_download_entries_from_dir(dir, DOWNLOADS_STACK_MAX_ITEMS))
+        .unwrap_or_default();
+    let anchor = icon_rect.unwrap_or(Rect {
+        x,
+        y,
+        width: 1.0,
+        height: 1.0,
+    });
+
+    dismiss_context_menu(state);
+    {
+        let mut state = state.borrow_mut();
+        state.hover = None;
+    }
+
+    let stack = GtkBox::new(Orientation::Vertical, 6);
+    stack.add_css_class("osdock-downloads-stack");
+    stack.set_size_request(DOWNLOADS_STACK_WIDTH, -1);
+
+    let title = Label::new(Some("Downloads"));
+    title.add_css_class("osdock-stack-title");
+    title.set_xalign(0.0);
+    stack.append(&title);
+
+    if entries.is_empty() {
+        let empty = Label::new(Some("No recent downloads"));
+        empty.add_css_class("osdock-stack-empty");
+        empty.set_xalign(0.0);
+        stack.append(&empty);
+    } else {
+        for entry in entries {
+            let button = downloads_stack_button(&entry.name, &entry.icon_name);
+            {
+                let state = Rc::clone(state);
+                let window = window.clone();
+                let drawing = drawing.clone();
+                let gl_area = gl_area.clone();
+                let path = entry.path.clone();
+                button.connect_clicked(move |_| {
+                    dismiss_context_menu(&state);
+                    open_path_in_default_app(&path);
+                    sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                    queue_gl_render_if_enabled(&state, &gl_area);
+                    drawing.queue_draw();
+                });
+            }
+            stack.append(&button);
+        }
+    }
+
+    if let Some(downloads_dir) = downloads_dir {
+        let open_folder = downloads_stack_button("Open Downloads Folder", "folder");
+        {
+            let state = Rc::clone(state);
+            let window = window.clone();
+            let drawing = drawing.clone();
+            let gl_area = gl_area.clone();
+            open_folder.connect_clicked(move |_| {
+                dismiss_context_menu(&state);
+                open_path_in_default_app(&downloads_dir);
+                sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                queue_gl_render_if_enabled(&state, &gl_area);
+                drawing.queue_draw();
+            });
+        }
+        stack.append(&open_folder);
+    }
+
+    let popover = Popover::new();
+    popover.add_css_class("osdock-stack-popover");
+    popover.set_autohide(true);
+    popover.set_has_arrow(false);
+    popover.set_position(PositionType::Top);
+    popover.set_offset(0, -(DOWNLOADS_STACK_GAP.round() as i32));
+    popover.set_pointing_to(Some(&context_menu_anchor_rect(anchor, dock_width)));
+    popover.set_child(Some(&stack));
+    popover.set_parent(drawing);
+
+    present_runtime_popover(state, window, drawing, gl_area, &popover);
+}
+
+fn downloads_directory() -> Option<PathBuf> {
+    UserDirs::new()
+        .and_then(|user_dirs| user_dirs.download_dir().map(PathBuf::from))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join("Downloads")))
+}
+
+fn recent_download_entries_from_dir(dir: &Path, limit: usize) -> Vec<DownloadStackEntry> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut files = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            let file_type = entry.file_type().ok()?;
+            let path = entry.path();
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .unwrap_or_default();
+            Some(DownloadStackEntry {
+                name,
+                path: path.clone(),
+                icon_name: downloads_entry_icon_name(&path, file_type.is_dir()).to_string(),
+                modified,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    files.sort_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    files.truncate(limit);
+    files
+}
+
+fn downloads_entry_icon_name(path: &Path, is_directory: bool) -> &'static str {
+    if is_directory {
+        return "folder";
+    }
+
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg") => "image-x-generic",
+        Some("pdf") => "application-pdf",
+        Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => {
+            "package-x-generic"
+        }
+        Some("mp3" | "wav" | "flac" | "ogg") => "audio-x-generic",
+        Some("mp4" | "mkv" | "webm" | "mov") => "video-x-generic",
+        _ => "text-x-generic",
+    }
+}
+
+fn open_path_in_default_app(path: &Path) {
+    let file = gio::File::for_path(path);
+    let uri = file.uri();
+    open_uri(uri.as_str());
+}
+
+fn open_uri(uri: &str) {
+    if let Err(error) = gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>)
+    {
+        tracing::warn!("could not open {uri}: {error:#}");
+    }
 }
 
 fn run_application_context_action(
@@ -1401,6 +1729,9 @@ fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {
     let Some(item) = item else {
         return;
     };
+    if !item.is_application() {
+        return;
+    }
 
     if button == 2 {
         close_item_window(state, &item);
@@ -1419,7 +1750,39 @@ fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {
     launch_item(state, &item);
 }
 
+fn activate_applet(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item: &DockItem,
+    index: usize,
+    button: u32,
+    x: f64,
+    y: f64,
+) {
+    if button != 1 {
+        return;
+    }
+
+    if item.is_downloads_applet() {
+        show_downloads_stack(state, window, drawing, gl_area, index, x, y);
+        return;
+    }
+
+    if item.is_trash_applet() {
+        open_uri("trash:///");
+        sync_dock_window(state, window, drawing, gl_area, true);
+        queue_gl_render_if_enabled(state, gl_area);
+        drawing.queue_draw();
+    }
+}
+
 fn launch_item(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
+    if !item.is_application() {
+        return;
+    }
+
     if let Some(desktop_id) = item.desktop_id.as_deref()
         && let Err(error) = state.borrow().desktop_index.launch(desktop_id)
     {
@@ -1639,6 +2002,7 @@ mod tests {
         let running_active = item_with_state(Some("xfce4-terminal.desktop"), true, true);
         let running_inactive = item_with_state(Some("xfce4-terminal.desktop"), false, true);
         let pinned_only = item_with_state(Some("xfce4-terminal.desktop"), false, false);
+        let downloads = DockItem::downloads_applet();
 
         assert_eq!(
             application_context_actions(&running_active),
@@ -1660,6 +2024,7 @@ mod tests {
             application_context_actions(&pinned_only),
             vec![ApplicationContextAction::Launch]
         );
+        assert!(application_context_actions(&downloads).is_empty());
     }
 
     #[test]
