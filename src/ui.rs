@@ -19,7 +19,7 @@ use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
     EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag, Label,
-    Orientation, Overlay, gdk,
+    Orientation, Overlay, Popover, PositionType, gdk,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -29,9 +29,12 @@ use std::time::{Duration, Instant};
 const APP_ID: &str = "dev.osdockx.OSDockX";
 const EDGE_VISIBLE_PIXELS: i32 = 4;
 const SLOW_UI_OP: Duration = Duration::from_millis(4);
-const CONTEXT_MENU_WIDTH: i32 = 164;
-const CONTEXT_MENU_HEIGHT: i32 = 72;
-const CONTEXT_MENU_GAP: f64 = 8.0;
+const CONTEXT_MENU_WIDTH: i32 = 198;
+const CONTEXT_MENU_ITEM_HEIGHT: i32 = 24;
+const CONTEXT_MENU_SETTINGS_COUNT: usize = 3;
+const CONTEXT_MENU_SEPARATOR_HEIGHT: i32 = 12;
+const CONTEXT_MENU_CHROME_HEIGHT: i32 = 12;
+const CONTEXT_MENU_GAP: f64 = 18.0;
 const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
@@ -65,9 +68,7 @@ struct Runtime {
     last_geometry: Option<DockGeometry>,
     last_shape_size: Option<(i32, i32)>,
     last_shape_label: Option<usize>,
-    last_shape_menu: Option<Rect>,
-    context_menu: Option<GtkBox>,
-    context_menu_rect: Option<Rect>,
+    context_menu: Option<Popover>,
     drag: Option<IconDrag>,
     icon_slide: Option<IconSlide>,
     animation_tick_running: bool,
@@ -88,6 +89,14 @@ struct IconDrag {
 struct IconSlide {
     from: Vec<IconMotionRect>,
     started: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplicationContextAction {
+    Launch,
+    Focus,
+    Minimize,
+    Close,
 }
 
 impl Runtime {
@@ -188,9 +197,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_geometry: None,
         last_shape_size: None,
         last_shape_label: None,
-        last_shape_menu: None,
         context_menu: None,
-        context_menu_rect: None,
         drag: None,
         icon_slide: None,
         animation_tick_running: false,
@@ -262,8 +269,8 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_gl_area(&state, &gl_area, &drawing);
 
     wire_motion(&state, &window, &drawing, &gl_area);
-    wire_clicks(&state, &window, &overlay, &drawing, &gl_area);
-    wire_icon_drag(&state, &window, &overlay, &drawing, &gl_area);
+    wire_clicks(&state, &window, &drawing, &gl_area);
+    wire_icon_drag(&state, &window, &drawing, &gl_area);
     wire_realize(&state, &window);
     wire_refresh(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
@@ -308,19 +315,25 @@ fn install_css() {
         .osdock-gl {
             background-color: transparent;
         }
+        popover.osdock-context-popover contents {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            padding: 0;
+        }
         .osdock-context-menu {
             background: alpha(#1b1c1f, 0.90);
             border: 1px solid alpha(#ffffff, 0.18);
             border-radius: 7px;
             box-shadow: 0 8px 20px alpha(#000000, 0.48);
-            padding: 4px;
+            padding: 5px;
         }
         .osdock-menu-box {
-            padding: 1px;
+            padding: 1px 0;
         }
         button.osdock-menu-item {
-            min-height: 0;
-            min-width: 148px;
+            min-height: 24px;
+            min-width: 182px;
             padding: 0;
             margin: 0;
             border: none;
@@ -328,6 +341,21 @@ fn install_css() {
             background: transparent;
             box-shadow: none;
             color: #f2f2f2;
+        }
+        .osdock-menu-separator {
+            min-height: 12px;
+            margin: 3px 8px;
+            background-image: linear-gradient(
+                to right,
+                alpha(#ffffff, 0.0),
+                alpha(#f2f5fb, 0.78),
+                alpha(#b6c0cf, 0.96),
+                alpha(#f2f5fb, 0.78),
+                alpha(#ffffff, 0.0)
+            );
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: 100% 1px;
         }
         button.osdock-menu-item:hover,
         button.osdock-menu-item:focus {
@@ -461,7 +489,7 @@ fn wire_motion(
             {
                 let mut state = state.borrow_mut();
                 state.hover = None;
-                autohide = state.config.dock.autohide;
+                autohide = state.config.dock.autohide && state.context_menu.is_none();
                 delay = state.config.dock.hide_delay_ms;
             }
             queue_gl_render_if_enabled(&state, &gl_area);
@@ -486,7 +514,6 @@ fn wire_motion(
 fn wire_clicks(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
-    overlay: &Overlay,
     drawing: &DrawingArea,
     gl_area: &GLArea,
 ) {
@@ -495,7 +522,6 @@ fn wire_clicks(
     {
         let state = Rc::clone(state);
         let window = window.clone();
-        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         click.connect_released(move |gesture, _, x, y| {
@@ -506,10 +532,7 @@ fn wire_clicks(
                 return;
             }
             if button == 1 && state.borrow().context_menu.is_some() {
-                let dismissed = {
-                    let mut state = state.borrow_mut();
-                    dismiss_context_menu(&mut state, &overlay)
-                };
+                let dismissed = dismiss_context_menu(&state);
                 if dismissed {
                     sync_dock_window(&state, &window, &drawing, &gl_area, true);
                     drawing.queue_draw();
@@ -527,22 +550,16 @@ fn wire_clicks(
             };
             if let Some(index) = hit {
                 if button == 3 {
-                    show_context_menu(&state, &window, &overlay, &drawing, &gl_area, index, x, y);
+                    show_context_menu(&state, &window, &drawing, &gl_area, index, x, y);
                 } else if button == 1 || button == 2 {
-                    let dismissed = {
-                        let mut state = state.borrow_mut();
-                        dismiss_context_menu(&mut state, &overlay)
-                    };
+                    let dismissed = dismiss_context_menu(&state);
                     if dismissed {
                         sync_dock_window(&state, &window, &drawing, &gl_area, true);
                     }
                     activate_item(&state, index, button);
                 }
             } else if button != 0 {
-                let dismissed = {
-                    let mut state = state.borrow_mut();
-                    dismiss_context_menu(&mut state, &overlay)
-                };
+                let dismissed = dismiss_context_menu(&state);
                 if dismissed {
                     sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 }
@@ -556,7 +573,6 @@ fn wire_clicks(
 fn wire_icon_drag(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
-    overlay: &Overlay,
     drawing: &DrawingArea,
     gl_area: &GLArea,
 ) {
@@ -565,7 +581,6 @@ fn wire_icon_drag(
     {
         let state = Rc::clone(state);
         let window = window.clone();
-        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         drag.connect_drag_begin(move |_, x, y| {
@@ -592,9 +607,9 @@ fn wire_icon_drag(
                 return;
             };
 
-            let dismissed = {
+            let menu = {
                 let mut state = state.borrow_mut();
-                let dismissed = dismiss_context_menu(&mut state, &overlay);
+                let menu = take_context_menu(&mut state);
                 state.hover = None;
                 state.drag = Some(IconDrag {
                     item_key,
@@ -609,9 +624,9 @@ fn wire_icon_drag(
                 });
                 state.icon_slide = None;
                 state.suppress_next_left_click = false;
-                dismissed
+                menu
             };
-            if dismissed {
+            if dismiss_popover_menu(menu) {
                 sync_dock_window(&state, &window, &drawing, &gl_area, true);
             }
             ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
@@ -880,7 +895,6 @@ fn prune_finished_icon_slide(state: &mut Runtime) {
 fn show_context_menu(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
-    overlay: &Overlay,
     drawing: &DrawingArea,
     gl_area: &GLArea,
     index: usize,
@@ -901,6 +915,7 @@ fn show_context_menu(
     let Some(item) = item else {
         return;
     };
+    let app_actions = application_context_actions(&item);
     let item_key = item.config_key();
     let pinned = item.pinned;
     let anchor = icon_rect.unwrap_or(Rect {
@@ -909,25 +924,49 @@ fn show_context_menu(
         width: 1.0,
         height: 1.0,
     });
-    let menu_rect = context_menu_rect(anchor, dock_width);
-
+    dismiss_context_menu(state);
     {
         let mut state = state.borrow_mut();
-        dismiss_context_menu(&mut state, overlay);
         state.hover = None;
     }
 
     let menu = GtkBox::new(Orientation::Vertical, 0);
     menu.add_css_class("osdock-context-menu");
     menu.add_css_class("osdock-menu-box");
-    menu.set_halign(Align::Start);
-    menu.set_valign(Align::Start);
-    menu.set_margin_start(menu_rect.x.round() as i32);
-    menu.set_margin_top(menu_rect.y.round() as i32);
-    menu.set_size_request(CONTEXT_MENU_WIDTH, -1);
+    menu.set_size_request(CONTEXT_MENU_WIDTH, context_menu_height(app_actions.len()));
+
+    let app_action_count = app_actions.len();
+    let has_app_actions = app_action_count > 0;
+    for action in app_actions {
+        let button = context_menu_button(application_context_action_label(&item, action), false);
+        {
+            let state = Rc::clone(state);
+            let window = window.clone();
+            let drawing = drawing.clone();
+            let gl_area = gl_area.clone();
+            let action_item = item.clone();
+            button.connect_clicked(move |_| {
+                dismiss_context_menu(&state);
+                run_application_context_action(
+                    &state,
+                    &window,
+                    &drawing,
+                    &gl_area,
+                    &action_item,
+                    action,
+                );
+            });
+        }
+        menu.append(&button);
+    }
+
+    if has_app_actions {
+        menu.append(&context_menu_separator());
+    }
+
     let keep = context_menu_button("Keep in Dock", pinned);
     let select = context_menu_button("Select Icon", false);
-    let default_icon = context_menu_button("Set to Default Icon", false);
+    let default_icon = context_menu_button("Set Default Icon", false);
     menu.append(&keep);
     menu.append(&select);
     menu.append(&default_icon);
@@ -935,30 +974,22 @@ fn show_context_menu(
     {
         let state = Rc::clone(state);
         let window = window.clone();
-        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         let item_key = item_key.clone();
         keep.connect_clicked(move |_| {
-            {
-                let mut state = state.borrow_mut();
-                dismiss_context_menu(&mut state, &overlay);
-            }
+            dismiss_context_menu(&state);
             toggle_keep_in_dock(&state, &window, &drawing, &gl_area, &item_key, pinned);
         });
     }
     {
         let state = Rc::clone(state);
         let window = window.clone();
-        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         let item_key = item_key.clone();
         select.connect_clicked(move |_| {
-            {
-                let mut state = state.borrow_mut();
-                dismiss_context_menu(&mut state, &overlay);
-            }
+            dismiss_context_menu(&state);
             sync_dock_window(&state, &window, &drawing, &gl_area, true);
             drawing.queue_draw();
             select_custom_icon(&state, &window, &drawing, &gl_area, item_key.clone());
@@ -967,42 +998,121 @@ fn show_context_menu(
     {
         let state = Rc::clone(state);
         let window = window.clone();
-        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         let item_key = item_key.clone();
         default_icon.connect_clicked(move |_| {
-            {
-                let mut state = state.borrow_mut();
-                dismiss_context_menu(&mut state, &overlay);
-            }
+            dismiss_context_menu(&state);
             reset_custom_icon(&state, &window, &drawing, &gl_area, &item_key);
         });
     }
 
-    overlay.add_overlay(&menu);
+    let popover = Popover::new();
+    popover.add_css_class("osdock-context-popover");
+    popover.set_autohide(true);
+    popover.set_has_arrow(false);
+    popover.set_position(PositionType::Top);
+    popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
+    popover.set_pointing_to(Some(&context_menu_anchor_rect(anchor, dock_width)));
+    popover.set_child(Some(&menu));
+    popover.set_parent(drawing);
+
+    {
+        let state = Rc::clone(state);
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let popover_for_close = popover.clone();
+        popover.connect_closed(move |_| {
+            if let Ok(mut runtime) = state.try_borrow_mut()
+                && runtime
+                    .context_menu
+                    .as_ref()
+                    .is_some_and(|current| current == &popover_for_close)
+            {
+                runtime.context_menu = None;
+                runtime.hover = None;
+            }
+
+            let state = Rc::clone(&state);
+            let drawing = drawing.clone();
+            let gl_area = gl_area.clone();
+            let popover_for_cleanup = popover_for_close.clone();
+            glib::idle_add_local_once(move || {
+                if let Ok(mut runtime) = state.try_borrow_mut()
+                    && runtime
+                        .context_menu
+                        .as_ref()
+                        .is_some_and(|current| current == &popover_for_cleanup)
+                {
+                    runtime.context_menu = None;
+                    runtime.hover = None;
+                }
+
+                popover_for_cleanup.set_child(None::<&gtk::Widget>);
+                if popover_for_cleanup.parent().is_some() {
+                    popover_for_cleanup.unparent();
+                }
+                queue_gl_render_if_enabled(&state, &gl_area);
+                drawing.queue_draw();
+            });
+        });
+    }
+
     {
         let mut state = state.borrow_mut();
-        state.context_menu_rect = Some(menu_rect);
-        state.context_menu = Some(menu);
+        state.context_menu = Some(popover.clone());
     }
+    popover.popup();
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
 }
 
-fn context_menu_rect(icon_rect: Rect, dock_width: i32) -> Rect {
-    let menu_width = CONTEXT_MENU_WIDTH as f64;
-    let menu_height = CONTEXT_MENU_HEIGHT as f64;
-    let max_x = (dock_width as f64 - menu_width - 2.0).max(2.0);
-    let x = (icon_rect.center_x() - menu_width / 2.0).clamp(2.0, max_x);
-    let y = (icon_rect.y - menu_height - CONTEXT_MENU_GAP).max(2.0);
-    Rect {
-        x,
-        y,
-        width: menu_width,
-        height: menu_height,
+fn application_context_actions(item: &DockItem) -> Vec<ApplicationContextAction> {
+    let mut actions = Vec::new();
+
+    if item.desktop_id.is_some() {
+        actions.push(ApplicationContextAction::Launch);
     }
+    if item.is_running() {
+        if item.active {
+            actions.push(ApplicationContextAction::Minimize);
+        } else if item.primary_window().is_some() {
+            actions.push(ApplicationContextAction::Focus);
+        }
+        actions.push(ApplicationContextAction::Close);
+    }
+
+    actions
+}
+
+fn application_context_action_label(
+    item: &DockItem,
+    action: ApplicationContextAction,
+) -> &'static str {
+    match action {
+        ApplicationContextAction::Launch if item.is_running() => "Open New Window",
+        ApplicationContextAction::Launch => "Open",
+        ApplicationContextAction::Focus => "Show",
+        ApplicationContextAction::Minimize => "Hide",
+        ApplicationContextAction::Close => "Close Application",
+    }
+}
+
+fn context_menu_height(app_action_count: usize) -> i32 {
+    let separator_count = i32::from(app_action_count > 0);
+    CONTEXT_MENU_CHROME_HEIGHT
+        + ((app_action_count + CONTEXT_MENU_SETTINGS_COUNT) as i32 * CONTEXT_MENU_ITEM_HEIGHT)
+        + separator_count * CONTEXT_MENU_SEPARATOR_HEIGHT
+}
+
+fn context_menu_anchor_rect(icon_rect: Rect, dock_width: i32) -> gdk::Rectangle {
+    let width = icon_rect.width.ceil().max(1.0) as i32;
+    let height = icon_rect.height.ceil().max(1.0) as i32;
+    let max_x = (dock_width - width - 2).max(2);
+    let x = (icon_rect.x.floor() as i32).clamp(2, max_x);
+    let y = (icon_rect.y.floor() as i32).max(2);
+    gdk::Rectangle::new(x, y, width, height)
 }
 
 fn context_menu_button(label: &str, checked: bool) -> Button {
@@ -1022,6 +1132,35 @@ fn context_menu_button(label: &str, checked: bool) -> Button {
     row.append(&text);
     button.set_child(Some(&row));
     button
+}
+
+fn context_menu_separator() -> GtkBox {
+    let separator = GtkBox::new(Orientation::Horizontal, 0);
+    separator.add_css_class("osdock-menu-separator");
+    separator.set_hexpand(true);
+    separator.set_halign(Align::Fill);
+    separator.set_size_request(-1, CONTEXT_MENU_SEPARATOR_HEIGHT);
+    separator
+}
+
+fn run_application_context_action(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item: &DockItem,
+    action: ApplicationContextAction,
+) {
+    match action {
+        ApplicationContextAction::Launch => launch_item(state, item),
+        ApplicationContextAction::Focus => focus_item_window(state, item),
+        ApplicationContextAction::Minimize => minimize_item_window(state, item),
+        ApplicationContextAction::Close => close_item_application(state, item),
+    }
+
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
 }
 
 fn toggle_keep_in_dock(
@@ -1146,14 +1285,24 @@ fn image_file_filter() -> FileFilter {
     filter
 }
 
-fn dismiss_context_menu(state: &mut Runtime, overlay: &Overlay) -> bool {
-    let Some(menu) = state.context_menu.take() else {
-        state.context_menu_rect = None;
+fn take_context_menu(state: &mut Runtime) -> Option<Popover> {
+    state.context_menu.take()
+}
+
+fn dismiss_popover_menu(menu: Option<Popover>) -> bool {
+    let Some(menu) = menu else {
         return false;
     };
-    overlay.remove_overlay(&menu);
-    state.context_menu_rect = None;
+    menu.popdown();
     true
+}
+
+fn dismiss_context_menu(state: &Rc<RefCell<Runtime>>) -> bool {
+    let menu = {
+        let mut state = state.borrow_mut();
+        take_context_menu(&mut state)
+    };
+    dismiss_popover_menu(menu)
 }
 
 fn save_runtime_config(state: &Runtime) {
@@ -1223,7 +1372,6 @@ fn refresh_config_and_theme(state: &mut Runtime) {
                 state.last_size = None;
                 state.last_geometry = None;
                 state.last_shape_size = None;
-                state.last_shape_menu = None;
             }
         }
         Err(error) => {
@@ -1242,7 +1390,6 @@ fn refresh_config_and_theme(state: &mut Runtime) {
         state.last_size = None;
         state.last_geometry = None;
         state.last_shape_size = None;
-        state.last_shape_menu = None;
     }
 }
 
@@ -1260,25 +1407,47 @@ fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {
         return;
     }
 
-    if let Some(window) = item.primary_window() {
-        let mut state = state.borrow_mut();
-        if let Some(backend) = state.backend.as_mut() {
-            let result = if item.active {
-                backend.minimize_window(window)
-            } else {
-                backend.focus_window(window)
-            };
-            if let Err(error) = result {
-                tracing::warn!("window action failed: {error:#}");
-            }
+    if item.primary_window().is_some() {
+        if item.active {
+            minimize_item_window(state, &item);
+        } else {
+            focus_item_window(state, &item);
         }
         return;
     }
 
+    launch_item(state, &item);
+}
+
+fn launch_item(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
     if let Some(desktop_id) = item.desktop_id.as_deref()
         && let Err(error) = state.borrow().desktop_index.launch(desktop_id)
     {
         tracing::warn!("could not launch {desktop_id}: {error:#}");
+    }
+}
+
+fn focus_item_window(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
+    let Some(window) = item.primary_window() else {
+        return;
+    };
+    let mut state = state.borrow_mut();
+    if let Some(backend) = state.backend.as_mut()
+        && let Err(error) = backend.focus_window(window)
+    {
+        tracing::warn!("could not focus window {window}: {error:#}");
+    }
+}
+
+fn minimize_item_window(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
+    let Some(window) = item.primary_window() else {
+        return;
+    };
+    let mut state = state.borrow_mut();
+    if let Some(backend) = state.backend.as_mut()
+        && let Err(error) = backend.minimize_window(window)
+    {
+        tracing::warn!("could not minimize window {window}: {error:#}");
     }
 }
 
@@ -1291,6 +1460,24 @@ fn close_item_window(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
         && let Err(error) = backend.close_window(window)
     {
         tracing::warn!("could not close window {window}: {error:#}");
+    }
+}
+
+fn close_item_application(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
+    if item.windows.is_empty() {
+        return;
+    }
+
+    let windows = item.windows.iter().map(|window| window.xid).collect::<Vec<_>>();
+    let mut state = state.borrow_mut();
+    let Some(backend) = state.backend.as_mut() else {
+        return;
+    };
+
+    for window in windows {
+        if let Err(error) = backend.close_window(window) {
+            tracing::warn!("could not close window {window}: {error:#}");
+        }
     }
 }
 
@@ -1324,17 +1511,14 @@ fn sync_dock_window(
     gl_area.set_visible(state.theme.renderer == RenderMode::Scene3d);
     move_dock(&mut state);
     let shape_label = current_label_index(&state);
-    let shape_menu = state.context_menu_rect;
     if force_shape
         || size_changed
         || state.last_shape_size != Some(size)
         || state.last_shape_label != shape_label
-        || state.last_shape_menu != shape_menu
     {
         shape_dock(&mut state);
         state.last_shape_size = Some(size);
         state.last_shape_label = shape_label;
-        state.last_shape_menu = shape_menu;
     }
     log_slow("sync-window", started.elapsed());
 }
@@ -1396,11 +1580,6 @@ fn shape_dock(state: &mut Runtime) {
             input_regions.push(rect);
         }
     }
-    if let Some(rect) = state.context_menu_rect {
-        let rect = padded_rect(rect, 8.0);
-        visual_regions.push(rect);
-        input_regions.push(rect);
-    }
     let started = Instant::now();
     if let Some(backend) = state.backend.as_mut()
         && let Err(error) = backend.set_dock_shape(size, &visual_regions, &input_regions)
@@ -1416,6 +1595,100 @@ fn padded_rect(rect: Rect, amount: f64) -> Rect {
         y: rect.y - amount,
         width: rect.width + amount * 2.0,
         height: rect.height + amount * 2.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::WindowInfo;
+
+    fn item_with_state(desktop_id: Option<&str>, active: bool, running: bool) -> DockItem {
+        let windows = running
+            .then_some(vec![WindowInfo {
+                xid: 42,
+                title: Some("Terminal".to_string()),
+                class: Some("Xfce4-terminal".to_string()),
+                pid: Some(1000),
+                executable: Some("xfce4-terminal".to_string()),
+                workspace: Some(0),
+                icon: None,
+                active,
+                urgent: false,
+                minimized: false,
+            }])
+            .unwrap_or_default();
+
+        DockItem {
+            id: desktop_id.unwrap_or("window:42").to_string(),
+            name: "Terminal".to_string(),
+            desktop_id: desktop_id.map(str::to_string),
+            startup_wm_class: Some("Xfce4-terminal".to_string()),
+            icon_name: Some("utilities-terminal".to_string()),
+            window_icon: None,
+            pinned: desktop_id.is_some(),
+            windows,
+            active,
+            urgent: false,
+            badge: None,
+        }
+    }
+
+    #[test]
+    fn application_menu_actions_include_app_and_window_controls() {
+        let running_active = item_with_state(Some("xfce4-terminal.desktop"), true, true);
+        let running_inactive = item_with_state(Some("xfce4-terminal.desktop"), false, true);
+        let pinned_only = item_with_state(Some("xfce4-terminal.desktop"), false, false);
+
+        assert_eq!(
+            application_context_actions(&running_active),
+            vec![
+                ApplicationContextAction::Launch,
+                ApplicationContextAction::Minimize,
+                ApplicationContextAction::Close,
+            ]
+        );
+        assert_eq!(
+            application_context_actions(&running_inactive),
+            vec![
+                ApplicationContextAction::Launch,
+                ApplicationContextAction::Focus,
+                ApplicationContextAction::Close,
+            ]
+        );
+        assert_eq!(
+            application_context_actions(&pinned_only),
+            vec![ApplicationContextAction::Launch]
+        );
+    }
+
+    #[test]
+    fn context_menu_height_expands_when_app_section_is_present() {
+        assert_eq!(
+            context_menu_height(0),
+            CONTEXT_MENU_CHROME_HEIGHT
+                + (CONTEXT_MENU_SETTINGS_COUNT as i32 * CONTEXT_MENU_ITEM_HEIGHT)
+        );
+        assert_eq!(
+            context_menu_height(3),
+            CONTEXT_MENU_CHROME_HEIGHT
+                + (6 * CONTEXT_MENU_ITEM_HEIGHT)
+                + CONTEXT_MENU_SEPARATOR_HEIGHT
+        );
+    }
+
+    #[test]
+    fn context_menu_anchor_rect_clamps_to_dock_width() {
+        let rect = Rect {
+            x: 260.4,
+            y: 18.0,
+            width: 30.0,
+            height: 40.0,
+        };
+        assert_eq!(
+            context_menu_anchor_rect(rect, 280),
+            gdk::Rectangle::new(248, 18, 30, 40)
+        );
     }
 }
 
