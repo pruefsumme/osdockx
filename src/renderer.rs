@@ -26,7 +26,7 @@ use self::shelf::{
     leopard_glass_plane_path, leopard_wedge_body_geometry,
 };
 use crate::config::{DockConfig, ShelfStyle};
-use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
+use crate::layout::{DockLayout, IconLayout, LayoutParams, Point, Rect, compute_layout};
 use crate::model::DockModel;
 use crate::theme::{Color, Theme};
 use gtk::cairo::{Context, FontSlant, FontWeight, ImageSurface, LinearGradient};
@@ -167,7 +167,10 @@ impl Renderer {
 
     pub fn draw_overlay(&mut self, cr: &Context, frame: RenderFrame<'_>, icons: &mut IconCache) {
         let started = Instant::now();
-        let layout = Self::layout_for(frame.model, frame.config, frame.theme, frame.hover);
+        let mut layout = Self::layout_for(frame.model, frame.config, frame.theme, frame.hover);
+        if let Some(icon_motion) = frame.icon_motion {
+            apply_icon_motion(frame.model, &mut layout, icon_motion);
+        }
         self.draw_layout(
             cr,
             frame.model,
@@ -277,6 +280,19 @@ pub struct RenderFrame<'a> {
     pub theme: &'a Theme,
     pub hover: Option<Point>,
     pub shelf_layer: ShelfLayer,
+    pub icon_motion: Option<&'a IconMotionFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IconMotionFrame {
+    pub rects: Vec<IconMotionRect>,
+    pub floating_item_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IconMotionRect {
+    pub item_key: String,
+    pub rect: Rect,
 }
 
 fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
@@ -329,6 +345,42 @@ fn icon_hit_test_with_ratio(
         .iter()
         .find(|icon| center_ratio_rect(icon.rect, ratio).contains(point))
         .map(|icon| icon.item_index)
+}
+
+fn apply_icon_motion(model: &DockModel, layout: &mut DockLayout, motion: &IconMotionFrame) {
+    layout.label = None;
+    for icon in &mut layout.icons {
+        let Some(item) = model.items.get(icon.item_index) else {
+            continue;
+        };
+        let key = item.config_key();
+        let Some(rect) = motion
+            .rects
+            .iter()
+            .find(|motion_rect| motion_rect.item_key.eq_ignore_ascii_case(&key))
+            .map(|motion_rect| motion_rect.rect)
+        else {
+            continue;
+        };
+        icon.rect = rect;
+    }
+    if let Some(item_key) = motion.floating_item_key.as_deref() {
+        raise_icon_layout(model, &mut layout.icons, item_key);
+    }
+}
+
+fn raise_icon_layout(model: &DockModel, icons: &mut Vec<IconLayout>, item_key: &str) {
+    let Some(index) = icons.iter().position(|icon| {
+        model
+            .items
+            .get(icon.item_index)
+            .map(|item| item.config_key().eq_ignore_ascii_case(item_key))
+            .unwrap_or(false)
+    }) else {
+        return;
+    };
+    let icon = icons.remove(index);
+    icons.push(icon);
 }
 
 fn hover_label_region(

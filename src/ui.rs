@@ -4,7 +4,9 @@ use crate::config::{Config, RenderMode};
 use crate::desktop::DesktopIndex;
 use crate::layout::{Point, Rect};
 use crate::model::{DockItem, DockModel};
-use crate::renderer::{IconCache, RenderFrame, Renderer, ShelfLayer};
+use crate::renderer::{
+    IconCache, IconMotionFrame, IconMotionRect, RenderFrame, Renderer, ShelfLayer,
+};
 use crate::scene3d::Scene3dRenderer;
 use crate::shelf::ShelfRenderer;
 use crate::theme::Theme;
@@ -31,6 +33,8 @@ const CONTEXT_MENU_WIDTH: i32 = 164;
 const CONTEXT_MENU_HEIGHT: i32 = 72;
 const CONTEXT_MENU_GAP: f64 = 8.0;
 const ICON_DRAG_THRESHOLD: f64 = 6.0;
+const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
+const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
 
 pub fn run() -> anyhow::Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
@@ -65,6 +69,8 @@ struct Runtime {
     context_menu: Option<GtkBox>,
     context_menu_rect: Option<Rect>,
     drag: Option<IconDrag>,
+    icon_slide: Option<IconSlide>,
+    animation_tick_running: bool,
     suppress_next_left_click: bool,
 }
 
@@ -72,8 +78,16 @@ struct Runtime {
 struct IconDrag {
     item_key: String,
     origin: Point,
+    current: Point,
+    grab_offset: Point,
     moved: bool,
     changed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IconSlide {
+    from: Vec<IconMotionRect>,
+    started: Instant,
 }
 
 impl Runtime {
@@ -178,6 +192,8 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         context_menu: None,
         context_menu_rect: None,
         drag: None,
+        icon_slide: None,
+        animation_tick_running: false,
         suppress_next_left_click: false,
     };
     runtime.refresh_model();
@@ -224,6 +240,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
             let config = state.config.dock.clone();
             let custom_icons = state.config.custom_icons.clone();
             let theme = state.theme.clone();
+            let icon_motion = icon_motion_frame(&state);
             let mut icons = std::mem::take(&mut state.icons);
             icons.set_custom_icons(&custom_icons);
             let shelf_layer = shelf_layer_for(&state);
@@ -235,6 +252,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
                     theme: &theme,
                     hover,
                     shelf_layer,
+                    icon_motion: icon_motion.as_ref(),
                 },
                 &mut icons,
             );
@@ -555,10 +573,22 @@ fn wire_icon_drag(
             let drag_item = {
                 let state = state.borrow();
                 Renderer::icon_hit_test(&state.model, &state.config.dock, &state.theme, point)
-                    .and_then(|index| state.model.items.get(index))
-                    .map(DockItem::config_key)
+                    .and_then(|index| {
+                        let rect = Renderer::layout_for(
+                            &state.model,
+                            &state.config.dock,
+                            &state.theme,
+                            None,
+                        )
+                        .icons
+                        .iter()
+                        .find(|icon| icon.item_index == index)
+                        .map(|icon| icon.rect)?;
+                        let item_key = state.model.items.get(index).map(DockItem::config_key)?;
+                        Some((item_key, rect))
+                    })
             };
-            let Some(item_key) = drag_item else {
+            let Some((item_key, rect)) = drag_item else {
                 return;
             };
 
@@ -569,15 +599,22 @@ fn wire_icon_drag(
                 state.drag = Some(IconDrag {
                     item_key,
                     origin: point,
+                    current: point,
+                    grab_offset: Point {
+                        x: point.x - rect.x,
+                        y: point.y - rect.y,
+                    },
                     moved: false,
                     changed: false,
                 });
+                state.icon_slide = None;
                 state.suppress_next_left_click = false;
                 dismissed
             };
             if dismissed {
                 sync_dock_window(&state, &window, &drawing, &gl_area, true);
             }
+            ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
             queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
         });
@@ -593,6 +630,7 @@ fn wire_icon_drag(
                 update_icon_drag(&mut state, offset_x, offset_y)
             };
             if changed {
+                ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
                 sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 queue_gl_render_if_enabled(&state, &gl_area);
                 drawing.queue_draw();
@@ -610,6 +648,7 @@ fn wire_icon_drag(
                 finish_icon_drag(&mut state, offset_x, offset_y)
             };
             if had_drag {
+                ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
                 sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 queue_gl_render_if_enabled(&state, &gl_area);
                 drawing.queue_draw();
@@ -620,6 +659,17 @@ fn wire_icon_drag(
 }
 
 fn update_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
+    let point = {
+        let Some(drag) = state.drag.as_mut() else {
+            return false;
+        };
+        let point = Point {
+            x: drag.origin.x + offset_x,
+            y: drag.origin.y + offset_y,
+        };
+        drag.current = point;
+        point
+    };
     if drag_distance(offset_x, offset_y) < ICON_DRAG_THRESHOLD {
         return false;
     }
@@ -628,10 +678,7 @@ fn update_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
         return false;
     };
     let item_key = drag.item_key.clone();
-    let point = Point {
-        x: drag.origin.x + offset_x,
-        y: drag.origin.y + offset_y,
-    };
+    let from_rects = current_icon_motion_rects(state);
     let Some(target_index) = drag_target_index(state, point) else {
         return false;
     };
@@ -640,6 +687,10 @@ fn update_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
         .model
         .move_item_by_key_to_index(&item_key, target_index);
     if changed {
+        state.icon_slide = Some(IconSlide {
+            from: from_rects,
+            started: Instant::now(),
+        });
         state.config.item_order = state.model.config_order();
         state.hover = None;
     }
@@ -647,19 +698,26 @@ fn update_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
         drag.moved = true;
         drag.changed |= changed;
     }
-    changed
+    true
 }
 
 fn finish_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
-    let Some(drag) = state.drag.take() else {
+    let Some(drag) = state.drag.as_ref() else {
         return false;
     };
     let dragged =
         drag.moved || drag.changed || drag_distance(offset_x, offset_y) >= ICON_DRAG_THRESHOLD;
+    let changed = drag.changed;
     if dragged {
+        let from = current_icon_motion_rects(state);
+        state.icon_slide = Some(IconSlide {
+            from,
+            started: Instant::now(),
+        });
         state.suppress_next_left_click = true;
     }
-    if drag.changed {
+    state.drag = None;
+    if changed {
         save_runtime_config(state);
     }
     state.hover = None;
@@ -680,6 +738,143 @@ fn drag_target_index(state: &Runtime, point: Point) -> Option<usize> {
 
 fn drag_distance(offset_x: f64, offset_y: f64) -> f64 {
     offset_x.hypot(offset_y)
+}
+
+fn icon_motion_frame(state: &Runtime) -> Option<IconMotionFrame> {
+    let drag = state.drag.as_ref();
+    let slide = state
+        .icon_slide
+        .as_ref()
+        .filter(|slide| slide.started.elapsed() < ICON_SLIDE_DURATION);
+    if drag.is_none() && slide.is_none() {
+        return None;
+    }
+
+    let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+    let progress = slide.map(icon_slide_progress).unwrap_or(1.0);
+    let rects = layout
+        .icons
+        .iter()
+        .filter_map(|icon| {
+            let item_key = state.model.items.get(icon.item_index)?.config_key();
+            let mut rect = icon.rect;
+            if let Some(slide) = slide
+                && let Some(from) = slide
+                    .from
+                    .iter()
+                    .find(|from| from.item_key.eq_ignore_ascii_case(&item_key))
+            {
+                rect = interpolate_rect(from.rect, icon.rect, progress);
+            }
+            if let Some(drag) = drag
+                && drag.item_key.eq_ignore_ascii_case(&item_key)
+            {
+                rect = Rect {
+                    x: drag.current.x - drag.grab_offset.x,
+                    y: drag.current.y - drag.grab_offset.y,
+                    width: icon.rect.width,
+                    height: icon.rect.height,
+                };
+            }
+            Some(IconMotionRect { item_key, rect })
+        })
+        .collect();
+
+    Some(IconMotionFrame {
+        rects,
+        floating_item_key: drag.map(|drag| drag.item_key.clone()),
+    })
+}
+
+fn current_icon_motion_rects(state: &Runtime) -> Vec<IconMotionRect> {
+    icon_motion_frame(state)
+        .map(|frame| frame.rects)
+        .unwrap_or_else(|| layout_icon_motion_rects(state))
+}
+
+fn layout_icon_motion_rects(state: &Runtime) -> Vec<IconMotionRect> {
+    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
+        .icons
+        .iter()
+        .filter_map(|icon| {
+            let item_key = state.model.items.get(icon.item_index)?.config_key();
+            Some(IconMotionRect {
+                item_key,
+                rect: icon.rect,
+            })
+        })
+        .collect()
+}
+
+fn icon_slide_progress(slide: &IconSlide) -> f64 {
+    ease_out_cubic(
+        (slide.started.elapsed().as_secs_f64() / ICON_SLIDE_DURATION.as_secs_f64()).clamp(0.0, 1.0),
+    )
+}
+
+fn ease_out_cubic(t: f64) -> f64 {
+    1.0 - (1.0 - t).powi(3)
+}
+
+fn interpolate_rect(from: Rect, to: Rect, progress: f64) -> Rect {
+    Rect {
+        x: interpolate(from.x, to.x, progress),
+        y: interpolate(from.y, to.y, progress),
+        width: interpolate(from.width, to.width, progress),
+        height: interpolate(from.height, to.height, progress),
+    }
+}
+
+fn interpolate(from: f64, to: f64, progress: f64) -> f64 {
+    from + (to - from) * progress
+}
+
+fn ensure_icon_animation_tick(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    {
+        let mut state = state.borrow_mut();
+        if state.animation_tick_running {
+            return;
+        }
+        state.animation_tick_running = true;
+    }
+
+    let state = Rc::clone(state);
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    glib::timeout_add_local(ICON_ANIMATION_FRAME, move || {
+        let keep_running = {
+            let mut state = state.borrow_mut();
+            prune_finished_icon_slide(&mut state);
+            state.drag.is_some() || state.icon_slide.is_some()
+        };
+        sync_dock_window(&state, &window, &drawing, &gl_area, false);
+        queue_gl_render_if_enabled(&state, &gl_area);
+        drawing.queue_draw();
+
+        if keep_running {
+            glib::ControlFlow::Continue
+        } else {
+            state.borrow_mut().animation_tick_running = false;
+            glib::ControlFlow::Break
+        }
+    });
+}
+
+fn prune_finished_icon_slide(state: &mut Runtime) {
+    if state
+        .icon_slide
+        .as_ref()
+        .map(|slide| slide.started.elapsed() >= ICON_SLIDE_DURATION)
+        .unwrap_or(false)
+    {
+        state.icon_slide = None;
+    }
 }
 
 fn show_context_menu(
@@ -984,7 +1179,8 @@ fn wire_refresh(
     glib::timeout_add_local(Duration::from_millis(refresh as u64), move || {
         {
             let mut state = state.borrow_mut();
-            if state.drag.is_none() {
+            prune_finished_icon_slide(&mut state);
+            if state.drag.is_none() && state.icon_slide.is_none() {
                 refresh_config_and_theme(&mut state);
                 state.refresh_model();
             }
@@ -1193,6 +1389,13 @@ fn shape_dock(state: &mut Runtime) {
     let mut visual_regions =
         Renderer::visual_regions(&state.model, &state.config.dock, &state.theme, state.hover);
     let mut input_regions = Renderer::input_regions(&state.model, &state.config.dock, &state.theme);
+    if let Some(icon_motion) = icon_motion_frame(state) {
+        for motion_rect in icon_motion.rects {
+            let rect = padded_rect(motion_rect.rect, 10.0);
+            visual_regions.push(rect);
+            input_regions.push(rect);
+        }
+    }
     if let Some(rect) = state.context_menu_rect {
         let rect = padded_rect(rect, 8.0);
         visual_regions.push(rect);
