@@ -46,6 +46,8 @@ const DOWNLOADS_STACK_GAP: f64 = 22.0;
 const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
+const STARTUP_REVEAL_DURATION: Duration = Duration::from_millis(480);
+const STARTUP_REVEAL_MARGIN_PIXELS: i32 = 18;
 
 pub fn run() -> anyhow::Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
@@ -79,7 +81,9 @@ struct Runtime {
     context_menu: Option<Popover>,
     drag: Option<IconDrag>,
     icon_slide: Option<IconSlide>,
+    startup_reveal: Option<StartupReveal>,
     animation_tick_running: bool,
+    startup_reveal_tick_running: bool,
     suppress_next_left_click: bool,
 }
 
@@ -96,6 +100,11 @@ struct IconDrag {
 #[derive(Debug, Clone)]
 struct IconSlide {
     from: Vec<IconMotionRect>,
+    started: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct StartupReveal {
     started: Instant,
 }
 
@@ -152,23 +161,94 @@ impl Runtime {
             );
 
         if self.hidden {
-            match self.config.dock.edge {
-                crate::config::DockEdge::Bottom => {
-                    geometry.y += geometry.height as i32 - EDGE_VISIBLE_PIXELS;
-                }
-                crate::config::DockEdge::Top => {
-                    geometry.y -= geometry.height as i32 - EDGE_VISIBLE_PIXELS;
-                }
-                crate::config::DockEdge::Left => {
-                    geometry.x -= geometry.width as i32 - EDGE_VISIBLE_PIXELS;
-                }
-                crate::config::DockEdge::Right => {
-                    geometry.x += geometry.width as i32 - EDGE_VISIBLE_PIXELS;
-                }
-            }
+            let hidden_offset = hidden_edge_offset(&geometry, self.config.dock.edge);
+            apply_edge_offset(
+                &mut geometry,
+                self.config.dock.edge,
+                hidden_offset,
+            );
+        }
+
+        if let Some(startup_reveal) = self.startup_reveal.as_ref() {
+            let startup_offset = startup_reveal_offset(
+                &geometry,
+                self.config.dock.edge,
+                startup_reveal.progress(),
+            );
+            apply_edge_offset(
+                &mut geometry,
+                self.config.dock.edge,
+                startup_offset,
+            );
         }
         Some(geometry)
     }
+}
+
+impl StartupReveal {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+        }
+    }
+
+    fn progress(&self) -> f64 {
+        (self.started.elapsed().as_secs_f64() / STARTUP_REVEAL_DURATION.as_secs_f64())
+            .clamp(0.0, 1.0)
+    }
+
+    fn finished(&self) -> bool {
+        self.progress() >= 1.0
+    }
+}
+
+fn apply_edge_offset(
+    geometry: &mut DockGeometry,
+    edge: crate::config::DockEdge,
+    distance: i32,
+) {
+    match edge {
+        crate::config::DockEdge::Bottom => {
+            geometry.y += distance;
+        }
+        crate::config::DockEdge::Top => {
+            geometry.y -= distance;
+        }
+        crate::config::DockEdge::Left => {
+            geometry.x -= distance;
+        }
+        crate::config::DockEdge::Right => {
+            geometry.x += distance;
+        }
+    }
+}
+
+fn hidden_edge_offset(geometry: &DockGeometry, edge: crate::config::DockEdge) -> i32 {
+    match edge {
+        crate::config::DockEdge::Bottom | crate::config::DockEdge::Top => {
+            geometry.height as i32 - EDGE_VISIBLE_PIXELS
+        }
+        crate::config::DockEdge::Left | crate::config::DockEdge::Right => {
+            geometry.width as i32 - EDGE_VISIBLE_PIXELS
+        }
+    }
+}
+
+fn startup_reveal_offset(
+    geometry: &DockGeometry,
+    edge: crate::config::DockEdge,
+    progress: f64,
+) -> i32 {
+    let eased = ease_out_cubic(progress.clamp(0.0, 1.0));
+    let travel = match edge {
+        crate::config::DockEdge::Bottom | crate::config::DockEdge::Top => {
+            geometry.height as i32 + STARTUP_REVEAL_MARGIN_PIXELS
+        }
+        crate::config::DockEdge::Left | crate::config::DockEdge::Right => {
+            geometry.width as i32 + STARTUP_REVEAL_MARGIN_PIXELS
+        }
+    };
+    ((1.0 - eased) * travel as f64).round() as i32
 }
 
 fn build_ui(app: &Application) -> anyhow::Result<()> {
@@ -216,7 +296,9 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         context_menu: None,
         drag: None,
         icon_slide: None,
+        startup_reveal: None,
         animation_tick_running: false,
+        startup_reveal_tick_running: false,
         suppress_next_left_click: false,
     };
     runtime.refresh_model();
@@ -230,6 +312,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         .focusable(false)
         .build();
     window.set_can_focus(false);
+    window.set_opacity(0.0);
     window.add_css_class("osdock-window");
 
     let overlay = Overlay::new();
@@ -287,14 +370,10 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_motion(&state, &window, &drawing, &gl_area);
     wire_clicks(&state, &window, &drawing, &gl_area);
     wire_icon_drag(&state, &window, &drawing, &gl_area);
-    wire_realize(&state, &window);
+    wire_realize(&state, &window, &drawing, &gl_area);
     wire_refresh(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
 
-    // Realize the native X11 surface before mapping so the dock geometry lands
-    // before the first visible frame instead of flashing at the WM default origin.
-    gtk::prelude::NativeExt::realize(&window);
-    sync_dock_window(&state, &window, &drawing, &gl_area, true);
     window.present();
     queue_gl_render_if_enabled(&state, &gl_area);
     Ok(())
@@ -469,29 +548,56 @@ fn install_css() {
     );
 }
 
-fn wire_realize(state: &Rc<RefCell<Runtime>>, window: &ApplicationWindow) {
+fn wire_realize(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
     let state = Rc::clone(state);
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
     window.connect_realize(move |window| {
+        let reveal = {
+            let window = window.clone();
+            move || {
+                let window = window.clone();
+                glib::idle_add_local_once(move || {
+                    window.set_opacity(1.0);
+                });
+            }
+        };
+
         let Some(surface) = window.surface() else {
+            reveal();
             return;
         };
         let Ok(surface) = surface.downcast::<X11Surface>() else {
             tracing::warn!("GTK surface is not an X11 surface");
+            reveal();
             return;
         };
         let xid = surface.xid() as u32;
-        let mut state = state.borrow_mut();
-        state.dock_xid = Some(xid);
-        let Some(geometry) = state.desired_geometry() else {
+        let mut runtime = state.borrow_mut();
+        runtime.dock_xid = Some(xid);
+        if runtime.backend.is_some() {
+            runtime.startup_reveal = Some(StartupReveal::new());
+        }
+        let Some(geometry) = runtime.desired_geometry() else {
+            runtime.startup_reveal = None;
+            reveal();
             return;
         };
-        if let Some(backend) = state.backend.as_mut()
+        if let Some(backend) = runtime.backend.as_mut()
             && let Err(error) = backend.set_dock_window(xid, geometry)
         {
             tracing::warn!("could not configure X11 dock window: {error:#}");
         }
-        state.last_geometry = Some(geometry);
-        shape_dock(&mut state);
+        runtime.last_geometry = Some(geometry);
+        shape_dock(&mut runtime);
+        drop(runtime);
+        reveal();
+        ensure_startup_reveal_tick(&state, window, &drawing, &gl_area);
     });
 }
 
@@ -990,6 +1096,53 @@ fn ensure_icon_animation_tick(
             glib::ControlFlow::Break
         }
     });
+}
+
+fn ensure_startup_reveal_tick(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    {
+        let mut state = state.borrow_mut();
+        if state.startup_reveal_tick_running || state.startup_reveal.is_none() {
+            return;
+        }
+        state.startup_reveal_tick_running = true;
+    }
+
+    let state = Rc::clone(state);
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    glib::timeout_add_local(ICON_ANIMATION_FRAME, move || {
+        let keep_running = {
+            let mut state = state.borrow_mut();
+            prune_finished_startup_reveal(&mut state);
+            state.startup_reveal.is_some()
+        };
+        sync_dock_window(&state, &window, &drawing, &gl_area, false);
+        queue_gl_render_if_enabled(&state, &gl_area);
+        drawing.queue_draw();
+
+        if keep_running {
+            glib::ControlFlow::Continue
+        } else {
+            state.borrow_mut().startup_reveal_tick_running = false;
+            glib::ControlFlow::Break
+        }
+    });
+}
+
+fn prune_finished_startup_reveal(state: &mut Runtime) {
+    if state
+        .startup_reveal
+        .as_ref()
+        .is_some_and(StartupReveal::finished)
+    {
+        state.startup_reveal = None;
+    }
 }
 
 fn prune_finished_icon_slide(state: &mut Runtime) {
@@ -2057,6 +2210,28 @@ mod tests {
         assert_eq!(
             context_menu_anchor_rect(rect, 280),
             gdk::Rectangle::new(248, 18, 30, 40)
+        );
+    }
+
+    #[test]
+    fn startup_reveal_offset_moves_bottom_dock_from_below_screen() {
+        let geometry = DockGeometry {
+            x: 180,
+            y: 920,
+            width: 420,
+            height: 74,
+            edge: crate::config::DockEdge::Bottom,
+            reserve_space: false,
+            reserved_thickness: 0,
+        };
+
+        assert_eq!(
+            startup_reveal_offset(&geometry, crate::config::DockEdge::Bottom, 0.0),
+            geometry.height as i32 + STARTUP_REVEAL_MARGIN_PIXELS
+        );
+        assert_eq!(
+            startup_reveal_offset(&geometry, crate::config::DockEdge::Bottom, 1.0),
+            0
         );
     }
 }
