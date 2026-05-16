@@ -10,6 +10,7 @@ pub struct Config {
     pub dock: DockConfig,
     pub theme: ThemeConfig,
     pub pinned: Vec<String>,
+    pub item_order: Vec<String>,
     pub custom_icons: BTreeMap<String, String>,
 }
 
@@ -111,6 +112,7 @@ impl Default for Config {
                 "firefox.desktop".to_string(),
                 "xfce-settings-manager.desktop".to_string(),
             ],
+            item_order: Vec::new(),
             custom_icons: BTreeMap::new(),
         }
     }
@@ -226,6 +228,11 @@ impl Config {
             *pinned = normalize_pinned_id(pinned);
         }
         self.pinned.retain(|id| !id.trim().is_empty());
+        for item in &mut self.item_order {
+            *item = normalize_custom_icon_key(item);
+        }
+        dedupe_case_insensitive(&mut self.item_order);
+        self.item_order.retain(|id| !id.trim().is_empty());
         self.custom_icons = self
             .custom_icons
             .into_iter()
@@ -265,6 +272,18 @@ fn normalize_custom_icon_key(key: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn dedupe_case_insensitive(values: &mut Vec<String>) {
+    let mut seen = Vec::<String>::new();
+    values.retain(|value| {
+        let normalized = value.to_ascii_lowercase();
+        if seen.iter().any(|seen| seen == &normalized) {
+            return false;
+        }
+        seen.push(normalized);
+        true
+    });
 }
 
 fn migrate_old_osx_defaults(theme: &mut ThemeConfig) {
@@ -429,6 +448,11 @@ mod tests {
         config.theme.reflection_band_ratio = 9.0;
         config.theme.tilt = 9.0;
         config.pinned = vec!["org.xfce.Terminal.desktop".to_string()];
+        config.item_order = vec![
+            "org.xfce.Terminal.desktop".to_string(),
+            "org.xfce.Terminal.desktop".to_string(),
+            " ".to_string(),
+        ];
         config.custom_icons.insert(
             " org.xfce.Terminal.desktop ".to_string(),
             " /tmp/terminal.png ".to_string(),
@@ -450,6 +474,7 @@ mod tests {
         assert_eq!(config.theme.reflection_band_ratio, 0.8);
         assert_eq!(config.theme.tilt, 1.2);
         assert_eq!(config.pinned, vec!["xfce4-terminal.desktop"]);
+        assert_eq!(config.item_order, vec!["xfce4-terminal.desktop"]);
         assert_eq!(
             config.custom_icons.get("xfce4-terminal.desktop"),
             Some(&"/tmp/terminal.png".to_string())
@@ -563,7 +588,10 @@ mod tests {
         assert_eq!(config.theme.preset, "leopard");
         assert_eq!(config.theme.shelf_style, ShelfStyle::LeopardPlank);
         assert_eq!(config.theme.shelf_height_ratio, defaults.shelf_height_ratio);
-        assert_eq!(config.theme.shelf_horizon_ratio, defaults.shelf_horizon_ratio);
+        assert_eq!(
+            config.theme.shelf_horizon_ratio,
+            defaults.shelf_horizon_ratio
+        );
         assert_eq!(config.theme.shelf_top, defaults.shelf_top);
         assert_eq!(config.theme.shelf_bottom, defaults.shelf_bottom);
     }

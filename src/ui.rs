@@ -16,8 +16,8 @@ use gtk::glib::{self, Propagation, object::Cast};
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
-    EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, Label, Orientation,
-    Overlay, gdk,
+    EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag, Label,
+    Orientation, Overlay, gdk,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -30,6 +30,7 @@ const SLOW_UI_OP: Duration = Duration::from_millis(4);
 const CONTEXT_MENU_WIDTH: i32 = 164;
 const CONTEXT_MENU_HEIGHT: i32 = 72;
 const CONTEXT_MENU_GAP: f64 = 8.0;
+const ICON_DRAG_THRESHOLD: f64 = 6.0;
 
 pub fn run() -> anyhow::Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
@@ -63,6 +64,16 @@ struct Runtime {
     last_shape_menu: Option<Rect>,
     context_menu: Option<GtkBox>,
     context_menu_rect: Option<Rect>,
+    drag: Option<IconDrag>,
+    suppress_next_left_click: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IconDrag {
+    item_key: String,
+    origin: Point,
+    moved: bool,
+    changed: bool,
 }
 
 impl Runtime {
@@ -79,6 +90,7 @@ impl Runtime {
             })
             .unwrap_or_default();
         self.model = DockModel::from_sources(&self.config.pinned, &self.desktop_index, windows);
+        self.model.apply_order(&self.config.item_order);
     }
 
     fn desired_size(&self) -> (i32, i32) {
@@ -165,6 +177,8 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_shape_menu: None,
         context_menu: None,
         context_menu_rect: None,
+        drag: None,
+        suppress_next_left_click: false,
     };
     runtime.refresh_model();
 
@@ -231,6 +245,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
 
     wire_motion(&state, &window, &drawing, &gl_area);
     wire_clicks(&state, &window, &overlay, &drawing, &gl_area);
+    wire_icon_drag(&state, &window, &overlay, &drawing, &gl_area);
     wire_realize(&state, &window);
     wire_refresh(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
@@ -394,7 +409,7 @@ fn wire_motion(
             let point = Point { x, y };
             {
                 let mut state = state.borrow_mut();
-                let next_hover = if state.context_menu.is_some() {
+                let next_hover = if state.context_menu.is_some() || state.drag.is_some() {
                     None
                 } else {
                     Renderer::hover_point_for(
@@ -467,6 +482,11 @@ fn wire_clicks(
         let gl_area = gl_area.clone();
         click.connect_released(move |gesture, _, x, y| {
             let button = gesture.current_button();
+            if button == 1 && state.borrow().suppress_next_left_click {
+                state.borrow_mut().suppress_next_left_click = false;
+                drawing.queue_draw();
+                return;
+            }
             if button == 1 && state.borrow().context_menu.is_some() {
                 let dismissed = {
                     let mut state = state.borrow_mut();
@@ -513,6 +533,153 @@ fn wire_clicks(
         });
     }
     drawing.add_controller(click);
+}
+
+fn wire_icon_drag(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    overlay: &Overlay,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let drag = GestureDrag::new();
+    drag.set_button(1);
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let overlay = overlay.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        drag.connect_drag_begin(move |_, x, y| {
+            let point = Point { x, y };
+            let drag_item = {
+                let state = state.borrow();
+                Renderer::icon_hit_test(&state.model, &state.config.dock, &state.theme, point)
+                    .and_then(|index| state.model.items.get(index))
+                    .map(DockItem::config_key)
+            };
+            let Some(item_key) = drag_item else {
+                return;
+            };
+
+            let dismissed = {
+                let mut state = state.borrow_mut();
+                let dismissed = dismiss_context_menu(&mut state, &overlay);
+                state.hover = None;
+                state.drag = Some(IconDrag {
+                    item_key,
+                    origin: point,
+                    moved: false,
+                    changed: false,
+                });
+                state.suppress_next_left_click = false;
+                dismissed
+            };
+            if dismissed {
+                sync_dock_window(&state, &window, &drawing, &gl_area, true);
+            }
+            queue_gl_render_if_enabled(&state, &gl_area);
+            drawing.queue_draw();
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        drag.connect_drag_update(move |_, offset_x, offset_y| {
+            let changed = {
+                let mut state = state.borrow_mut();
+                update_icon_drag(&mut state, offset_x, offset_y)
+            };
+            if changed {
+                sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                queue_gl_render_if_enabled(&state, &gl_area);
+                drawing.queue_draw();
+            }
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        drag.connect_drag_end(move |_, offset_x, offset_y| {
+            let had_drag = {
+                let mut state = state.borrow_mut();
+                finish_icon_drag(&mut state, offset_x, offset_y)
+            };
+            if had_drag {
+                sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                queue_gl_render_if_enabled(&state, &gl_area);
+                drawing.queue_draw();
+            }
+        });
+    }
+    drawing.add_controller(drag);
+}
+
+fn update_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
+    if drag_distance(offset_x, offset_y) < ICON_DRAG_THRESHOLD {
+        return false;
+    }
+
+    let Some(drag) = state.drag.as_ref() else {
+        return false;
+    };
+    let item_key = drag.item_key.clone();
+    let point = Point {
+        x: drag.origin.x + offset_x,
+        y: drag.origin.y + offset_y,
+    };
+    let Some(target_index) = drag_target_index(state, point) else {
+        return false;
+    };
+
+    let changed = state
+        .model
+        .move_item_by_key_to_index(&item_key, target_index);
+    if changed {
+        state.config.item_order = state.model.config_order();
+        state.hover = None;
+    }
+    if let Some(drag) = state.drag.as_mut() {
+        drag.moved = true;
+        drag.changed |= changed;
+    }
+    changed
+}
+
+fn finish_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
+    let Some(drag) = state.drag.take() else {
+        return false;
+    };
+    let dragged =
+        drag.moved || drag.changed || drag_distance(offset_x, offset_y) >= ICON_DRAG_THRESHOLD;
+    if dragged {
+        state.suppress_next_left_click = true;
+    }
+    if drag.changed {
+        save_runtime_config(state);
+    }
+    state.hover = None;
+    true
+}
+
+fn drag_target_index(state: &Runtime, point: Point) -> Option<usize> {
+    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
+        .icons
+        .iter()
+        .min_by(|left, right| {
+            let left_distance = (left.rect.center_x() - point.x).abs();
+            let right_distance = (right.rect.center_x() - point.x).abs();
+            left_distance.total_cmp(&right_distance)
+        })
+        .map(|icon| icon.item_index)
+}
+
+fn drag_distance(offset_x: f64, offset_y: f64) -> f64 {
+    offset_x.hypot(offset_y)
 }
 
 fn show_context_menu(
@@ -817,8 +984,10 @@ fn wire_refresh(
     glib::timeout_add_local(Duration::from_millis(refresh as u64), move || {
         {
             let mut state = state.borrow_mut();
-            refresh_config_and_theme(&mut state);
-            state.refresh_model();
+            if state.drag.is_none() {
+                refresh_config_and_theme(&mut state);
+                state.refresh_model();
+            }
         }
         sync_dock_window(&state, &window, &drawing, &gl_area, true);
         queue_gl_render_if_enabled(&state, &gl_area);

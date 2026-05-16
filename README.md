@@ -31,6 +31,8 @@ If no file exists, OSDockX writes a default config on first launch.
   theme lookup, absolute `Icon=` paths, `_NET_WM_ICON`, and placeholder fallbacks
 - Per-app custom icons can be selected from the right-click icon menu and are
   stored under `custom_icons` in the user config
+- Dock icons can be reordered by left-click dragging, with the resulting order
+  stored under `item_order` in the user config
 - App matching through `StartupWMClass`, desktop IDs, names, and executable fallback
 - Default `leopard` theme with an editable cairo Leopard-style plank,
   mirrored icon-band reflections, magnification, running indicators, and badges

@@ -89,6 +89,48 @@ impl DockModel {
         Self { items }
     }
 
+    pub fn apply_order(&mut self, ordered_keys: &[String]) {
+        if ordered_keys.is_empty() || self.items.len() < 2 {
+            return;
+        }
+
+        let mut indexed_items = self.items.drain(..).enumerate().collect::<Vec<_>>();
+        indexed_items.sort_by(|(left_index, left), (right_index, right)| {
+            let left_order = order_position(ordered_keys, &left.config_key());
+            let right_order = order_position(ordered_keys, &right.config_key());
+            match (left_order, right_order) {
+                (Some(left_order), Some(right_order)) => left_order.cmp(&right_order),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => left_index.cmp(right_index),
+            }
+            .then_with(|| left_index.cmp(right_index))
+        });
+        self.items = indexed_items.into_iter().map(|(_, item)| item).collect();
+    }
+
+    pub fn config_order(&self) -> Vec<String> {
+        self.items.iter().map(DockItem::config_key).collect()
+    }
+
+    pub fn move_item_by_key_to_index(&mut self, item_key: &str, target_index: usize) -> bool {
+        let Some(current_index) = self
+            .items
+            .iter()
+            .position(|item| item.config_key().eq_ignore_ascii_case(item_key))
+        else {
+            return false;
+        };
+        let target_index = target_index.min(self.items.len().saturating_sub(1));
+        if current_index == target_index {
+            return false;
+        }
+
+        let item = self.items.remove(current_index);
+        self.items.insert(target_index, item);
+        true
+    }
+
     pub fn active_window_for(&self, index: usize) -> Option<WindowId> {
         let item = self.items.get(index)?;
         item.windows
@@ -169,6 +211,12 @@ impl DockItem {
     }
 }
 
+fn order_position(ordered_keys: &[String], item_key: &str) -> Option<usize> {
+    ordered_keys
+        .iter()
+        .position(|ordered_key| ordered_key.eq_ignore_ascii_case(item_key))
+}
+
 fn find_matching_item(
     items: &[DockItem],
     desktop_index: &DesktopIndex,
@@ -230,5 +278,85 @@ mod tests {
         assert!(model.items[0].pinned);
         assert!(model.items[0].active);
         assert_eq!(model.items[0].windows[0].xid, 42);
+    }
+
+    #[test]
+    fn applies_saved_item_order_after_merging_sources() {
+        let index = DesktopIndex::from_apps(vec![
+            DesktopApp {
+                desktop_id: "terminal.desktop".to_string(),
+                name: "Terminal".to_string(),
+                icon_name: Some("terminal".to_string()),
+                startup_wm_class: Some("terminal".to_string()),
+                exec: None,
+            },
+            DesktopApp {
+                desktop_id: "browser.desktop".to_string(),
+                name: "Browser".to_string(),
+                icon_name: Some("browser".to_string()),
+                startup_wm_class: Some("browser".to_string()),
+                exec: None,
+            },
+        ]);
+        let mut model = DockModel::from_sources(
+            &[
+                "terminal.desktop".to_string(),
+                "browser.desktop".to_string(),
+            ],
+            &index,
+            Vec::new(),
+        );
+
+        model.apply_order(&[
+            "browser.desktop".to_string(),
+            "terminal.desktop".to_string(),
+        ]);
+
+        assert_eq!(
+            model.config_order(),
+            vec!["browser.desktop", "terminal.desktop"]
+        );
+    }
+
+    #[test]
+    fn moves_item_by_config_key() {
+        let index = DesktopIndex::from_apps(vec![
+            DesktopApp {
+                desktop_id: "one.desktop".to_string(),
+                name: "One".to_string(),
+                icon_name: None,
+                startup_wm_class: None,
+                exec: None,
+            },
+            DesktopApp {
+                desktop_id: "two.desktop".to_string(),
+                name: "Two".to_string(),
+                icon_name: None,
+                startup_wm_class: None,
+                exec: None,
+            },
+            DesktopApp {
+                desktop_id: "three.desktop".to_string(),
+                name: "Three".to_string(),
+                icon_name: None,
+                startup_wm_class: None,
+                exec: None,
+            },
+        ]);
+        let mut model = DockModel::from_sources(
+            &[
+                "one.desktop".to_string(),
+                "two.desktop".to_string(),
+                "three.desktop".to_string(),
+            ],
+            &index,
+            Vec::new(),
+        );
+
+        assert!(model.move_item_by_key_to_index("one.desktop", 2));
+        assert_eq!(
+            model.config_order(),
+            vec!["two.desktop", "three.desktop", "one.desktop"]
+        );
     }
 }
