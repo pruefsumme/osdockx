@@ -291,6 +291,10 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_refresh(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
 
+    // Realize the native X11 surface before mapping so the dock geometry lands
+    // before the first visible frame instead of flashing at the WM default origin.
+    gtk::prelude::NativeExt::realize(&window);
+    sync_dock_window(&state, &window, &drawing, &gl_area, true);
     window.present();
     queue_gl_render_if_enabled(&state, &gl_area);
     Ok(())
