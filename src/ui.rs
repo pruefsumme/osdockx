@@ -3,7 +3,7 @@ use crate::backend::{DockGeometry, PlatformBackend};
 use crate::config::{Config, RenderMode};
 use crate::desktop::DesktopIndex;
 use crate::layout::{Point, Rect};
-use crate::model::{DockItem, DockModel};
+use crate::model::{DockItem, DockModel, DockSectionKind};
 use crate::renderer::{
     IconCache, IconMotionFrame, IconMotionRect, RenderFrame, Renderer, ShelfLayer,
 };
@@ -47,6 +47,10 @@ const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
 const STARTUP_REVEAL_DURATION: Duration = Duration::from_millis(480);
+const SEPARATOR_RESIZE_CURSOR: &str = "ns-resize";
+const SEPARATOR_RESIZE_PIXELS_PER_ICON: f64 = 2.5;
+const SEPARATOR_RESIZE_MIN_ICON_SIZE: u32 = 32;
+const SEPARATOR_RESIZE_MAX_ICON_SIZE: u32 = 128;
 
 pub fn run() -> anyhow::Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
@@ -79,6 +83,7 @@ struct Runtime {
     last_shape_label: Option<usize>,
     context_menu: Option<Popover>,
     drag: Option<IconDrag>,
+    separator_resize: Option<SeparatorResize>,
     icon_slide: Option<IconSlide>,
     startup_reveal: Option<StartupReveal>,
     animation_tick_running: bool,
@@ -94,6 +99,13 @@ struct IconDrag {
     grab_offset: Point,
     moved: bool,
     changed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SeparatorResize {
+    start_mouse_y: f64,
+    start_icon_size: u32,
+    current_icon_size: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +255,42 @@ fn startup_reveal_offset(
     ((1.0 - eased) * travel as f64).round() as i32
 }
 
+fn separator_hit_test_in_layout(layout: &crate::layout::DockLayout, point: Point) -> bool {
+    layout
+        .section(DockSectionKind::Separator)
+        .is_some_and(|section| section.rect.contains(point))
+}
+
+fn separator_hit_test(state: &Runtime, point: Point) -> bool {
+    let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+    separator_hit_test_in_layout(&layout, point)
+}
+
+fn begin_separator_resize(
+    layout: &crate::layout::DockLayout,
+    point: Point,
+    start_icon_size: u32,
+) -> Option<SeparatorResize> {
+    separator_hit_test_in_layout(layout, point).then_some(SeparatorResize {
+        start_mouse_y: point.y,
+        start_icon_size,
+        current_icon_size: start_icon_size,
+    })
+}
+
+fn resize_icon_size_for_drag(start_icon_size: u32, offset_y: f64) -> u32 {
+    let size_delta = (-offset_y / SEPARATOR_RESIZE_PIXELS_PER_ICON).round() as i32;
+    (start_icon_size as i32 + size_delta)
+        .clamp(
+            SEPARATOR_RESIZE_MIN_ICON_SIZE as i32,
+            SEPARATOR_RESIZE_MAX_ICON_SIZE as i32,
+        ) as u32
+}
+
+fn set_separator_resize_cursor(drawing: &DrawingArea, enabled: bool) {
+    drawing.set_cursor_from_name(enabled.then_some(SEPARATOR_RESIZE_CURSOR));
+}
+
 fn build_ui(app: &Application) -> anyhow::Result<()> {
     let (config, config_path) = Config::load_or_create()?;
     tracing::info!("using config {}", config_path.display());
@@ -287,6 +335,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_shape_label: None,
         context_menu: None,
         drag: None,
+        separator_resize: None,
         icon_slide: None,
         startup_reveal: None,
         animation_tick_running: false,
@@ -362,6 +411,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_motion(&state, &window, &drawing, &gl_area);
     wire_clicks(&state, &window, &drawing, &gl_area);
     wire_icon_drag(&state, &window, &drawing, &gl_area);
+    wire_separator_resize_drag(&state, &window, &drawing, &gl_area);
     wire_realize(&state, &window, &drawing, &gl_area);
     wire_refresh(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
@@ -632,9 +682,17 @@ fn wire_motion(
         motion.connect_motion(move |_, x, y| {
             let started = Instant::now();
             let point = Point { x, y };
+            let separator_hover;
+            let resizing;
             {
                 let mut state = state.borrow_mut();
-                let next_hover = if state.context_menu.is_some() || state.drag.is_some() {
+                separator_hover = separator_hit_test(&state, point);
+                resizing = state.separator_resize.is_some();
+                let next_hover = if state.context_menu.is_some()
+                    || state.drag.is_some()
+                    || resizing
+                    || separator_hover
+                {
                     None
                 } else {
                     Renderer::hover_point_for(
@@ -651,6 +709,7 @@ fn wire_motion(
                 }
                 state.hover = next_hover;
             }
+            set_separator_resize_cursor(&drawing, separator_hover || resizing);
             sync_dock_window(&state, &window, &drawing, &gl_area, false);
             queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
@@ -668,9 +727,12 @@ fn wire_motion(
             {
                 let mut state = state.borrow_mut();
                 state.hover = None;
-                autohide = state.config.dock.autohide && state.context_menu.is_none();
+                autohide = state.config.dock.autohide
+                    && state.context_menu.is_none()
+                    && state.separator_resize.is_none();
                 delay = state.config.dock.hide_delay_ms;
             }
+            set_separator_resize_cursor(&drawing, false);
             queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
 
@@ -873,6 +935,118 @@ fn wire_icon_drag(
         });
     }
     drawing.add_controller(drag);
+}
+
+fn wire_separator_resize_drag(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let drag = GestureDrag::new();
+    drag.set_button(1);
+    {
+        let state = Rc::clone(state);
+        let drawing = drawing.clone();
+        drag.connect_drag_begin(move |_, x, y| {
+            let point = Point { x, y };
+            let resize = {
+                let state = state.borrow();
+                let layout = Renderer::layout_for(
+                    &state.model,
+                    &state.config.dock,
+                    &state.theme,
+                    None,
+                );
+                begin_separator_resize(&layout, point, state.config.dock.icon_size)
+            };
+            let Some(resize) = resize else {
+                return;
+            };
+
+            let menu = {
+                let mut state = state.borrow_mut();
+                let menu = take_context_menu(&mut state);
+                state.hover = None;
+                state.separator_resize = Some(resize);
+                menu
+            };
+            dismiss_popover_menu(menu);
+            set_separator_resize_cursor(&drawing, true);
+            drawing.queue_draw();
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        drag.connect_drag_update(move |_, _, offset_y| {
+            let changed = {
+                let mut state = state.borrow_mut();
+                update_separator_resize(&mut state, offset_y)
+            };
+            if changed {
+                sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                queue_gl_render_if_enabled(&state, &gl_area);
+                drawing.queue_draw();
+            }
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        drag.connect_drag_end(move |_, _, _| {
+            let changed = {
+                let mut state = state.borrow_mut();
+                finish_separator_resize(&mut state)
+            };
+            if changed {
+                let state = state.borrow();
+                save_runtime_config(&state);
+            }
+            set_separator_resize_cursor(&drawing, false);
+            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+            queue_gl_render_if_enabled(&state, &gl_area);
+            drawing.queue_draw();
+        });
+    }
+    drawing.add_controller(drag);
+}
+
+fn update_separator_resize(state: &mut Runtime, offset_y: f64) -> bool {
+    let Some(resize) = state.separator_resize.as_mut() else {
+        return false;
+    };
+
+    let current_mouse_y = resize.start_mouse_y + offset_y;
+    let new_size = resize_icon_size_for_drag(
+        resize.start_icon_size,
+        current_mouse_y - resize.start_mouse_y,
+    );
+    resize.current_icon_size = new_size;
+    if state.config.dock.icon_size == new_size {
+        return false;
+    }
+
+    state.config.dock.icon_size = new_size;
+    state.hover = None;
+    state.last_size = None;
+    state.last_geometry = None;
+    state.last_shape_size = None;
+    true
+}
+
+fn finish_separator_resize(state: &mut Runtime) -> bool {
+    let Some(resize) = state.separator_resize.take() else {
+        return false;
+    };
+
+    state.hover = None;
+    state.suppress_next_left_click = true;
+    resize.current_icon_size != resize.start_icon_size
 }
 
 fn update_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
@@ -1806,7 +1980,10 @@ fn wire_refresh(
         {
             let mut state = state.borrow_mut();
             prune_finished_icon_slide(&mut state);
-            if state.drag.is_none() && state.icon_slide.is_none() {
+            if state.drag.is_none()
+                && state.separator_resize.is_none()
+                && state.icon_slide.is_none()
+            {
                 refresh_config_and_theme(&mut state);
                 state.refresh_model();
             }
@@ -2115,6 +2292,48 @@ mod tests {
     use super::*;
     use crate::model::WindowInfo;
 
+    fn separator_test_item(id: &str) -> DockItem {
+        DockItem {
+            id: id.to_string(),
+            name: id.to_string(),
+            desktop_id: Some(id.to_string()),
+            startup_wm_class: None,
+            icon_name: None,
+            window_icon: None,
+            pinned: true,
+            windows: Vec::new(),
+            active: false,
+            urgent: false,
+            badge: None,
+        }
+    }
+
+    fn separator_test_layout() -> crate::layout::DockLayout {
+        let model = DockModel {
+            items: vec![
+                separator_test_item("a"),
+                separator_test_item("b"),
+                DockItem::downloads_applet(),
+                DockItem::trash_applet(),
+            ],
+        };
+        crate::layout::compute_layout(
+            &model,
+            None,
+            crate::layout::LayoutParams {
+                icon_size: 64.0,
+                zoom_strength: 0.72,
+                gap: 8.0,
+                reflection_height: 27.0,
+                shelf_height: 24.0,
+                side_margin: 64.0 * 0.82,
+                shelf_horizon_ratio: 0.50,
+                icon_floor_offset: 0.0,
+                label_height: 24.0,
+            },
+        )
+    }
+
     fn item_with_state(desktop_id: Option<&str>, active: bool, running: bool) -> DockItem {
         let windows = running
             .then_some(vec![WindowInfo {
@@ -2225,6 +2444,55 @@ mod tests {
             startup_reveal_offset(&geometry, crate::config::DockEdge::Bottom, 1.0),
             0
         );
+    }
+
+    #[test]
+    fn separator_hit_test_starts_resize_mode() {
+        let layout = separator_test_layout();
+        let separator = layout
+            .section(DockSectionKind::Separator)
+            .expect("separator section");
+        let point = Point {
+            x: separator.rect.center_x(),
+            y: separator.rect.y + separator.rect.height * 0.5,
+        };
+
+        let resize = begin_separator_resize(&layout, point, 64).expect("resize mode");
+
+        assert_eq!(resize.start_mouse_y, point.y);
+        assert_eq!(resize.start_icon_size, 64);
+        assert_eq!(resize.current_icon_size, 64);
+    }
+
+    #[test]
+    fn dragging_upward_increases_icon_size() {
+        assert!(resize_icon_size_for_drag(64, -7.5) > 64);
+    }
+
+    #[test]
+    fn dragging_downward_decreases_icon_size() {
+        assert!(resize_icon_size_for_drag(64, 7.5) < 64);
+    }
+
+    #[test]
+    fn separator_resize_clamps_icon_size() {
+        assert_eq!(resize_icon_size_for_drag(64, -500.0), SEPARATOR_RESIZE_MAX_ICON_SIZE);
+        assert_eq!(resize_icon_size_for_drag(64, 500.0), SEPARATOR_RESIZE_MIN_ICON_SIZE);
+    }
+
+    #[test]
+    fn separator_does_not_hit_icon_magnify_path() {
+        let layout = separator_test_layout();
+        let separator = layout
+            .section(DockSectionKind::Separator)
+            .expect("separator section");
+        let point = Point {
+            x: separator.rect.center_x(),
+            y: separator.rect.y + separator.rect.height * 0.5,
+        };
+
+        assert!(separator_hit_test_in_layout(&layout, point));
+        assert!(layout.hit_test(point).is_none());
     }
 }
 
