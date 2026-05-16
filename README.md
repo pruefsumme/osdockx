@@ -27,6 +27,8 @@ If no file exists, OSDockX writes a default config on first launch.
   workspace, urgency, PID, executable, and `_NET_WM_ICON` metadata
 - RandR monitor selection via `dock.monitor` (`primary`, a monitor name, or an index)
 - Desktop launcher discovery through GIO desktop entries
+- App icons are resolved through GTK's current user icon theme, with inherited
+  theme lookup, absolute `Icon=` paths, `_NET_WM_ICON`, and placeholder fallbacks
 - App matching through `StartupWMClass`, desktop IDs, names, and executable fallback
 - Default `leopard` theme with an editable cairo Leopard-style plank,
   mirrored icon-band reflections, magnification, running indicators, and badges

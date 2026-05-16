@@ -219,6 +219,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_clicks(&state, &drawing);
     wire_realize(&state, &window);
     wire_refresh(&state, &window, &drawing, &gl_area);
+    wire_icon_theme_changes(&state, &drawing, &gl_area);
 
     window.present();
     queue_gl_render_if_enabled(&state, &gl_area);
@@ -420,6 +421,27 @@ fn wire_refresh(
         queue_gl_render_if_enabled(&state, &gl_area);
         drawing.queue_draw();
         glib::ControlFlow::Continue
+    });
+}
+
+fn wire_icon_theme_changes(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea, gl_area: &GLArea) {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+    let icon_theme = gtk::IconTheme::for_display(&display);
+    tracing::info!("using icon theme {}", icon_theme.theme_name());
+
+    let state = Rc::clone(state);
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    icon_theme.connect_changed(move |icon_theme| {
+        {
+            let mut state = state.borrow_mut();
+            state.icons.clear();
+        }
+        tracing::info!("reloaded icon theme {}", icon_theme.theme_name());
+        queue_gl_render_if_enabled(&state, &gl_area);
+        drawing.queue_draw();
     });
 }
 
