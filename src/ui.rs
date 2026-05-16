@@ -47,7 +47,6 @@ const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
 const STARTUP_REVEAL_DURATION: Duration = Duration::from_millis(480);
-const STARTUP_REVEAL_MARGIN_PIXELS: i32 = 18;
 
 pub fn run() -> anyhow::Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
@@ -240,14 +239,7 @@ fn startup_reveal_offset(
     progress: f64,
 ) -> i32 {
     let eased = ease_out_cubic(progress.clamp(0.0, 1.0));
-    let travel = match edge {
-        crate::config::DockEdge::Bottom | crate::config::DockEdge::Top => {
-            geometry.height as i32 + STARTUP_REVEAL_MARGIN_PIXELS
-        }
-        crate::config::DockEdge::Left | crate::config::DockEdge::Right => {
-            geometry.width as i32 + STARTUP_REVEAL_MARGIN_PIXELS
-        }
-    };
+    let travel = hidden_edge_offset(geometry, edge);
     ((1.0 - eased) * travel as f64).round() as i32
 }
 
@@ -2227,7 +2219,7 @@ mod tests {
 
         assert_eq!(
             startup_reveal_offset(&geometry, crate::config::DockEdge::Bottom, 0.0),
-            geometry.height as i32 + STARTUP_REVEAL_MARGIN_PIXELS
+            geometry.height as i32 - EDGE_VISIBLE_PIXELS
         );
         assert_eq!(
             startup_reveal_offset(&geometry, crate::config::DockEdge::Bottom, 1.0),
