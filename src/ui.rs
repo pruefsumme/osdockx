@@ -79,6 +79,7 @@ struct Runtime {
     hidden: bool,
     last_size: Option<(i32, i32)>,
     last_geometry: Option<DockGeometry>,
+    last_reserved_geometry: Option<DockGeometry>,
     last_shape_size: Option<(i32, i32)>,
     last_shape_label: Option<usize>,
     context_menu: Option<Popover>,
@@ -342,6 +343,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         hidden: false,
         last_size: None,
         last_geometry: None,
+        last_reserved_geometry: None,
         last_shape_size: None,
         last_shape_label: None,
         context_menu: None,
@@ -647,6 +649,7 @@ fn wire_realize(
             tracing::warn!("could not configure X11 dock window: {error:#}");
         }
         runtime.last_geometry = Some(geometry);
+        runtime.last_reserved_geometry = Some(geometry);
         shape_dock(&mut runtime);
         drop(runtime);
         reveal();
@@ -719,7 +722,7 @@ fn wire_motion(
                     };
                     if state.hidden {
                         state.hidden = false;
-                        move_dock(&mut state);
+                        move_dock(&mut state, true);
                     }
                     state.hover = next_hover;
                 }
@@ -767,7 +770,7 @@ fn wire_motion(
                     let mut state = state.borrow_mut();
                     if state.hover.is_none() {
                         state.hidden = true;
-                        move_dock(&mut state);
+                        move_dock(&mut state, true);
                     }
                 });
             }
@@ -2240,8 +2243,9 @@ fn sync_dock_window(
     }
 
     let mut state = state.borrow_mut();
+    let update_reserved_space = state.separator_resize.is_none();
     gl_area.set_visible(state.theme.renderer == RenderMode::Scene3d);
-    move_dock(&mut state);
+    move_dock(&mut state, update_reserved_space);
     let shape_label = current_label_index(&state);
     if force_shape
         || size_changed
@@ -2275,24 +2279,30 @@ fn shelf_layer_for(state: &Runtime) -> ShelfLayer {
     }
 }
 
-fn move_dock(state: &mut Runtime) {
+fn move_dock(state: &mut Runtime, update_reserved_space: bool) {
     if state.dock_xid.is_none() {
         return;
     }
     let Some(geometry) = state.desired_geometry() else {
         return;
     };
-    if state.last_geometry == Some(geometry) {
+    let geometry_changed = state.last_geometry != Some(geometry);
+    let reserved_space_changed = state.last_reserved_geometry != Some(geometry);
+    let sync_reserved_space = update_reserved_space && reserved_space_changed;
+    if !geometry_changed && !sync_reserved_space {
         return;
     }
     let started = Instant::now();
     if let Some(backend) = state.backend.as_mut()
-        && let Err(error) = backend.move_dock_window(geometry)
+        && let Err(error) = backend.move_dock_window(geometry, sync_reserved_space)
     {
         tracing::warn!("could not move dock window: {error:#}");
         return;
     }
     state.last_geometry = Some(geometry);
+    if sync_reserved_space {
+        state.last_reserved_geometry = Some(geometry);
+    }
     log_slow("move-dock", started.elapsed());
 }
 

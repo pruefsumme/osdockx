@@ -26,7 +26,11 @@ pub struct DockGeometry {
 pub trait PlatformBackend {
     fn monitor_geometry(&self, preferred: Option<&str>) -> MonitorGeometry;
     fn set_dock_window(&mut self, xid: WindowId, geometry: DockGeometry) -> anyhow::Result<()>;
-    fn move_dock_window(&mut self, geometry: DockGeometry) -> anyhow::Result<()>;
+    fn move_dock_window(
+        &mut self,
+        geometry: DockGeometry,
+        update_reserved_space: bool,
+    ) -> anyhow::Result<()>;
     fn set_dock_shape(
         &mut self,
         size: (i32, i32),
