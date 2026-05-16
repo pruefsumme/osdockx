@@ -2,7 +2,7 @@ use crate::backend::x11::X11Backend;
 use crate::backend::{DockGeometry, PlatformBackend};
 use crate::config::{Config, RenderMode};
 use crate::desktop::DesktopIndex;
-use crate::layout::Point;
+use crate::layout::{Point, Rect};
 use crate::model::{DockItem, DockModel};
 use crate::renderer::{IconCache, RenderFrame, Renderer, ShelfLayer};
 use crate::scene3d::Scene3dRenderer;
@@ -17,7 +17,7 @@ use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
     EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, Label, Orientation,
-    Overlay, Popover, PositionType, gdk,
+    Overlay, gdk,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -27,6 +27,9 @@ use std::time::{Duration, Instant};
 const APP_ID: &str = "dev.osdockx.OSDockX";
 const EDGE_VISIBLE_PIXELS: i32 = 4;
 const SLOW_UI_OP: Duration = Duration::from_millis(4);
+const CONTEXT_MENU_WIDTH: i32 = 164;
+const CONTEXT_MENU_HEIGHT: i32 = 72;
+const CONTEXT_MENU_GAP: f64 = 8.0;
 
 pub fn run() -> anyhow::Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
@@ -57,7 +60,9 @@ struct Runtime {
     last_geometry: Option<DockGeometry>,
     last_shape_size: Option<(i32, i32)>,
     last_shape_label: Option<usize>,
-    context_menu: Option<Popover>,
+    last_shape_menu: Option<Rect>,
+    context_menu: Option<GtkBox>,
+    context_menu_rect: Option<Rect>,
 }
 
 impl Runtime {
@@ -157,7 +162,9 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_geometry: None,
         last_shape_size: None,
         last_shape_label: None,
+        last_shape_menu: None,
         context_menu: None,
+        context_menu_rect: None,
     };
     runtime.refresh_model();
 
@@ -223,7 +230,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_gl_area(&state, &gl_area, &drawing);
 
     wire_motion(&state, &window, &drawing, &gl_area);
-    wire_clicks(&state, &window, &drawing, &gl_area);
+    wire_clicks(&state, &window, &overlay, &drawing, &gl_area);
     wire_realize(&state, &window);
     wire_refresh(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
@@ -268,7 +275,7 @@ fn install_css() {
         .osdock-gl {
             background-color: transparent;
         }
-        popover.osdock-context-menu > contents {
+        .osdock-context-menu {
             background: alpha(#1b1c1f, 0.90);
             border: 1px solid alpha(#ffffff, 0.18);
             border-radius: 7px;
@@ -276,7 +283,7 @@ fn install_css() {
             padding: 4px;
         }
         .osdock-menu-box {
-            padding: 2px;
+            padding: 1px;
         }
         button.osdock-menu-item {
             min-height: 0;
@@ -384,13 +391,25 @@ fn wire_motion(
         let gl_area = gl_area.clone();
         motion.connect_motion(move |_, x, y| {
             let started = Instant::now();
+            let point = Point { x, y };
             {
                 let mut state = state.borrow_mut();
-                state.hover = Some(Point { x, y });
+                let next_hover = if state.context_menu.is_some() {
+                    None
+                } else {
+                    Renderer::hover_point_for(
+                        &state.model,
+                        &state.config.dock,
+                        &state.theme,
+                        point,
+                        state.hover.is_some(),
+                    )
+                };
                 if state.hidden {
                     state.hidden = false;
                     move_dock(&mut state);
                 }
+                state.hover = next_hover;
             }
             sync_dock_window(&state, &window, &drawing, &gl_area, false);
             queue_gl_render_if_enabled(&state, &gl_area);
@@ -400,6 +419,7 @@ fn wire_motion(
     }
     {
         let state = Rc::clone(state);
+        let window = window.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         motion.connect_leave(move |_| {
@@ -424,6 +444,7 @@ fn wire_motion(
                     }
                 });
             }
+            sync_dock_window(&state, &window, &drawing, &gl_area, false);
         });
     }
     drawing.add_controller(motion);
@@ -432,6 +453,7 @@ fn wire_motion(
 fn wire_clicks(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
+    overlay: &Overlay,
     drawing: &DrawingArea,
     gl_area: &GLArea,
 ) {
@@ -440,23 +462,51 @@ fn wire_clicks(
     {
         let state = Rc::clone(state);
         let window = window.clone();
+        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         click.connect_released(move |gesture, _, x, y| {
             let button = gesture.current_button();
+            if button == 1 && state.borrow().context_menu.is_some() {
+                let dismissed = {
+                    let mut state = state.borrow_mut();
+                    dismiss_context_menu(&mut state, &overlay)
+                };
+                if dismissed {
+                    sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                    drawing.queue_draw();
+                }
+                return;
+            }
             let hit = {
                 let state = state.borrow();
-                state.renderer.layout().hit_test(Point { x, y })
+                Renderer::icon_hit_test(
+                    &state.model,
+                    &state.config.dock,
+                    &state.theme,
+                    Point { x, y },
+                )
             };
             if let Some(index) = hit {
                 if button == 3 {
-                    show_context_menu(&state, &window, &drawing, &gl_area, index, x, y);
+                    show_context_menu(&state, &window, &overlay, &drawing, &gl_area, index, x, y);
                 } else if button == 1 || button == 2 {
-                    {
+                    let dismissed = {
                         let mut state = state.borrow_mut();
-                        dismiss_context_menu(&mut state);
+                        dismiss_context_menu(&mut state, &overlay)
+                    };
+                    if dismissed {
+                        sync_dock_window(&state, &window, &drawing, &gl_area, true);
                     }
                     activate_item(&state, index, button);
+                }
+            } else if button != 0 {
+                let dismissed = {
+                    let mut state = state.borrow_mut();
+                    dismiss_context_menu(&mut state, &overlay)
+                };
+                if dismissed {
+                    sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 }
             }
             drawing.queue_draw();
@@ -468,99 +518,129 @@ fn wire_clicks(
 fn show_context_menu(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
+    overlay: &Overlay,
     drawing: &DrawingArea,
     gl_area: &GLArea,
     index: usize,
     x: f64,
     y: f64,
 ) {
-    let item = {
+    let (item, icon_rect, dock_width) = {
         let state = state.borrow();
-        state.model.items.get(index).cloned()
+        let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+        let item = state.model.items.get(index).cloned();
+        let icon_rect = layout
+            .icons
+            .iter()
+            .find(|icon| icon.item_index == index)
+            .map(|icon| icon.rect);
+        (item, icon_rect, layout.size.0)
     };
     let Some(item) = item else {
         return;
     };
     let item_key = item.config_key();
     let pinned = item.pinned;
+    let anchor = icon_rect.unwrap_or(Rect {
+        x,
+        y,
+        width: 1.0,
+        height: 1.0,
+    });
+    let menu_rect = context_menu_rect(anchor, dock_width);
 
     {
         let mut state = state.borrow_mut();
-        dismiss_context_menu(&mut state);
+        dismiss_context_menu(&mut state, overlay);
+        state.hover = None;
     }
 
-    let popover = context_menu_popover(state, drawing);
-
     let menu = GtkBox::new(Orientation::Vertical, 0);
+    menu.add_css_class("osdock-context-menu");
     menu.add_css_class("osdock-menu-box");
+    menu.set_halign(Align::Start);
+    menu.set_valign(Align::Start);
+    menu.set_margin_start(menu_rect.x.round() as i32);
+    menu.set_margin_top(menu_rect.y.round() as i32);
+    menu.set_size_request(CONTEXT_MENU_WIDTH, -1);
     let keep = context_menu_button("Keep in Dock", pinned);
     let select = context_menu_button("Select Icon", false);
-    let default_icon = context_menu_button("Set to default Icon", false);
+    let default_icon = context_menu_button("Set to Default Icon", false);
     menu.append(&keep);
     menu.append(&select);
     menu.append(&default_icon);
-    popover.set_child(Some(&menu));
-    popover.set_pointing_to(Some(&gdk::Rectangle::new(
-        x.round() as i32,
-        y.round() as i32,
-        1,
-        1,
-    )));
 
     {
         let state = Rc::clone(state);
         let window = window.clone();
+        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         let item_key = item_key.clone();
-        let popover = popover.clone();
         keep.connect_clicked(move |_| {
-            popover.popdown();
+            {
+                let mut state = state.borrow_mut();
+                dismiss_context_menu(&mut state, &overlay);
+            }
             toggle_keep_in_dock(&state, &window, &drawing, &gl_area, &item_key, pinned);
         });
     }
     {
         let state = Rc::clone(state);
         let window = window.clone();
+        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         let item_key = item_key.clone();
-        let popover = popover.clone();
         select.connect_clicked(move |_| {
-            popover.popdown();
+            {
+                let mut state = state.borrow_mut();
+                dismiss_context_menu(&mut state, &overlay);
+            }
+            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+            drawing.queue_draw();
             select_custom_icon(&state, &window, &drawing, &gl_area, item_key.clone());
         });
     }
     {
         let state = Rc::clone(state);
         let window = window.clone();
+        let overlay = overlay.clone();
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         let item_key = item_key.clone();
-        let popover = popover.clone();
         default_icon.connect_clicked(move |_| {
-            popover.popdown();
+            {
+                let mut state = state.borrow_mut();
+                dismiss_context_menu(&mut state, &overlay);
+            }
             reset_custom_icon(&state, &window, &drawing, &gl_area, &item_key);
         });
     }
 
-    popover.popup();
+    overlay.add_overlay(&menu);
+    {
+        let mut state = state.borrow_mut();
+        state.context_menu_rect = Some(menu_rect);
+        state.context_menu = Some(menu);
+    }
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
 }
 
-fn context_menu_popover(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea) -> Popover {
-    if let Some(popover) = state.borrow().context_menu.as_ref() {
-        return popover.clone();
+fn context_menu_rect(icon_rect: Rect, dock_width: i32) -> Rect {
+    let menu_width = CONTEXT_MENU_WIDTH as f64;
+    let menu_height = CONTEXT_MENU_HEIGHT as f64;
+    let max_x = (dock_width as f64 - menu_width - 2.0).max(2.0);
+    let x = (icon_rect.center_x() - menu_width / 2.0).clamp(2.0, max_x);
+    let y = (icon_rect.y - menu_height - CONTEXT_MENU_GAP).max(2.0);
+    Rect {
+        x,
+        y,
+        width: menu_width,
+        height: menu_height,
     }
-
-    let popover = Popover::builder()
-        .autohide(true)
-        .has_arrow(false)
-        .position(PositionType::Top)
-        .build();
-    popover.add_css_class("osdock-context-menu");
-    popover.set_parent(drawing);
-    state.borrow_mut().context_menu = Some(popover.clone());
-    popover
 }
 
 fn context_menu_button(label: &str, checked: bool) -> Button {
@@ -669,10 +749,10 @@ fn select_custom_icon(
                 };
                 {
                     let mut state = state.borrow_mut();
-                    state.config.custom_icons.insert(
-                        item_key,
-                        path.to_string_lossy().to_string(),
-                    );
+                    state
+                        .config
+                        .custom_icons
+                        .insert(item_key, path.to_string_lossy().to_string());
                     save_runtime_config(&state);
                     state.icons.clear();
                 }
@@ -704,11 +784,14 @@ fn image_file_filter() -> FileFilter {
     filter
 }
 
-fn dismiss_context_menu(state: &mut Runtime) {
-    let Some(menu) = state.context_menu.as_ref() else {
-        return;
+fn dismiss_context_menu(state: &mut Runtime, overlay: &Overlay) -> bool {
+    let Some(menu) = state.context_menu.take() else {
+        state.context_menu_rect = None;
+        return false;
     };
-    menu.popdown();
+    overlay.remove_overlay(&menu);
+    state.context_menu_rect = None;
+    true
 }
 
 fn save_runtime_config(state: &Runtime) {
@@ -775,6 +858,7 @@ fn refresh_config_and_theme(state: &mut Runtime) {
                 state.last_size = None;
                 state.last_geometry = None;
                 state.last_shape_size = None;
+                state.last_shape_menu = None;
             }
         }
         Err(error) => {
@@ -793,6 +877,7 @@ fn refresh_config_and_theme(state: &mut Runtime) {
         state.last_size = None;
         state.last_geometry = None;
         state.last_shape_size = None;
+        state.last_shape_menu = None;
     }
 }
 
@@ -874,14 +959,17 @@ fn sync_dock_window(
     gl_area.set_visible(state.theme.renderer == RenderMode::Scene3d);
     move_dock(&mut state);
     let shape_label = current_label_index(&state);
+    let shape_menu = state.context_menu_rect;
     if force_shape
         || size_changed
         || state.last_shape_size != Some(size)
         || state.last_shape_label != shape_label
+        || state.last_shape_menu != shape_menu
     {
         shape_dock(&mut state);
         state.last_shape_size = Some(size);
         state.last_shape_label = shape_label;
+        state.last_shape_menu = shape_menu;
     }
     log_slow("sync-window", started.elapsed());
 }
@@ -933,15 +1021,30 @@ fn shape_dock(state: &mut Runtime) {
     }
 
     let size = state.desired_size();
-    let regions =
+    let mut visual_regions =
         Renderer::visual_regions(&state.model, &state.config.dock, &state.theme, state.hover);
+    let mut input_regions = Renderer::input_regions(&state.model, &state.config.dock, &state.theme);
+    if let Some(rect) = state.context_menu_rect {
+        let rect = padded_rect(rect, 8.0);
+        visual_regions.push(rect);
+        input_regions.push(rect);
+    }
     let started = Instant::now();
     if let Some(backend) = state.backend.as_mut()
-        && let Err(error) = backend.set_dock_shape(size, &regions, &regions)
+        && let Err(error) = backend.set_dock_shape(size, &visual_regions, &input_regions)
     {
         tracing::debug!("could not shape dock window: {error:#}");
     }
     log_slow("shape-dock", started.elapsed());
+}
+
+fn padded_rect(rect: Rect, amount: f64) -> Rect {
+    Rect {
+        x: rect.x - amount,
+        y: rect.y - amount,
+        width: rect.width + amount * 2.0,
+        height: rect.height + amount * 2.0,
+    }
 }
 
 fn log_slow(operation: &'static str, elapsed: Duration) {

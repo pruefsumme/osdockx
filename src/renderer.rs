@@ -21,10 +21,9 @@ use self::reflections::{
 };
 use self::shelf::{
     compute_perspective_shelf_geometry, crystal_floor_path, crystal_shelf_geometry,
-    draw_crystal_shelf, draw_front_lip, draw_glass_highlight_overlay,
-    draw_glass_shelf_base, draw_legacy_shelf, draw_leopard_plank,
-    draw_leopard_shelf_strokes, draw_shadow, leopard_glass_plane_path,
-    leopard_wedge_body_geometry,
+    draw_crystal_shelf, draw_front_lip, draw_glass_highlight_overlay, draw_glass_shelf_base,
+    draw_legacy_shelf, draw_leopard_plank, draw_leopard_shelf_strokes, draw_shadow,
+    leopard_glass_plane_path, leopard_wedge_body_geometry,
 };
 use crate::config::{DockConfig, ShelfStyle};
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
@@ -36,6 +35,9 @@ use gtk::gdk_pixbuf::Pixbuf;
 use std::time::{Duration, Instant};
 
 const SLOW_DRAW: Duration = Duration::from_millis(8);
+const ICON_CLICK_RATIO: f64 = 1.0;
+const ICON_HOVER_ENTER_RATIO: f64 = 0.96;
+const ICON_HOVER_RETAIN_RATIO: f64 = 1.08;
 
 #[derive(Debug, Default)]
 pub struct Renderer {
@@ -101,6 +103,41 @@ impl Renderer {
             regions.push(expand(hover_label_region(model, &layout, label), 4.0));
         }
         regions
+    }
+
+    pub fn input_regions(model: &DockModel, config: &DockConfig, theme: &Theme) -> Vec<Rect> {
+        let params = layout_params(config, theme);
+        let layout = compute_layout(model, None, params);
+        let mut regions = Vec::with_capacity(layout.icons.len() + 1);
+        regions.push(expand(layout.shelf, 2.0));
+        for icon in &layout.icons {
+            regions.push(center_ratio_rect(icon.rect, ICON_HOVER_RETAIN_RATIO));
+        }
+        regions
+    }
+
+    pub fn hover_point_for(
+        model: &DockModel,
+        config: &DockConfig,
+        theme: &Theme,
+        point: Point,
+        retaining: bool,
+    ) -> Option<Point> {
+        let ratio = if retaining {
+            ICON_HOVER_RETAIN_RATIO
+        } else {
+            ICON_HOVER_ENTER_RATIO
+        };
+        icon_hit_test_with_ratio(model, config, theme, point, ratio).map(|_| point)
+    }
+
+    pub fn icon_hit_test(
+        model: &DockModel,
+        config: &DockConfig,
+        theme: &Theme,
+        point: Point,
+    ) -> Option<usize> {
+        icon_hit_test_with_ratio(model, config, theme, point, ICON_CLICK_RATIO)
     }
 
     pub fn layout_for(
@@ -266,6 +303,34 @@ fn expand(rect: Rect, amount: f64) -> Rect {
     }
 }
 
+fn center_ratio_rect(rect: Rect, ratio: f64) -> Rect {
+    let ratio = ratio.max(0.0);
+    let inset_x = rect.width * (1.0 - ratio) / 2.0;
+    let inset_y = rect.height * (1.0 - ratio) / 2.0;
+    Rect {
+        x: rect.x + inset_x,
+        y: rect.y + inset_y,
+        width: rect.width * ratio,
+        height: rect.height * ratio,
+    }
+}
+
+fn icon_hit_test_with_ratio(
+    model: &DockModel,
+    config: &DockConfig,
+    theme: &Theme,
+    point: Point,
+    ratio: f64,
+) -> Option<usize> {
+    let params = layout_params(config, theme);
+    let layout = compute_layout(model, None, params);
+    layout
+        .icons
+        .iter()
+        .find(|icon| center_ratio_rect(icon.rect, ratio).contains(point))
+        .map(|icon| icon.item_index)
+}
+
 fn hover_label_region(
     model: &DockModel,
     layout: &DockLayout,
@@ -395,10 +460,7 @@ fn draw_hover_label(cr: &Context, model: &DockModel, layout: &DockLayout) {
     let max_x = (layout.size.0 as f64 - width - 4.0).max(4.0);
     let x = (label.rect.center_x() - width / 2.0).clamp(4.0, max_x);
     let y = label.rect.y + 1.0;
-    let pointer_x = label
-        .rect
-        .center_x()
-        .clamp(x + 10.0, x + width - 10.0);
+    let pointer_x = label.rect.center_x().clamp(x + 10.0, x + width - 10.0);
 
     hover_label_path(
         cr,
@@ -427,7 +489,17 @@ fn draw_hover_label(cr: &Context, model: &DockModel, layout: &DockLayout) {
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.18);
     let _ = cr.fill();
 
-    hover_label_path(cr, x, y, width, height, 5.5, pointer_x, pointer_width, pointer_height);
+    hover_label_path(
+        cr,
+        x,
+        y,
+        width,
+        height,
+        5.5,
+        pointer_x,
+        pointer_width,
+        pointer_height,
+    );
     let fill = LinearGradient::new(0.0, y, 0.0, y + height + pointer_height);
     add_stop(&fill, 0.00, Color::rgba(0.30, 0.31, 0.32, 0.94));
     add_stop(&fill, 0.52, Color::rgba(0.18, 0.19, 0.20, 0.95));
@@ -495,7 +567,6 @@ fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool) {
     let _ = cr.fill();
     cr.restore().ok();
 }
-
 
 #[cfg(test)]
 mod tests;
