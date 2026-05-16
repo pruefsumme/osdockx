@@ -5,7 +5,7 @@ use gtk::gdk::prelude::GdkCairoContextExt;
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::gio::prelude::FileExt;
 use gtk::{IconLookupFlags, IconTheme, TextDirection, gdk};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -16,6 +16,7 @@ const ICON_CACHE_SIZE: i32 = 192;
 pub struct IconCache {
     enabled: bool,
     cache: HashMap<String, Option<Pixbuf>>,
+    custom_icons: BTreeMap<String, String>,
 }
 
 impl IconCache {
@@ -23,6 +24,7 @@ impl IconCache {
         Self {
             enabled: true,
             cache: HashMap::new(),
+            custom_icons: BTreeMap::new(),
         }
     }
 
@@ -30,6 +32,7 @@ impl IconCache {
         Self {
             enabled: false,
             cache: HashMap::new(),
+            custom_icons: BTreeMap::new(),
         }
     }
 
@@ -37,11 +40,28 @@ impl IconCache {
         self.cache.clear();
     }
 
+    pub fn set_custom_icons(&mut self, custom_icons: &BTreeMap<String, String>) {
+        if &self.custom_icons != custom_icons {
+            self.custom_icons = custom_icons.clone();
+            self.clear();
+        }
+    }
+
     fn pixbuf_for(&mut self, item: &DockItem) -> Option<Pixbuf> {
         if !self.enabled {
             return None;
         }
-        for key in icon_lookup_keys(item) {
+        let lookup_keys = icon_lookup_keys(item);
+        let mut keys = Vec::new();
+        if let Some(custom_icon) = lookup_keys
+            .iter()
+            .find_map(|key| self.custom_icons.get(key).cloned())
+        {
+            keys.push(custom_icon);
+        }
+        keys.extend(lookup_keys);
+
+        for key in keys {
             if let Some(value) = self.cache.get(&key) {
                 if value.is_some() {
                     return value.clone();
@@ -243,6 +263,7 @@ fn icon_lookup_keys(item: &DockItem) -> Vec<String> {
     push_icon_key(&mut keys, item.icon_name.as_deref());
     push_icon_key(&mut keys, item.startup_wm_class.as_deref());
     push_icon_key(&mut keys, item.desktop_id.as_deref());
+    push_icon_key(&mut keys, Some(&item.config_key()));
     push_icon_key(&mut keys, Some(&item.id));
     keys
 }

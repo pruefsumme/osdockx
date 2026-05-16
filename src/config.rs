@@ -1,5 +1,6 @@
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,7 @@ pub struct Config {
     pub dock: DockConfig,
     pub theme: ThemeConfig,
     pub pinned: Vec<String>,
+    pub custom_icons: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -109,6 +111,7 @@ impl Default for Config {
                 "firefox.desktop".to_string(),
                 "xfce-settings-manager.desktop".to_string(),
             ],
+            custom_icons: BTreeMap::new(),
         }
     }
 }
@@ -188,6 +191,14 @@ impl Config {
         Ok(toml::from_str::<Self>(&raw)?.normalized())
     }
 
+    pub fn save_to_path(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, toml::to_string_pretty(&self.clone().normalized())?)?;
+        Ok(())
+    }
+
     pub fn normalized(mut self) -> Self {
         self.dock.icon_size = self.dock.icon_size.clamp(24, 160);
         self.dock.zoom_strength = self.dock.zoom_strength.clamp(0.0, 1.6);
@@ -215,6 +226,15 @@ impl Config {
             *pinned = normalize_pinned_id(pinned);
         }
         self.pinned.retain(|id| !id.trim().is_empty());
+        self.custom_icons = self
+            .custom_icons
+            .into_iter()
+            .filter_map(|(key, path)| {
+                let key = normalize_custom_icon_key(&key);
+                let path = path.trim().to_string();
+                (!key.is_empty() && !path.is_empty()).then_some((key, path))
+            })
+            .collect();
         self
     }
 }
@@ -235,6 +255,15 @@ fn normalize_pinned_id(id: &str) -> String {
         "thunar.desktop" => "thunar.desktop".to_string(),
         "org.xfce.settings.manager.desktop" => "xfce-settings-manager.desktop".to_string(),
         _ => id.trim().to_string(),
+    }
+}
+
+fn normalize_custom_icon_key(key: &str) -> String {
+    let trimmed = key.trim();
+    if trimmed.to_ascii_lowercase().ends_with(".desktop") {
+        normalize_pinned_id(trimmed)
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -400,6 +429,13 @@ mod tests {
         config.theme.reflection_band_ratio = 9.0;
         config.theme.tilt = 9.0;
         config.pinned = vec!["org.xfce.Terminal.desktop".to_string()];
+        config.custom_icons.insert(
+            " org.xfce.Terminal.desktop ".to_string(),
+            " /tmp/terminal.png ".to_string(),
+        );
+        config
+            .custom_icons
+            .insert("empty.desktop".to_string(), " ".to_string());
 
         let config = config.normalized();
 
@@ -414,6 +450,11 @@ mod tests {
         assert_eq!(config.theme.reflection_band_ratio, 0.8);
         assert_eq!(config.theme.tilt, 1.2);
         assert_eq!(config.pinned, vec!["xfce4-terminal.desktop"]);
+        assert_eq!(
+            config.custom_icons.get("xfce4-terminal.desktop"),
+            Some(&"/tmp/terminal.png".to_string())
+        );
+        assert!(!config.custom_icons.contains_key("empty.desktop"));
     }
 
     #[test]

@@ -30,7 +30,7 @@ use crate::config::{DockConfig, ShelfStyle};
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
 use crate::model::DockModel;
 use crate::theme::{Color, Theme};
-use gtk::cairo::{Context, FontSlant, FontWeight, ImageSurface};
+use gtk::cairo::{Context, FontSlant, FontWeight, ImageSurface, LinearGradient};
 use gtk::gdk::prelude::GdkCairoContextExt;
 use gtk::gdk_pixbuf::Pixbuf;
 use std::time::{Duration, Instant};
@@ -97,8 +97,8 @@ impl Renderer {
                 ));
             }
         }
-        if let Some(label) = layout.label {
-            regions.push(expand(label.rect, 4.0));
+        if let Some(label) = layout.label.as_ref() {
+            regions.push(expand(hover_label_region(model, &layout, label), 4.0));
         }
         regions
     }
@@ -266,6 +266,28 @@ fn expand(rect: Rect, amount: f64) -> Rect {
     }
 }
 
+fn hover_label_region(
+    model: &DockModel,
+    layout: &DockLayout,
+    label: &crate::layout::LabelLayout,
+) -> Rect {
+    let estimated_text_width = model
+        .items
+        .get(label.item_index)
+        .map(|item| item.name.chars().count() as f64 * 8.0)
+        .unwrap_or(56.0);
+    let width = (estimated_text_width + 16.0)
+        .max(38.0)
+        .min((layout.size.0 as f64 - 8.0).max(38.0));
+    let max_x = (layout.size.0 as f64 - width - 4.0).max(4.0);
+    Rect {
+        x: (label.rect.center_x() - width / 2.0).clamp(4.0, max_x),
+        y: label.rect.y,
+        width,
+        height: label.rect.height + 6.0,
+    }
+}
+
 fn clear(cr: &Context) {
     cr.save().ok();
     cr.set_operator(gtk::cairo::Operator::Clear);
@@ -360,35 +382,100 @@ fn draw_hover_label(cr: &Context, model: &DockModel, layout: &DockLayout) {
 
     cr.save().ok();
     cr.select_font_face("Sans", FontSlant::Normal, FontWeight::Bold);
-    cr.set_font_size(13.0);
+    cr.set_font_size(12.0);
     let extents = cr.text_extents(&item.name).ok();
-    let text_width = extents.as_ref().map(|e| e.width()).unwrap_or(64.0);
-    let text_height = extents.as_ref().map(|e| e.height()).unwrap_or(12.0);
-    let width = (text_width + 18.0).max(42.0);
-    let height = label.rect.height.min(28.0);
+    let text_width = extents.as_ref().map(|e| e.width()).unwrap_or(56.0);
+    let text_height = extents.as_ref().map(|e| e.height()).unwrap_or(11.0);
+    let width = (text_width + 16.0)
+        .max(38.0)
+        .min((layout.size.0 as f64 - 8.0).max(38.0));
+    let height = 20.0_f64.min((label.rect.height - 4.0).max(18.0));
+    let pointer_height = 5.0;
+    let pointer_width = 10.0;
     let max_x = (layout.size.0 as f64 - width - 4.0).max(4.0);
     let x = (label.rect.center_x() - width / 2.0).clamp(4.0, max_x);
-    let y = label.rect.y;
+    let y = label.rect.y + 1.0;
+    let pointer_x = label
+        .rect
+        .center_x()
+        .clamp(x + 10.0, x + width - 10.0);
 
-    rounded_rect(cr, x, y, width, height, 7.0);
-    cr.set_source_rgba(0.05, 0.06, 0.07, 0.82);
+    hover_label_path(
+        cr,
+        x,
+        y + 1.8,
+        width,
+        height,
+        5.5,
+        pointer_x,
+        pointer_width,
+        pointer_height,
+    );
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.30);
+    let _ = cr.fill();
+    hover_label_path(
+        cr,
+        x,
+        y + 0.8,
+        width,
+        height,
+        5.5,
+        pointer_x,
+        pointer_width,
+        pointer_height,
+    );
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.18);
+    let _ = cr.fill();
+
+    hover_label_path(cr, x, y, width, height, 5.5, pointer_x, pointer_width, pointer_height);
+    let fill = LinearGradient::new(0.0, y, 0.0, y + height + pointer_height);
+    add_stop(&fill, 0.00, Color::rgba(0.30, 0.31, 0.32, 0.94));
+    add_stop(&fill, 0.52, Color::rgba(0.18, 0.19, 0.20, 0.95));
+    add_stop(&fill, 1.00, Color::rgba(0.07, 0.08, 0.09, 0.96));
+    let _ = cr.set_source(&fill);
     let _ = cr.fill_preserve();
     cr.set_line_width(1.0);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.22);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.20);
     let _ = cr.stroke();
+
+    rounded_rect(cr, x + 1.0, y + 1.0, width - 2.0, height * 0.42, 4.5);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.07);
+    let _ = cr.fill();
 
     let text_x = extents
         .as_ref()
         .map(|e| x + width / 2.0 - (e.width() / 2.0 + e.x_bearing()))
-        .unwrap_or(x + 9.0);
+        .unwrap_or(x + 8.0);
     let text_y = extents
         .as_ref()
         .map(|e| y + height / 2.0 - (text_height / 2.0 + e.y_bearing()))
-        .unwrap_or(y + 17.0);
+        .unwrap_or(y + 14.0);
+    cr.move_to(text_x + 0.0, text_y + 1.0);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
+    let _ = cr.show_text(&item.name);
     cr.move_to(text_x, text_y);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.96);
+    cr.set_source_rgba(0.96, 0.97, 0.98, 0.98);
     let _ = cr.show_text(&item.name);
     cr.restore().ok();
+}
+
+fn hover_label_path(
+    cr: &Context,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+    pointer_x: f64,
+    pointer_width: f64,
+    pointer_height: f64,
+) {
+    rounded_rect(cr, x, y, width, height, radius);
+    let pointer_top = y + height - 0.5;
+    cr.move_to(pointer_x - pointer_width / 2.0, pointer_top);
+    cr.line_to(pointer_x, pointer_top + pointer_height);
+    cr.line_to(pointer_x + pointer_width / 2.0, pointer_top);
+    cr.close_path();
 }
 
 fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool) {

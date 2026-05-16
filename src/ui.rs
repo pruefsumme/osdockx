@@ -10,11 +10,14 @@ use crate::shelf::ShelfRenderer;
 use crate::theme::Theme;
 use crate::theme_pack::ThemePack;
 use gdk_x11::X11Surface;
+use gtk::gio;
+use gtk::gio::prelude::FileExt;
 use gtk::glib::{self, Propagation, object::Cast};
 use gtk::prelude::*;
 use gtk::{
-    Application, ApplicationWindow, DrawingArea, EventControllerMotion, GLArea, GestureClick,
-    Overlay, gdk,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
+    EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, Label, Orientation,
+    Overlay, Popover, PositionType, gdk,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -54,6 +57,7 @@ struct Runtime {
     last_geometry: Option<DockGeometry>,
     last_shape_size: Option<(i32, i32)>,
     last_shape_label: Option<usize>,
+    context_menu: Option<Popover>,
 }
 
 impl Runtime {
@@ -153,6 +157,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_geometry: None,
         last_shape_size: None,
         last_shape_label: None,
+        context_menu: None,
     };
     runtime.refresh_model();
 
@@ -196,8 +201,10 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
             let hover = state.hover;
             let model = state.model.clone();
             let config = state.config.dock.clone();
+            let custom_icons = state.config.custom_icons.clone();
             let theme = state.theme.clone();
             let mut icons = std::mem::take(&mut state.icons);
+            icons.set_custom_icons(&custom_icons);
             let shelf_layer = shelf_layer_for(&state);
             state.renderer.draw_overlay(
                 cr,
@@ -216,7 +223,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_gl_area(&state, &gl_area, &drawing);
 
     wire_motion(&state, &window, &drawing, &gl_area);
-    wire_clicks(&state, &drawing);
+    wire_clicks(&state, &window, &drawing, &gl_area);
     wire_realize(&state, &window);
     wire_refresh(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
@@ -260,6 +267,49 @@ fn install_css() {
         .osdock-surface,
         .osdock-gl {
             background-color: transparent;
+        }
+        popover.osdock-context-menu > contents {
+            background: alpha(#1b1c1f, 0.90);
+            border: 1px solid alpha(#ffffff, 0.18);
+            border-radius: 7px;
+            box-shadow: 0 8px 20px alpha(#000000, 0.48);
+            padding: 4px;
+        }
+        .osdock-menu-box {
+            padding: 2px;
+        }
+        button.osdock-menu-item {
+            min-height: 0;
+            min-width: 148px;
+            padding: 0;
+            margin: 0;
+            border: none;
+            border-radius: 4px;
+            background: transparent;
+            box-shadow: none;
+            color: #f2f2f2;
+        }
+        button.osdock-menu-item:hover,
+        button.osdock-menu-item:focus {
+            background-image: linear-gradient(to bottom, #5aa7ff, #1f68d7);
+            color: #ffffff;
+        }
+        button.osdock-menu-item label {
+            color: #eeeeee;
+            font-size: 12px;
+            font-weight: 500;
+            text-shadow: 0 1px alpha(#000000, 0.58);
+        }
+        button.osdock-menu-item:hover label,
+        button.osdock-menu-item:focus label {
+            color: #ffffff;
+        }
+        .osdock-menu-row {
+            padding: 2px 10px 2px 6px;
+        }
+        .osdock-menu-check {
+            min-width: 14px;
+            margin-right: 4px;
         }
         ",
     );
@@ -379,12 +429,19 @@ fn wire_motion(
     drawing.add_controller(motion);
 }
 
-fn wire_clicks(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea) {
+fn wire_clicks(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
     let click = GestureClick::new();
     click.set_button(0);
     {
         let state = Rc::clone(state);
+        let window = window.clone();
         let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
         click.connect_released(move |gesture, _, x, y| {
             let button = gesture.current_button();
             let hit = {
@@ -392,12 +449,275 @@ fn wire_clicks(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea) {
                 state.renderer.layout().hit_test(Point { x, y })
             };
             if let Some(index) = hit {
-                activate_item(&state, index, button);
+                if button == 3 {
+                    show_context_menu(&state, &window, &drawing, &gl_area, index, x, y);
+                } else if button == 1 || button == 2 {
+                    {
+                        let mut state = state.borrow_mut();
+                        dismiss_context_menu(&mut state);
+                    }
+                    activate_item(&state, index, button);
+                }
             }
             drawing.queue_draw();
         });
     }
     drawing.add_controller(click);
+}
+
+fn show_context_menu(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    index: usize,
+    x: f64,
+    y: f64,
+) {
+    let item = {
+        let state = state.borrow();
+        state.model.items.get(index).cloned()
+    };
+    let Some(item) = item else {
+        return;
+    };
+    let item_key = item.config_key();
+    let pinned = item.pinned;
+
+    {
+        let mut state = state.borrow_mut();
+        dismiss_context_menu(&mut state);
+    }
+
+    let popover = context_menu_popover(state, drawing);
+
+    let menu = GtkBox::new(Orientation::Vertical, 0);
+    menu.add_css_class("osdock-menu-box");
+    let keep = context_menu_button("Keep in Dock", pinned);
+    let select = context_menu_button("Select Icon", false);
+    let default_icon = context_menu_button("Set to default Icon", false);
+    menu.append(&keep);
+    menu.append(&select);
+    menu.append(&default_icon);
+    popover.set_child(Some(&menu));
+    popover.set_pointing_to(Some(&gdk::Rectangle::new(
+        x.round() as i32,
+        y.round() as i32,
+        1,
+        1,
+    )));
+
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let item_key = item_key.clone();
+        let popover = popover.clone();
+        keep.connect_clicked(move |_| {
+            popover.popdown();
+            toggle_keep_in_dock(&state, &window, &drawing, &gl_area, &item_key, pinned);
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let item_key = item_key.clone();
+        let popover = popover.clone();
+        select.connect_clicked(move |_| {
+            popover.popdown();
+            select_custom_icon(&state, &window, &drawing, &gl_area, item_key.clone());
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let item_key = item_key.clone();
+        let popover = popover.clone();
+        default_icon.connect_clicked(move |_| {
+            popover.popdown();
+            reset_custom_icon(&state, &window, &drawing, &gl_area, &item_key);
+        });
+    }
+
+    popover.popup();
+}
+
+fn context_menu_popover(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea) -> Popover {
+    if let Some(popover) = state.borrow().context_menu.as_ref() {
+        return popover.clone();
+    }
+
+    let popover = Popover::builder()
+        .autohide(true)
+        .has_arrow(false)
+        .position(PositionType::Top)
+        .build();
+    popover.add_css_class("osdock-context-menu");
+    popover.set_parent(drawing);
+    state.borrow_mut().context_menu = Some(popover.clone());
+    popover
+}
+
+fn context_menu_button(label: &str, checked: bool) -> Button {
+    let button = Button::builder().has_frame(false).build();
+    button.add_css_class("osdock-menu-item");
+
+    let row = GtkBox::new(Orientation::Horizontal, 0);
+    row.add_css_class("osdock-menu-row");
+    let check = Label::new(Some(if checked { "✓" } else { "" }));
+    check.add_css_class("osdock-menu-check");
+    check.set_halign(Align::Start);
+    let text = Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_hexpand(true);
+    text.set_halign(Align::Start);
+    row.append(&check);
+    row.append(&text);
+    button.set_child(Some(&row));
+    button
+}
+
+fn toggle_keep_in_dock(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item_key: &str,
+    pinned: bool,
+) {
+    {
+        let mut state = state.borrow_mut();
+        if pinned {
+            state
+                .config
+                .pinned
+                .retain(|id| !id.eq_ignore_ascii_case(item_key));
+        } else if !state
+            .config
+            .pinned
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(item_key))
+        {
+            state.config.pinned.push(item_key.to_string());
+        }
+        save_runtime_config(&state);
+        state.refresh_model();
+        state.icons.clear();
+    }
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn reset_custom_icon(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item_key: &str,
+) {
+    {
+        let mut state = state.borrow_mut();
+        state
+            .config
+            .custom_icons
+            .retain(|key, _| !key.eq_ignore_ascii_case(item_key));
+        save_runtime_config(&state);
+        state.icons.clear();
+    }
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn select_custom_icon(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item_key: String,
+) {
+    let filter = image_file_filter();
+    let filters = gio::ListStore::new::<FileFilter>();
+    filters.append(&filter);
+    let dialog = FileDialog::builder()
+        .title("Select Icon")
+        .accept_label("Select")
+        .modal(true)
+        .filters(&filters)
+        .default_filter(&filter)
+        .build();
+
+    let state = Rc::clone(state);
+    let parent = window.clone();
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    dialog.open(
+        Some(&parent),
+        None::<&gio::Cancellable>,
+        move |result| match result {
+            Ok(file) => {
+                let Some(path) = file.path() else {
+                    tracing::warn!("selected icon file did not have a local path");
+                    return;
+                };
+                {
+                    let mut state = state.borrow_mut();
+                    state.config.custom_icons.insert(
+                        item_key,
+                        path.to_string_lossy().to_string(),
+                    );
+                    save_runtime_config(&state);
+                    state.icons.clear();
+                }
+                sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                queue_gl_render_if_enabled(&state, &gl_area);
+                drawing.queue_draw();
+            }
+            Err(error) => {
+                tracing::debug!("icon selection cancelled or failed: {error:#}");
+            }
+        },
+    );
+}
+
+fn image_file_filter() -> FileFilter {
+    let filter = FileFilter::new();
+    filter.set_name(Some("Image files"));
+    filter.add_mime_type("image/png");
+    filter.add_mime_type("image/jpeg");
+    filter.add_mime_type("image/svg+xml");
+    filter.add_mime_type("image/webp");
+    filter.add_mime_type("image/x-xpixmap");
+    filter.add_pattern("*.png");
+    filter.add_pattern("*.jpg");
+    filter.add_pattern("*.jpeg");
+    filter.add_pattern("*.svg");
+    filter.add_pattern("*.webp");
+    filter.add_pattern("*.xpm");
+    filter
+}
+
+fn dismiss_context_menu(state: &mut Runtime) {
+    let Some(menu) = state.context_menu.as_ref() else {
+        return;
+    };
+    menu.popdown();
+}
+
+fn save_runtime_config(state: &Runtime) {
+    if let Err(error) = state.config.save_to_path(&state.config_path) {
+        tracing::warn!(
+            "could not save config {}: {error:#}",
+            state.config_path.display()
+        );
+    }
 }
 
 fn wire_refresh(

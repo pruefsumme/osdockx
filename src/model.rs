@@ -160,6 +160,13 @@ impl DockItem {
     pub fn is_running(&self) -> bool {
         !self.windows.is_empty()
     }
+
+    pub fn config_key(&self) -> String {
+        self.desktop_id
+            .clone()
+            .or_else(|| self.startup_wm_class.clone())
+            .unwrap_or_else(|| self.id.clone())
+    }
 }
 
 fn find_matching_item(
