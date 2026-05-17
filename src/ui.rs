@@ -13,18 +13,21 @@ use crate::theme::Theme;
 use crate::theme_pack::ThemePack;
 use directories::UserDirs;
 use gdk_x11::X11Surface;
+use gtk::cairo::{Context, FontSlant, FontWeight, LineCap, LinearGradient};
+use gtk::gdk::prelude::GdkCairoContextExt;
+use gtk::gdk_pixbuf::Pixbuf;
 use gtk::gio;
 use gtk::gio::prelude::FileExt;
 use gtk::glib::{self, Propagation, object::Cast};
-use gtk::pango::EllipsizeMode;
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
-    EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag, Image,
-    Label,
-    Orientation, Overlay, Popover, PositionType, gdk,
+    EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag,
+    IconLookupFlags, IconTheme, Label, Orientation, Overlay, Popover, PositionType, TextDirection,
+    gdk,
 };
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,9 +43,14 @@ const CONTEXT_MENU_SETTINGS_COUNT: usize = 3;
 const CONTEXT_MENU_SEPARATOR_HEIGHT: i32 = 12;
 const CONTEXT_MENU_CHROME_HEIGHT: i32 = 12;
 const CONTEXT_MENU_GAP: f64 = 18.0;
-const DOWNLOADS_STACK_WIDTH: i32 = 268;
-const DOWNLOADS_STACK_MAX_ITEMS: usize = 7;
-const DOWNLOADS_STACK_GAP: f64 = 22.0;
+const APPLET_FAN_WIDTH: i32 = 390;
+const APPLET_FAN_MAX_ITEMS: usize = 7;
+const APPLET_FAN_GAP: f64 = 10.0;
+const APPLET_FAN_ROW_HEIGHT: f64 = 66.0;
+const APPLET_FAN_TOP_PADDING: f64 = 16.0;
+const APPLET_FAN_BOTTOM_PADDING: f64 = 14.0;
+const APPLET_FAN_ICON_SIZE: f64 = 48.0;
+const APPLET_FAN_LABEL_HEIGHT: f64 = 25.0;
 const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
@@ -122,11 +130,45 @@ struct StartupReveal {
 }
 
 #[derive(Debug, Clone)]
-struct DownloadStackEntry {
+struct AppletFanSource {
+    directory_label: String,
+    empty_label: String,
+    open_target: Option<AppletFanTarget>,
+    entries: Vec<AppletFanEntry>,
+    total_entries: usize,
+}
+
+#[derive(Debug, Clone)]
+struct AppletFanEntry {
     name: String,
     path: PathBuf,
     icon_name: String,
     modified: Duration,
+}
+
+#[derive(Debug, Clone)]
+struct AppletFanDirectoryEntries {
+    entries: Vec<AppletFanEntry>,
+    total_entries: usize,
+}
+
+#[derive(Debug, Clone)]
+enum AppletFanTarget {
+    Path(PathBuf),
+    Uri(String),
+}
+
+#[derive(Debug, Clone)]
+enum AppletFanHitAction {
+    OpenPath(PathBuf),
+    OpenTarget(AppletFanTarget),
+}
+
+#[derive(Debug, Clone)]
+struct AppletFanHitRegion {
+    index: usize,
+    rect: Rect,
+    action: AppletFanHitAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -487,61 +529,6 @@ fn install_css() {
             border-radius: 7px;
             box-shadow: 0 8px 20px alpha(#000000, 0.48);
             padding: 5px;
-        }
-        .osdock-downloads-stack {
-            background-image: linear-gradient(
-                to bottom,
-                alpha(#26282d, 0.98),
-                alpha(#0f1116, 0.96)
-            );
-            border: 1px solid alpha(#ffffff, 0.16);
-            border-radius: 12px;
-            box-shadow: 0 12px 28px alpha(#000000, 0.56);
-            padding: 10px;
-        }
-        .osdock-stack-title {
-            color: #eef1f7;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.04em;
-            text-shadow: 0 1px alpha(#000000, 0.60);
-            margin: 0 2px 4px 2px;
-        }
-        .osdock-stack-empty {
-            color: alpha(#e4e8ef, 0.72);
-            font-size: 12px;
-            margin: 4px 6px 6px 6px;
-        }
-        button.osdock-stack-item {
-            min-height: 38px;
-            min-width: 248px;
-            padding: 0;
-            margin: 0;
-            border: none;
-            border-radius: 8px;
-            background: transparent;
-            box-shadow: none;
-            color: #f2f4f8;
-        }
-        button.osdock-stack-item:hover,
-        button.osdock-stack-item:focus {
-            background-image: linear-gradient(
-                to bottom,
-                alpha(#a3b0c8, 0.28),
-                alpha(#6f7d97, 0.20)
-            );
-        }
-        .osdock-stack-row {
-            padding: 6px 10px;
-        }
-        .osdock-stack-icon {
-            margin-right: 10px;
-        }
-        button.osdock-stack-item label {
-            color: #edf1f8;
-            font-size: 12px;
-            font-weight: 500;
-            text-shadow: 0 1px alpha(#000000, 0.58);
         }
         .osdock-menu-box {
             padding: 1px 0;
@@ -1578,27 +1565,6 @@ fn context_menu_separator() -> GtkBox {
     separator
 }
 
-fn downloads_stack_button(label: &str, icon_name: &str) -> Button {
-    let button = Button::builder().has_frame(false).build();
-    button.add_css_class("osdock-stack-item");
-
-    let row = GtkBox::new(Orientation::Horizontal, 0);
-    row.add_css_class("osdock-stack-row");
-    let icon = Image::from_icon_name(icon_name);
-    icon.add_css_class("osdock-stack-icon");
-    icon.set_pixel_size(24);
-    let text = Label::new(Some(label));
-    text.set_xalign(0.0);
-    text.set_hexpand(true);
-    text.set_halign(Align::Start);
-    text.set_ellipsize(EllipsizeMode::Middle);
-    text.set_max_width_chars(26);
-    row.append(&icon);
-    row.append(&text);
-    button.set_child(Some(&row));
-    button
-}
-
 fn present_runtime_popover(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
@@ -1657,11 +1623,12 @@ fn present_runtime_popover(
     drawing.queue_draw();
 }
 
-fn show_downloads_stack(
+fn show_applet_fan(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
     drawing: &DrawingArea,
     gl_area: &GLArea,
+    item: &DockItem,
     index: usize,
     x: f64,
     y: f64,
@@ -1676,17 +1643,15 @@ fn show_downloads_stack(
             .map(|icon| icon.rect);
         (icon_rect, layout.size.0)
     };
-    let downloads_dir = downloads_directory();
-    let entries = downloads_dir
-        .as_deref()
-        .map(|dir| recent_download_entries_from_dir(dir, DOWNLOADS_STACK_MAX_ITEMS))
-        .unwrap_or_default();
     let anchor = icon_rect.unwrap_or(Rect {
         x,
         y,
         width: 1.0,
         height: 1.0,
     });
+    let Some(source) = applet_fan_source(item) else {
+        return;
+    };
 
     dismiss_context_menu(state);
     {
@@ -1694,70 +1659,155 @@ fn show_downloads_stack(
         state.hover = None;
     }
 
-    let stack = GtkBox::new(Orientation::Vertical, 6);
-    stack.add_css_class("osdock-downloads-stack");
-    stack.set_size_request(DOWNLOADS_STACK_WIDTH, -1);
+    let (fan_width, fan_height) = applet_fan_size(&source);
+    let fan = DrawingArea::new();
+    fan.set_content_width(fan_width);
+    fan.set_content_height(fan_height);
+    fan.set_size_request(fan_width, fan_height);
+    fan.set_focusable(false);
 
-    let title = Label::new(Some("Downloads"));
-    title.add_css_class("osdock-stack-title");
-    title.set_xalign(0.0);
-    stack.append(&title);
+    let source = Rc::new(source);
+    let hit_regions = Rc::new(RefCell::new(Vec::<AppletFanHitRegion>::new()));
+    let hover_index = Rc::new(RefCell::new(None::<usize>));
+    let icon_cache = Rc::new(RefCell::new(HashMap::<String, Option<Pixbuf>>::new()));
 
-    if entries.is_empty() {
-        let empty = Label::new(Some("No recent downloads"));
-        empty.add_css_class("osdock-stack-empty");
-        empty.set_xalign(0.0);
-        stack.append(&empty);
-    } else {
-        for entry in entries {
-            let button = downloads_stack_button(&entry.name, &entry.icon_name);
-            {
-                let state = Rc::clone(state);
-                let window = window.clone();
-                let drawing = drawing.clone();
-                let gl_area = gl_area.clone();
-                let path = entry.path.clone();
-                button.connect_clicked(move |_| {
-                    dismiss_context_menu(&state);
-                    open_path_in_default_app(&path);
-                    sync_dock_window(&state, &window, &drawing, &gl_area, true);
-                    queue_gl_render_if_enabled(&state, &gl_area);
-                    drawing.queue_draw();
-                });
+    {
+        let source = Rc::clone(&source);
+        let hit_regions = Rc::clone(&hit_regions);
+        let hover_index = Rc::clone(&hover_index);
+        let icon_cache = Rc::clone(&icon_cache);
+        fan.set_draw_func(move |_, cr, width, height| {
+            draw_applet_fan(
+                cr,
+                width,
+                height,
+                &source,
+                *hover_index.borrow(),
+                &mut hit_regions.borrow_mut(),
+                &mut icon_cache.borrow_mut(),
+            );
+        });
+    }
+
+    let motion = EventControllerMotion::new();
+    {
+        let hit_regions = Rc::clone(&hit_regions);
+        let hover_index = Rc::clone(&hover_index);
+        let fan = fan.clone();
+        motion.connect_motion(move |_, x, y| {
+            let point = Point { x, y };
+            let next = hit_regions
+                .borrow()
+                .iter()
+                .find(|hit| hit.rect.contains(point))
+                .map(|hit| hit.index);
+            let mut hover = hover_index.borrow_mut();
+            if *hover != next {
+                *hover = next;
+                fan.queue_draw();
             }
-            stack.append(&button);
-        }
+        });
     }
+    {
+        let hover_index = Rc::clone(&hover_index);
+        let fan = fan.clone();
+        motion.connect_leave(move |_| {
+            let mut hover = hover_index.borrow_mut();
+            if hover.is_some() {
+                *hover = None;
+                fan.queue_draw();
+            }
+        });
+    }
+    fan.add_controller(motion);
 
-    if let Some(downloads_dir) = downloads_dir {
-        let open_folder = downloads_stack_button("Open Downloads Folder", "folder");
-        {
-            let state = Rc::clone(state);
-            let window = window.clone();
-            let drawing = drawing.clone();
-            let gl_area = gl_area.clone();
-            open_folder.connect_clicked(move |_| {
-                dismiss_context_menu(&state);
-                open_path_in_default_app(&downloads_dir);
-                sync_dock_window(&state, &window, &drawing, &gl_area, true);
-                queue_gl_render_if_enabled(&state, &gl_area);
-                drawing.queue_draw();
-            });
-        }
-        stack.append(&open_folder);
+    let click = GestureClick::new();
+    click.set_button(1);
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let hit_regions = Rc::clone(&hit_regions);
+        click.connect_released(move |_, _, x, y| {
+            let point = Point { x, y };
+            let action = hit_regions
+                .borrow()
+                .iter()
+                .find(|hit| hit.rect.contains(point))
+                .map(|hit| hit.action.clone());
+            let Some(action) = action else {
+                return;
+            };
+
+            dismiss_context_menu(&state);
+            run_applet_fan_action(action);
+            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+            queue_gl_render_if_enabled(&state, &gl_area);
+            drawing.queue_draw();
+        });
     }
+    fan.add_controller(click);
 
     let popover = Popover::new();
     popover.add_css_class("osdock-stack-popover");
     popover.set_autohide(true);
     popover.set_has_arrow(false);
     popover.set_position(PositionType::Top);
-    popover.set_offset(0, -(DOWNLOADS_STACK_GAP.round() as i32));
+    popover.set_offset(0, -(APPLET_FAN_GAP.round() as i32));
     popover.set_pointing_to(Some(&context_menu_anchor_rect(anchor, dock_width)));
-    popover.set_child(Some(&stack));
+    popover.set_child(Some(&fan));
     popover.set_parent(drawing);
 
     present_runtime_popover(state, window, drawing, gl_area, &popover);
+}
+
+fn applet_fan_source(item: &DockItem) -> Option<AppletFanSource> {
+    if item.is_downloads_applet() {
+        let downloads_dir = downloads_directory()?;
+        let AppletFanDirectoryEntries {
+            entries,
+            total_entries,
+        } = recent_applet_entries_from_dir(&downloads_dir, APPLET_FAN_MAX_ITEMS);
+        return Some(AppletFanSource {
+            directory_label: "Downloads".to_string(),
+            empty_label: "No recent downloads".to_string(),
+            open_target: Some(AppletFanTarget::Path(downloads_dir)),
+            entries,
+            total_entries,
+        });
+    }
+
+    if item.is_trash_applet() {
+        let trash_dir = trash_files_directory();
+        let AppletFanDirectoryEntries {
+            entries,
+            total_entries,
+        } = trash_dir
+            .as_deref()
+            .map(|dir| recent_applet_entries_from_dir(dir, APPLET_FAN_MAX_ITEMS))
+            .unwrap_or_else(|| AppletFanDirectoryEntries {
+                entries: Vec::new(),
+                total_entries: 0,
+            });
+        return Some(AppletFanSource {
+            directory_label: "Trash".to_string(),
+            empty_label: "Trash is empty".to_string(),
+            open_target: Some(AppletFanTarget::Uri("trash:///".to_string())),
+            entries,
+            total_entries,
+        });
+    }
+
+    None
+}
+
+fn applet_fan_size(source: &AppletFanSource) -> (i32, i32) {
+    let row_count = source.entries.len() + 1 + usize::from(source.entries.is_empty());
+    let height = APPLET_FAN_TOP_PADDING
+        + APPLET_FAN_BOTTOM_PADDING
+        + APPLET_FAN_ROW_HEIGHT * row_count as f64;
+    (APPLET_FAN_WIDTH, height.ceil() as i32)
 }
 
 fn downloads_directory() -> Option<PathBuf> {
@@ -1766,9 +1816,19 @@ fn downloads_directory() -> Option<PathBuf> {
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join("Downloads")))
 }
 
-fn recent_download_entries_from_dir(dir: &Path, limit: usize) -> Vec<DownloadStackEntry> {
+fn trash_files_directory() -> Option<PathBuf> {
+    env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .map(|data_home| data_home.join("Trash/files"))
+}
+
+fn recent_applet_entries_from_dir(dir: &Path, limit: usize) -> AppletFanDirectoryEntries {
     let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
+        return AppletFanDirectoryEntries {
+            entries: Vec::new(),
+            total_entries: 0,
+        };
     };
 
     let mut files = entries
@@ -1786,10 +1846,10 @@ fn recent_download_entries_from_dir(dir: &Path, limit: usize) -> Vec<DownloadSta
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
                 .unwrap_or_default();
-            Some(DownloadStackEntry {
+            Some(AppletFanEntry {
                 name,
                 path: path.clone(),
-                icon_name: downloads_entry_icon_name(&path, file_type.is_dir()).to_string(),
+                icon_name: applet_entry_icon_name(&path, file_type.is_dir()).to_string(),
                 modified,
             })
         })
@@ -1801,11 +1861,15 @@ fn recent_download_entries_from_dir(dir: &Path, limit: usize) -> Vec<DownloadSta
             .cmp(&left.modified)
             .then_with(|| left.name.cmp(&right.name))
     });
+    let total_entries = files.len();
     files.truncate(limit);
-    files
+    AppletFanDirectoryEntries {
+        entries: files,
+        total_entries,
+    }
 }
 
-fn downloads_entry_icon_name(path: &Path, is_directory: bool) -> &'static str {
+fn applet_entry_icon_name(path: &Path, is_directory: bool) -> &'static str {
     if is_directory {
         return "folder";
     }
@@ -1818,12 +1882,467 @@ fn downloads_entry_icon_name(path: &Path, is_directory: bool) -> &'static str {
     {
         Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg") => "image-x-generic",
         Some("pdf") => "application-pdf",
-        Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => {
-            "package-x-generic"
-        }
+        Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => "package-x-generic",
         Some("mp3" | "wav" | "flac" | "ogg") => "audio-x-generic",
         Some("mp4" | "mkv" | "webm" | "mov") => "video-x-generic",
         _ => "text-x-generic",
+    }
+}
+
+fn draw_applet_fan(
+    cr: &Context,
+    width: i32,
+    height: i32,
+    source: &AppletFanSource,
+    hover_index: Option<usize>,
+    hit_regions: &mut Vec<AppletFanHitRegion>,
+    icon_cache: &mut HashMap<String, Option<Pixbuf>>,
+) {
+    hit_regions.clear();
+    cr.set_operator(gtk::cairo::Operator::Clear);
+    let _ = cr.paint();
+    cr.set_operator(gtk::cairo::Operator::Over);
+
+    let row_count = source.entries.len() + 1 + usize::from(source.entries.is_empty());
+    let row_step = if row_count > 1 {
+        ((height as f64 - APPLET_FAN_TOP_PADDING - APPLET_FAN_BOTTOM_PADDING) / row_count as f64)
+            .max(54.0)
+    } else {
+        APPLET_FAN_ROW_HEIGHT
+    };
+    let top_center_y = APPLET_FAN_TOP_PADDING + row_step * 0.5;
+    let visible_count = source.entries.len();
+    let more_label = applet_fan_more_label(source, visible_count);
+    let more_action = source
+        .open_target
+        .clone()
+        .map(AppletFanHitAction::OpenTarget);
+    draw_applet_fan_row(
+        cr,
+        width as f64,
+        top_center_y,
+        0,
+        row_count,
+        &more_label,
+        None,
+        more_action,
+        hover_index == Some(0),
+        hit_regions,
+        icon_cache,
+    );
+
+    if source.entries.is_empty() {
+        draw_applet_fan_empty(
+            cr,
+            width as f64,
+            top_center_y + row_step,
+            1,
+            row_count,
+            &source.empty_label,
+        );
+        return;
+    }
+
+    for (entry_index, entry) in source.entries.iter().enumerate() {
+        let index = entry_index + 1;
+        draw_applet_fan_row(
+            cr,
+            width as f64,
+            top_center_y + row_step * index as f64,
+            index,
+            row_count,
+            &entry.name,
+            Some(entry),
+            Some(AppletFanHitAction::OpenPath(entry.path.clone())),
+            hover_index == Some(index),
+            hit_regions,
+            icon_cache,
+        );
+    }
+}
+
+fn applet_fan_more_label(source: &AppletFanSource, visible_count: usize) -> String {
+    let hidden_count = source.total_entries.saturating_sub(visible_count);
+    if hidden_count > 0 {
+        format!("{hidden_count} More in {}", source.directory_label)
+    } else {
+        format!("Open {}", source.directory_label)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_applet_fan_row(
+    cr: &Context,
+    width: f64,
+    center_y: f64,
+    index: usize,
+    row_count: usize,
+    label: &str,
+    entry: Option<&AppletFanEntry>,
+    action: Option<AppletFanHitAction>,
+    hovered: bool,
+    hit_regions: &mut Vec<AppletFanHitRegion>,
+    icon_cache: &mut HashMap<String, Option<Pixbuf>>,
+) {
+    let progress = if row_count > 1 {
+        index as f64 / (row_count - 1) as f64
+    } else {
+        0.0
+    };
+    let icon_center_x = width * 0.54 + (1.0 - progress).powf(0.85) * 50.0;
+    let label_right = icon_center_x - 47.0 - progress * 12.0;
+    let max_label_width = label_right - 10.0;
+    let rotation = -0.075 + progress * 0.045;
+
+    cr.save().ok();
+    cr.select_font_face("Sans", FontSlant::Normal, FontWeight::Bold);
+    cr.set_font_size(13.0);
+    let fitted = fit_middle_text(cr, label, (max_label_width - 24.0).max(32.0));
+    let extents = cr.text_extents(&fitted).ok();
+    let text_width = extents
+        .as_ref()
+        .map(|extents| extents.width())
+        .unwrap_or(70.0);
+    let label_width = (text_width + 23.0).max(48.0).min(max_label_width);
+    let label_center_x = label_right - label_width / 2.0;
+    cr.restore().ok();
+
+    let hit_x =
+        (label_center_x - label_width / 2.0).min(icon_center_x - APPLET_FAN_ICON_SIZE / 2.0);
+    let hit_right = icon_center_x + APPLET_FAN_ICON_SIZE / 2.0 + 10.0;
+    if let Some(action) = action {
+        hit_regions.push(AppletFanHitRegion {
+            index,
+            rect: Rect {
+                x: hit_x - 4.0,
+                y: center_y - APPLET_FAN_ROW_HEIGHT * 0.42,
+                width: hit_right - hit_x + 8.0,
+                height: APPLET_FAN_ROW_HEIGHT * 0.84,
+            },
+            action,
+        });
+    }
+
+    draw_fan_label(
+        cr,
+        label_center_x,
+        center_y,
+        label_width,
+        APPLET_FAN_LABEL_HEIGHT,
+        &fitted,
+        hovered,
+        rotation * 0.55,
+    );
+
+    if let Some(entry) = entry {
+        draw_fan_entry_icon(
+            cr,
+            icon_center_x,
+            center_y,
+            APPLET_FAN_ICON_SIZE,
+            rotation,
+            entry,
+            icon_cache,
+        );
+    } else {
+        draw_fan_more_icon(cr, icon_center_x, center_y, APPLET_FAN_ICON_SIZE, hovered);
+    }
+}
+
+fn draw_applet_fan_empty(
+    cr: &Context,
+    width: f64,
+    center_y: f64,
+    index: usize,
+    row_count: usize,
+    label: &str,
+) {
+    let progress = if row_count > 1 {
+        index as f64 / (row_count - 1) as f64
+    } else {
+        0.0
+    };
+    let icon_center_x = width * 0.54 + (1.0 - progress).powf(0.85) * 50.0;
+    let label_right = icon_center_x - 47.0 - progress * 12.0;
+    let max_label_width = label_right - 10.0;
+    cr.save().ok();
+    cr.select_font_face("Sans", FontSlant::Normal, FontWeight::Bold);
+    cr.set_font_size(13.0);
+    let fitted = fit_middle_text(cr, label, (max_label_width - 24.0).max(32.0));
+    let extents = cr.text_extents(&fitted).ok();
+    let text_width = extents
+        .as_ref()
+        .map(|extents| extents.width())
+        .unwrap_or(92.0);
+    let label_width = (text_width + 23.0).max(48.0).min(max_label_width);
+    cr.restore().ok();
+    draw_fan_label(
+        cr,
+        label_right - label_width / 2.0,
+        center_y,
+        label_width,
+        APPLET_FAN_LABEL_HEIGHT,
+        &fitted,
+        false,
+        -0.03,
+    );
+}
+
+fn draw_fan_label(
+    cr: &Context,
+    center_x: f64,
+    center_y: f64,
+    width: f64,
+    height: f64,
+    text: &str,
+    hovered: bool,
+    rotation: f64,
+) {
+    cr.save().ok();
+    cr.translate(center_x, center_y);
+    cr.rotate(rotation);
+    rounded_rect_path(cr, -width / 2.0, -height / 2.0, width, height, height / 2.0);
+    if hovered {
+        let gradient = LinearGradient::new(0.0, -height / 2.0, 0.0, height / 2.0);
+        gradient.add_color_stop_rgba(0.0, 0.36, 0.50, 0.76, 0.96);
+        gradient.add_color_stop_rgba(1.0, 0.09, 0.27, 0.60, 0.94);
+        let _ = cr.set_source(&gradient);
+    } else {
+        let gradient = LinearGradient::new(0.0, -height / 2.0, 0.0, height / 2.0);
+        gradient.add_color_stop_rgba(0.0, 0.26, 0.24, 0.30, 0.90);
+        gradient.add_color_stop_rgba(1.0, 0.06, 0.06, 0.08, 0.88);
+        let _ = cr.set_source(&gradient);
+    }
+    let _ = cr.fill_preserve();
+    cr.set_source_rgba(1.0, 1.0, 1.0, if hovered { 0.42 } else { 0.20 });
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+
+    cr.select_font_face("Sans", FontSlant::Normal, FontWeight::Bold);
+    cr.set_font_size(13.0);
+    let extents = cr.text_extents(text).ok();
+    let text_x = extents
+        .as_ref()
+        .map(|extents| -extents.width() / 2.0 - extents.x_bearing())
+        .unwrap_or(-width * 0.35);
+    let text_y = extents
+        .as_ref()
+        .map(|extents| -extents.height() / 2.0 - extents.y_bearing())
+        .unwrap_or(4.0);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.58);
+    cr.move_to(text_x, text_y + 1.0);
+    let _ = cr.show_text(text);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+    cr.move_to(text_x, text_y);
+    let _ = cr.show_text(text);
+    cr.restore().ok();
+}
+
+fn draw_fan_entry_icon(
+    cr: &Context,
+    center_x: f64,
+    center_y: f64,
+    size: f64,
+    rotation: f64,
+    entry: &AppletFanEntry,
+    icon_cache: &mut HashMap<String, Option<Pixbuf>>,
+) {
+    cr.save().ok();
+    cr.translate(center_x, center_y);
+    cr.rotate(rotation);
+
+    cr.save().ok();
+    cr.translate(size * 0.06, size * 0.09);
+    rounded_rect_path(
+        cr,
+        -size * 0.40,
+        -size * 0.36,
+        size * 0.80,
+        size * 0.72,
+        size * 0.12,
+    );
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.25);
+    let _ = cr.fill();
+    cr.restore().ok();
+
+    if let Some(pixbuf) = fan_icon_pixbuf(icon_cache, &entry.icon_name, size.ceil() as i32) {
+        let scale = size / pixbuf.width().max(pixbuf.height()) as f64;
+        let draw_width = pixbuf.width() as f64 * scale;
+        let draw_height = pixbuf.height() as f64 * scale;
+        cr.save().ok();
+        cr.translate(-draw_width / 2.0, -draw_height / 2.0);
+        cr.scale(scale, scale);
+        cr.set_source_pixbuf(&pixbuf, 0.0, 0.0);
+        let _ = cr.paint();
+        cr.restore().ok();
+    } else {
+        draw_fan_file_placeholder(cr, size);
+    }
+
+    cr.restore().ok();
+}
+
+fn draw_fan_more_icon(cr: &Context, center_x: f64, center_y: f64, size: f64, hovered: bool) {
+    cr.save().ok();
+    cr.translate(center_x, center_y);
+    cr.rotate(-0.08);
+    let radius = size * 0.39;
+    let gradient = LinearGradient::new(0.0, -radius, 0.0, radius);
+    if hovered {
+        gradient.add_color_stop_rgba(0.0, 0.78, 0.84, 0.95, 0.98);
+        gradient.add_color_stop_rgba(1.0, 0.33, 0.42, 0.60, 0.98);
+    } else {
+        gradient.add_color_stop_rgba(0.0, 0.45, 0.43, 0.50, 0.98);
+        gradient.add_color_stop_rgba(1.0, 0.14, 0.13, 0.18, 0.98);
+    }
+    cr.arc(0.0, 0.0, radius, 0.0, std::f64::consts::PI * 2.0);
+    let _ = cr.set_source(&gradient);
+    let _ = cr.fill_preserve();
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.58);
+    cr.set_line_width(1.4);
+    let _ = cr.stroke();
+
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+    cr.set_line_width(4.0);
+    cr.set_line_cap(LineCap::Round);
+    cr.arc(0.0, 0.0, radius * 0.48, -2.35, 0.72);
+    let _ = cr.stroke();
+    cr.move_to(radius * 0.45, radius * 0.32);
+    cr.line_to(radius * 0.68, radius * 0.06);
+    cr.line_to(radius * 0.31, -radius * 0.02);
+    cr.close_path();
+    let _ = cr.fill();
+    cr.restore().ok();
+}
+
+fn draw_fan_file_placeholder(cr: &Context, size: f64) {
+    let width = size * 0.74;
+    let height = size * 0.86;
+    let x = -width / 2.0;
+    let y = -height / 2.0;
+    rounded_rect_path(cr, x, y, width, height, size * 0.06);
+    let gradient = LinearGradient::new(0.0, y, 0.0, y + height);
+    gradient.add_color_stop_rgba(0.0, 0.94, 0.96, 0.98, 1.0);
+    gradient.add_color_stop_rgba(1.0, 0.64, 0.72, 0.82, 1.0);
+    let _ = cr.set_source(&gradient);
+    let _ = cr.fill_preserve();
+    cr.set_source_rgba(0.28, 0.34, 0.42, 0.48);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+}
+
+fn fan_icon_pixbuf(
+    cache: &mut HashMap<String, Option<Pixbuf>>,
+    icon_name: &str,
+    size: i32,
+) -> Option<Pixbuf> {
+    if let Some(cached) = cache.get(icon_name) {
+        return cached.clone();
+    }
+
+    let loaded = load_fan_icon(icon_name, size);
+    cache.insert(icon_name.to_string(), loaded.clone());
+    loaded
+}
+
+fn load_fan_icon(icon_name: &str, size: i32) -> Option<Pixbuf> {
+    let path = Path::new(icon_name);
+    if path.is_absolute() && path.exists() {
+        return Pixbuf::from_file_at_scale(path, size, size, true).ok();
+    }
+
+    let display = gdk::Display::default()?;
+    let icon_theme = IconTheme::for_display(&display);
+    if !icon_theme.has_icon(icon_name) {
+        return None;
+    }
+
+    let paintable = icon_theme.lookup_icon(
+        icon_name,
+        &[],
+        size,
+        1,
+        TextDirection::None,
+        IconLookupFlags::empty(),
+    );
+    let path = paintable.file()?.path()?;
+    Pixbuf::from_file_at_scale(path, size, size, true).ok()
+}
+
+fn fit_middle_text(cr: &Context, text: &str, max_width: f64) -> String {
+    if cr
+        .text_extents(text)
+        .map(|extents| extents.width() <= max_width)
+        .unwrap_or(true)
+    {
+        return text.to_string();
+    }
+
+    let chars = text.chars().collect::<Vec<_>>();
+    for keep in (1..chars.len()).rev() {
+        let head_len = (keep + 1) / 2;
+        let tail_len = keep / 2;
+        let head = chars.iter().take(head_len).collect::<String>();
+        let tail = chars
+            .iter()
+            .skip(chars.len().saturating_sub(tail_len))
+            .collect::<String>();
+        let candidate = format!("{head}...{tail}");
+        if cr
+            .text_extents(&candidate)
+            .map(|extents| extents.width() <= max_width)
+            .unwrap_or(true)
+        {
+            return candidate;
+        }
+    }
+
+    "...".to_string()
+}
+
+fn rounded_rect_path(cr: &Context, x: f64, y: f64, width: f64, height: f64, radius: f64) {
+    let radius = radius.min(width / 2.0).min(height / 2.0);
+    cr.new_sub_path();
+    cr.arc(
+        x + width - radius,
+        y + radius,
+        radius,
+        -std::f64::consts::FRAC_PI_2,
+        0.0,
+    );
+    cr.arc(
+        x + width - radius,
+        y + height - radius,
+        radius,
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    cr.arc(
+        x + radius,
+        y + height - radius,
+        radius,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    );
+    cr.arc(
+        x + radius,
+        y + radius,
+        radius,
+        std::f64::consts::PI,
+        std::f64::consts::PI * 1.5,
+    );
+    cr.close_path();
+}
+
+fn run_applet_fan_action(action: AppletFanHitAction) {
+    match action {
+        AppletFanHitAction::OpenPath(path) => open_path_in_default_app(&path),
+        AppletFanHitAction::OpenTarget(AppletFanTarget::Path(path)) => {
+            open_path_in_default_app(&path);
+        }
+        AppletFanHitAction::OpenTarget(AppletFanTarget::Uri(uri)) => {
+            open_uri(&uri);
+        }
     }
 }
 
@@ -2137,16 +2656,9 @@ fn activate_applet(
         return;
     }
 
-    if item.is_downloads_applet() {
-        show_downloads_stack(state, window, drawing, gl_area, index, x, y);
+    if item.is_downloads_applet() || item.is_trash_applet() {
+        show_applet_fan(state, window, drawing, gl_area, item, index, x, y);
         return;
-    }
-
-    if item.is_trash_applet() {
-        open_uri("trash:///");
-        sync_dock_window(state, window, drawing, gl_area, true);
-        queue_gl_render_if_enabled(state, gl_area);
-        drawing.queue_draw();
     }
 }
 
@@ -2476,6 +2988,33 @@ mod tests {
             context_menu_anchor_rect(rect, 280),
             gdk::Rectangle::new(248, 18, 30, 40)
         );
+    }
+
+    #[test]
+    fn applet_fan_more_label_counts_hidden_entries() {
+        let source = AppletFanSource {
+            directory_label: "Downloads".to_string(),
+            empty_label: "No recent downloads".to_string(),
+            open_target: None,
+            entries: Vec::new(),
+            total_entries: 9,
+        };
+
+        assert_eq!(applet_fan_more_label(&source, 7), "2 More in Downloads");
+        assert_eq!(applet_fan_more_label(&source, 9), "Open Downloads");
+    }
+
+    #[test]
+    fn recent_applet_entries_skip_hidden_files_and_report_total() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), b"a").expect("write a");
+        fs::write(dir.path().join("b.pdf"), b"b").expect("write b");
+        fs::write(dir.path().join(".hidden"), b"hidden").expect("write hidden");
+
+        let entries = recent_applet_entries_from_dir(dir.path(), 1);
+
+        assert_eq!(entries.total_entries, 2);
+        assert_eq!(entries.entries.len(), 1);
     }
 
     #[test]
