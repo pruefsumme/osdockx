@@ -8,15 +8,6 @@ use crate::layout::Rect;
 use crate::theme::{Color, Theme};
 use gtk::cairo::{Context, LinearGradient};
 
-pub(crate) fn draw_leopard_plank(cr: &Context, shelf: &Rect, theme: &Theme) {
-    cr.save().ok();
-    draw_glass_shelf_base(cr, shelf, theme);
-    draw_glass_highlight_overlay(cr, shelf, theme);
-    draw_front_lip(cr, shelf, theme);
-    draw_leopard_shelf_strokes(cr, shelf, theme);
-    cr.restore().ok();
-}
-
 pub(crate) fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
 

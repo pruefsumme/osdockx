@@ -11,7 +11,6 @@ use crate::renderer::{
 use crate::scene3d::Scene3dRenderer;
 use crate::shelf::ShelfRenderer;
 use crate::theme::Theme;
-use crate::theme_pack::ThemePack;
 use directories::UserDirs;
 use gdk_x11::X11Surface;
 use gtk::cairo::{Context, FontSlant, FontWeight, LineCap, LinearGradient};
@@ -598,14 +597,10 @@ fn set_separator_resize_cursor(drawing: &DrawingArea, enabled: bool) {
 fn build_ui(app: &Application) -> anyhow::Result<()> {
     let (config, config_path) = Config::load_or_create()?;
     tracing::info!("using config {}", config_path.display());
-    if let Err(error) = ThemePack::export_builtin_theme_packs() {
-        tracing::warn!("could not export built-in theme packs: {error:#}");
-    }
-
     install_css();
 
     let composited = gdk::Display::default().is_some_and(|display| display.is_composited());
-    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(&config, composited);
+    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(composited);
     tracing::info!("using theme {} ({:?})", theme_id, theme_renderer);
     if !composited {
         tracing::warn!("display is not composited; using opaque shelf fallback");
@@ -730,14 +725,14 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn resolve_runtime_theme(config: &Config, composited: bool) -> (String, RenderMode, Theme) {
-    let theme_pack = ThemePack::load(&config.theme);
-    let id = theme_pack.id.clone();
-    let renderer = theme_pack.renderer;
+fn resolve_runtime_theme(composited: bool) -> (String, RenderMode, Theme) {
+    let theme = Theme::default();
+    let id = theme.id.clone();
+    let renderer = theme.renderer;
     if composited {
-        (id, renderer, theme_pack.theme)
+        (id, renderer, theme)
     } else {
-        (id, renderer, theme_pack.theme.opaque_fallback())
+        (id, renderer, theme.opaque_fallback())
     }
 }
 
@@ -4036,7 +4031,7 @@ fn refresh_config_and_theme(state: &mut Runtime) {
         }
     }
 
-    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(&state.config, state.composited);
+    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(state.composited);
     if theme != state.theme {
         tracing::info!("reloaded theme {} ({:?})", theme_id, theme_renderer);
         state.theme = theme;

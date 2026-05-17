@@ -20,19 +20,16 @@ use self::reflections::{
     render_icon_surface, shelf_plane_reflection_rect, uses_shelf_plane_reflections,
 };
 use self::shelf::{
-    compute_perspective_shelf_geometry, crystal_floor_path, crystal_shelf_geometry,
-    draw_crystal_shelf, draw_front_lip, draw_glass_highlight_overlay, draw_glass_shelf_base,
-    draw_legacy_shelf, draw_leopard_plank, draw_leopard_shelf_strokes,
-    draw_shadow, draw_shelf_section_separator,
-    leopard_glass_plane_path, leopard_wedge_body_geometry,
+    compute_perspective_shelf_geometry, crystal_shelf_geometry, draw_front_lip,
+    draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes,
+    draw_shadow, draw_shelf_section_separator, leopard_glass_plane_path,
+    leopard_wedge_body_geometry,
 };
-use crate::config::{DockConfig, ShelfStyle};
+use crate::config::DockConfig;
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
 use crate::model::{DockItem, DockModel};
 use crate::theme::{Color, Theme};
 use gtk::cairo::{Context, FontSlant, FontWeight, ImageSurface, LinearGradient};
-use gtk::gdk::prelude::GdkCairoContextExt;
-use gtk::gdk_pixbuf::Pixbuf;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
@@ -250,7 +247,7 @@ impl Renderer {
         shelf_layer: ShelfLayer,
     ) {
         clear(cr);
-        if theme.shelf_style == ShelfStyle::LeopardPlank && shelf_layer != ShelfLayer::None {
+        if shelf_layer != ShelfLayer::None {
             draw_shadow(cr, &layout.shelf, theme);
             draw_glass_shelf_base(cr, &layout.shelf, theme);
             if theme.reflection_opacity > 0.0 {
@@ -265,31 +262,7 @@ impl Renderer {
             return;
         }
 
-        let mut shelf_icon_surface = if uses_shelf_plane_reflections(theme)
-            && theme.reflection_opacity > 0.0
-            && shelf_layer != ShelfLayer::None
-            && theme.shelf_style != ShelfStyle::LeopardPlank
-        {
-            render_icon_surface(resolved_icons, layout, icons)
-        } else {
-            None
-        };
-        match shelf_layer {
-            ShelfLayer::None => {}
-            ShelfLayer::Procedural => draw_procedural_shelf_layer(cr, &layout.shelf, theme),
-            ShelfLayer::Texture2d => {
-                if !draw_texture_shelf_layer(cr, &layout.shelf, theme) {
-                    draw_procedural_shelf_layer(cr, &layout.shelf, theme);
-                }
-            }
-        }
-        if theme.shelf_style == ShelfStyle::LeopardPlank && theme.reflection_opacity > 0.0 {
-            draw_icon_reflections_on_shelf(cr, resolved_icons, layout, theme, icons);
-        } else if let Some(icon_surface) = shelf_icon_surface.as_mut() {
-            draw_shelf_plane_reflections(cr, layout, theme, icon_surface);
-        } else {
-            draw_reflections(cr, resolved_icons, theme, icons);
-        }
+        draw_reflections(cr, resolved_icons, theme, icons);
         draw_separator(cr, layout, theme);
         draw_icons(cr, layout, resolved_icons, theme, icons);
         draw_hover_label(cr, model, layout);
@@ -565,35 +538,10 @@ fn clear(cr: &Context) {
 
 fn draw_procedural_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) {
     draw_shadow(cr, shelf, theme);
-    draw_shelf(cr, shelf, theme);
-}
-
-fn draw_texture_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) -> bool {
-    let Some(path) = theme.assets.fallback_texture.as_ref() else {
-        return false;
-    };
-    let Ok(pixbuf) = Pixbuf::from_file(path) else {
-        return false;
-    };
-
-    cr.save().ok();
-    cr.translate(shelf.x, shelf.y);
-    cr.scale(
-        shelf.width / pixbuf.width().max(1) as f64,
-        shelf.height / pixbuf.height().max(1) as f64,
-    );
-    cr.set_source_pixbuf(&pixbuf, 0.0, 0.0);
-    let painted = cr.paint().is_ok();
-    cr.restore().ok();
-    painted
-}
-
-fn draw_shelf(cr: &Context, shelf: &Rect, theme: &Theme) {
-    match theme.shelf_style {
-        ShelfStyle::LeopardPlank => draw_leopard_plank(cr, shelf, theme),
-        ShelfStyle::CrystalGlass => draw_crystal_shelf(cr, shelf, theme),
-        ShelfStyle::LegacyGlass => draw_legacy_shelf(cr, shelf, theme),
-    }
+    draw_glass_shelf_base(cr, shelf, theme);
+    draw_glass_highlight_overlay(cr, shelf, theme);
+    draw_front_lip(cr, shelf, theme);
+    draw_leopard_shelf_strokes(cr, shelf, theme);
 }
 
 fn draw_separator(cr: &Context, layout: &DockLayout, theme: &Theme) {
@@ -616,22 +564,18 @@ fn draw_icons(
         if !item.is_application() {
             continue;
         }
-        if theme.shelf_style == ShelfStyle::LeopardPlank {
-            if item.is_running() {
-                draw_leopard_running_indicator(
-                    cr,
-                    icon.rect,
-                    layout,
-                    theme,
-                    item.active,
-                    icon.alpha,
-                );
-            }
-            if item.active {
-                draw_leopard_active_indicator(cr, icon.rect, layout, theme, icon.alpha);
-            }
-        } else if item.is_running() {
-            draw_indicator(cr, icon.rect, theme.indicator, item.active, icon.alpha);
+        if item.is_running() {
+            draw_leopard_running_indicator(
+                cr,
+                icon.rect,
+                layout,
+                theme,
+                item.active,
+                icon.alpha,
+            );
+        }
+        if item.active {
+            draw_leopard_active_indicator(cr, icon.rect, layout, theme, icon.alpha);
         }
         if let Some(badge) = item.badge {
             draw_badge(cr, icon.rect, badge, theme.badge, icon.alpha);
@@ -765,28 +709,6 @@ fn hover_label_path(
     cr.line_to(pointer_x, pointer_top + pointer_height);
     cr.line_to(pointer_x + pointer_width / 2.0, pointer_top);
     cr.close_path();
-}
-
-fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool, alpha: f64) {
-    let alpha = alpha.clamp(0.0, 1.0);
-    if alpha <= 0.0 {
-        return;
-    }
-    let y = rect.y + rect.height + 7.0;
-    let radius_x = if active { 7.0 } else { 4.5 };
-    let radius_y = if active { 2.8 } else { 2.2 };
-    cr.save().ok();
-    cr.translate(rect.center_x(), y);
-    cr.scale(radius_x, radius_y);
-    cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(
-        color.red,
-        color.green,
-        color.blue,
-        (if active { 0.95 } else { 0.55 }) * alpha,
-    );
-    let _ = cr.fill();
-    cr.restore().ok();
 }
 
 #[cfg(test)]

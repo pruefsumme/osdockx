@@ -1,4 +1,4 @@
-use crate::config::{RenderMode, ShelfStyle, ThemeConfig};
+use crate::config::{RenderMode, ThemeConfig};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -13,7 +13,6 @@ pub struct Color {
 pub struct Theme {
     pub id: String,
     pub renderer: RenderMode,
-    pub shelf_style: ShelfStyle,
     pub shelf_top: Color,
     pub shelf_bottom: Color,
     pub shelf_stroke: Color,
@@ -51,46 +50,8 @@ pub struct ThemeAssets {
 }
 
 impl Theme {
-    pub fn from_config(config: &ThemeConfig) -> Self {
-        Self {
-            id: config.preset.clone(),
-            renderer: config.renderer.unwrap_or(RenderMode::Procedural2d),
-            shelf_style: config.shelf_style,
-            shelf_top: Color::parse(&config.shelf_top).unwrap_or(Color::rgba(0.97, 0.99, 1.0, 1.0)),
-            shelf_bottom: Color::parse(&config.shelf_bottom)
-                .unwrap_or(Color::rgba(0.47, 0.56, 0.66, 0.86)),
-            shelf_stroke: Color::parse(&config.shelf_stroke)
-                .unwrap_or(Color::rgba(0.18, 0.25, 0.33, 0.8)),
-            shelf_highlight: Color::parse(&config.shelf_highlight)
-                .unwrap_or(Color::rgba(1.0, 1.0, 1.0, 1.0)),
-            indicator: Color::parse(&config.indicator).unwrap_or(Color::rgba(0.49, 0.84, 1.0, 1.0)),
-            badge: Color::parse(&config.badge).unwrap_or(Color::rgba(0.89, 0.13, 0.18, 1.0)),
-            reflection_opacity: config.reflection_opacity,
-            reflection_height: config.reflection_height,
-            shelf_height_ratio: config.shelf_height_ratio,
-            shelf_slant_ratio: config.shelf_slant_ratio,
-            icon_gap_ratio: config.icon_gap_ratio,
-            side_margin_ratio: config.side_margin_ratio,
-            shelf_horizon_ratio: config.shelf_horizon_ratio,
-            front_lip_ratio: config.front_lip_ratio,
-            reflection_band_ratio: config.reflection_band_ratio,
-            tilt: config.tilt,
-            depth: config.depth,
-            bevel: config.bevel,
-            floor_opacity: config.floor_opacity,
-            shadow_strength: config.shadow_strength,
-            highlight_strength: config.highlight_strength,
-            reflection_blur: config.reflection_blur,
-            material_roughness: config.material_roughness,
-            icon_floor_offset: config.icon_floor_offset,
-            assets: ThemeAssets {
-                shelf_texture: config.shelf_texture.as_ref().map(PathBuf::from),
-                shelf_overlay: config.shelf_overlay.as_ref().map(PathBuf::from),
-                noise_texture: config.noise_texture.as_ref().map(PathBuf::from),
-                normal_map: config.normal_map.as_ref().map(PathBuf::from),
-                fallback_texture: config.fallback_texture.as_ref().map(PathBuf::from),
-            },
-        }
+    pub fn from_config(_config: &ThemeConfig) -> Self {
+        Self::default()
     }
 
     pub fn opaque_fallback(mut self) -> Self {
@@ -111,6 +72,40 @@ impl Theme {
     pub fn with_renderer(mut self, renderer: RenderMode) -> Self {
         self.renderer = renderer;
         self
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            id: "default".to_string(),
+            renderer: RenderMode::Procedural2d,
+            shelf_top: Color::rgba(0.81, 0.84, 0.86, 1.0),
+            shelf_bottom: Color::rgba(0.59, 0.64, 0.69, 1.0),
+            shelf_stroke: Color::rgba(0.36, 0.42, 0.47, 1.0),
+            shelf_highlight: Color::rgba(0.86, 0.89, 0.91, 1.0),
+            indicator: Color::rgba(0.44, 0.83, 1.0, 1.0),
+            badge: Color::rgba(0.89, 0.13, 0.18, 1.0),
+            reflection_opacity: 0.26,
+            reflection_height: 0.46,
+            shelf_height_ratio: 0.62,
+            shelf_slant_ratio: 0.42,
+            icon_gap_ratio: 0.04,
+            side_margin_ratio: 0.82,
+            shelf_horizon_ratio: 0.62,
+            front_lip_ratio: 0.18,
+            reflection_band_ratio: 0.16,
+            tilt: 0.58,
+            depth: 0.58,
+            bevel: 0.10,
+            floor_opacity: 0.72,
+            shadow_strength: 0.28,
+            highlight_strength: 0.60,
+            reflection_blur: 0.44,
+            material_roughness: 0.12,
+            icon_floor_offset: 0.02,
+            assets: ThemeAssets::default(),
+        }
     }
 }
 
