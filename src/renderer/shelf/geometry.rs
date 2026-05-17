@@ -55,8 +55,8 @@ pub(crate) fn compute_perspective_shelf_geometry(
     let back_rise = (shelf.height * (0.104 + theme.tilt * 0.036))
         .clamp(shelf.height * 0.104, shelf.height * 0.145);
     let back_y = shelf.y - back_rise;
-    let front_face_height = (shelf.height * theme.front_lip_ratio * 0.49)
-        .clamp(shelf.height * 0.080, shelf.height * 0.160);
+    let front_face_height =
+        (shelf.height * theme.front_lip_ratio).clamp(shelf.height * 0.030, shelf.height * 0.140);
     let lip_y = shelf.y + shelf.height - front_face_height;
     let bottom_y = shelf.y + shelf.height + (shelf.height * 0.024).clamp(0.9, 1.5);
     PerspectiveShelfGeometry {

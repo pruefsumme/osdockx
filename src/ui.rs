@@ -4637,12 +4637,8 @@ fn shape_dock(state: &mut Runtime) {
     let size = state.desired_size();
     let layout = dock_layout_for_state(state, state.hover);
     let config = rendered_dock_config(state);
-    let mut visual_regions = Renderer::visual_regions_for_layout(
-        &state.model,
-        &layout,
-        &config,
-        &state.theme,
-    );
+    let mut visual_regions =
+        Renderer::visual_regions_for_layout(&state.model, &layout, &config, &state.theme);
     let mut input_regions = Renderer::input_regions_for_layout(&layout);
     if state.hidden {
         let reveal_strip = hidden_reveal_input_region(size, state.config.dock.edge);

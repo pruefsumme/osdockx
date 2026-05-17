@@ -4,7 +4,7 @@ use crate::theme::Theme;
 use gtk::cairo::{Context, LinearGradient};
 
 pub(super) fn leopard_running_indicator_size(active: bool) -> (f64, f64) {
-    if active { (12.3, 3.45) } else { (8.9, 2.7) }
+    if active { (14.4, 4.15) } else { (10.4, 3.15) }
 }
 
 pub(super) fn draw_leopard_running_indicator(
@@ -24,7 +24,7 @@ pub(super) fn draw_leopard_running_indicator(
     let x = rect.center_x() - width / 2.0;
     let color = theme
         .shelf_highlight
-        .mix(theme.indicator, if active { 0.08 } else { 0.05 });
+        .mix(theme.indicator, if active { 0.42 } else { 0.26 });
 
     cr.save().ok();
     rounded_rect(
@@ -35,7 +35,12 @@ pub(super) fn draw_leopard_running_indicator(
         height * 1.60,
         height * 0.92,
     );
-    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.20 } else { 0.11 }) * alpha);
+    cr.set_source_rgba(
+        theme.indicator.red,
+        theme.indicator.green,
+        theme.indicator.blue,
+        (if active { 0.30 } else { 0.18 }) * alpha,
+    );
     let _ = cr.fill();
     cr.restore().ok();
 
@@ -48,7 +53,7 @@ pub(super) fn draw_leopard_running_indicator(
         height * 1.12,
         height * 0.64,
     );
-    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.14 } else { 0.07 }) * alpha);
+    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.24 } else { 0.14 }) * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 
@@ -60,25 +65,25 @@ pub(super) fn draw_leopard_running_indicator(
         0.00,
         theme
             .shelf_highlight
-            .with_alpha((if active { 0.78 } else { 0.60 }) * alpha),
+            .with_alpha((if active { 0.96 } else { 0.74 }) * alpha),
     );
     add_stop(
         &fill,
         0.24,
-        color.with_alpha((if active { 0.90 } else { 0.78 }) * alpha),
+        color.with_alpha((if active { 1.0 } else { 0.88 }) * alpha),
     );
     add_stop(
         &fill,
         1.00,
         theme
             .shelf_highlight
-            .mix(theme.indicator, if active { 0.18 } else { 0.10 })
-            .with_alpha((if active { 0.84 } else { 0.68 }) * alpha),
+            .mix(theme.indicator, if active { 0.54 } else { 0.34 })
+            .with_alpha((if active { 0.98 } else { 0.78 }) * alpha),
     );
     let _ = cr.set_source(&fill);
     let _ = cr.fill_preserve();
     cr.set_line_width(0.7);
-    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.34 } else { 0.22 }) * alpha);
+    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.62 } else { 0.36 }) * alpha);
     let _ = cr.stroke();
     cr.restore().ok();
 
@@ -91,7 +96,7 @@ pub(super) fn draw_leopard_running_indicator(
         height * 0.22,
         height * 0.20,
     );
-    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.56 } else { 0.34 }) * alpha);
+    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.82 } else { 0.46 }) * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 }
@@ -112,20 +117,20 @@ pub(super) fn draw_leopard_active_indicator(
     let color = theme.indicator;
 
     cr.save().ok();
-    cr.arc(x, y, 6.1, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(color.red, color.green, color.blue, 0.12 * alpha);
+    cr.arc(x, y, 8.4, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(color.red, color.green, color.blue, 0.24 * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
-    cr.arc(x, y, 3.8, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.94 * alpha);
+    cr.arc(x, y, 4.7, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.98 * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
-    cr.arc(x, y, 1.9, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(color.red, color.green, color.blue, 0.74 * alpha);
+    cr.arc(x, y, 2.6, 0.0, std::f64::consts::TAU);
+    cr.set_source_rgba(color.red, color.green, color.blue, 0.92 * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 }

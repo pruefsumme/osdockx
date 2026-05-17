@@ -36,33 +36,33 @@ pub(crate) fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
         0.00,
         theme
             .shelf_bottom
-            .mix(Color::rgba(0.58, 0.67, 0.78, 1.0), 0.18)
-            .with_alpha(0.62),
+            .mix(theme.shelf_top, 0.06)
+            .with_alpha(0.72),
     );
     add_stop(
         &glass,
         0.32,
         theme
-            .shelf_top
-            .mix(theme.shelf_bottom, 0.34)
+            .shelf_bottom
+            .mix(theme.shelf_top, 0.34)
             .mix(theme.shelf_highlight, 0.06)
-            .with_alpha(0.52),
+            .with_alpha(0.60),
     );
     add_stop(
         &glass,
         0.72,
         theme
             .shelf_top
-            .mix(theme.shelf_highlight, 0.12)
-            .with_alpha(0.42),
+            .mix(theme.shelf_bottom, 0.20)
+            .with_alpha(0.62),
     );
     add_stop(
         &glass,
         1.00,
         theme
-            .shelf_highlight
-            .mix(theme.shelf_top, 0.22)
-            .with_alpha(0.34),
+            .shelf_top
+            .mix(Color::rgba(0.18, 0.32, 0.48, 1.0), 0.18)
+            .with_alpha(0.76),
     );
     let _ = cr.set_source(&glass);
     let _ = cr.paint();
@@ -86,10 +86,10 @@ pub(crate) fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
     let _ = cr.paint();
 
     let front_gloss = LinearGradient::new(0.0, geom.back_left.y, 0.0, geom.lip_left.y);
-    front_gloss.add_color_stop_rgba(0.00, 0.90, 0.94, 0.98, 0.0);
-    front_gloss.add_color_stop_rgba(0.44, 0.90, 0.94, 0.98, 0.022);
-    front_gloss.add_color_stop_rgba(0.82, 0.90, 0.94, 0.98, 0.060);
-    front_gloss.add_color_stop_rgba(1.00, 0.90, 0.94, 0.98, 0.0);
+    front_gloss.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.0);
+    front_gloss.add_color_stop_rgba(0.44, 1.0, 1.0, 1.0, 0.028);
+    front_gloss.add_color_stop_rgba(0.82, 1.0, 1.0, 1.0, 0.068);
+    front_gloss.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
     let _ = cr.set_source(&front_gloss);
     let _ = cr.paint();
     cr.restore().ok();
@@ -151,7 +151,7 @@ fn draw_leopard_connector_wall(
         theme
             .shelf_top
             .mix(theme.shelf_bottom, 0.34)
-            .mix(Color::rgba(0.84, 0.90, 0.96, 1.0), 0.18)
+            .mix(Color::rgba(0.96, 0.98, 1.0, 1.0), 0.22)
             .with_alpha(0.46),
     );
     add_stop(
@@ -167,7 +167,7 @@ fn draw_leopard_connector_wall(
         0.56,
         theme
             .shelf_bottom
-            .mix(Color::rgba(0.48, 0.58, 0.70, 1.0), 0.36)
+            .mix(theme.shelf_top, 0.28)
             .with_alpha(0.84),
     );
     add_stop(
@@ -175,8 +175,9 @@ fn draw_leopard_connector_wall(
         1.00,
         theme
             .shelf_bottom
-            .mix(Color::rgba(0.24, 0.31, 0.40, 1.0), 0.42)
-            .with_alpha(0.99),
+            .mix(theme.shelf_top, 0.48)
+            .mix(Color::rgba(0.22, 0.34, 0.48, 1.0), 0.18)
+            .with_alpha(0.96),
     );
     let _ = cr.set_source(&wall);
     let _ = cr.paint();
@@ -362,24 +363,25 @@ pub(crate) fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
         0.00,
         theme
             .shelf_top
-            .mix(Color::rgba(0.86, 0.91, 0.96, 1.0), 0.26)
-            .with_alpha(0.50),
+            .mix(theme.shelf_bottom, 0.72)
+            .with_alpha(0.56),
     );
     add_stop(
         &face_fill,
         0.34,
         theme
             .shelf_bottom
-            .mix(Color::rgba(0.50, 0.60, 0.72, 1.0), 0.34)
-            .with_alpha(0.78),
+            .mix(theme.shelf_top, 0.26)
+            .with_alpha(0.82),
     );
     add_stop(
         &face_fill,
         1.00,
         theme
             .shelf_bottom
-            .mix(Color::rgba(0.26, 0.33, 0.43, 1.0), 0.44)
-            .with_alpha(0.99),
+            .mix(theme.shelf_top, 0.50)
+            .mix(Color::rgba(0.24, 0.34, 0.46, 1.0), 0.18)
+            .with_alpha(0.96),
     );
     let _ = cr.set_source(&face_fill);
     let _ = cr.paint();

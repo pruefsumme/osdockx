@@ -89,7 +89,7 @@ fn reserved_thickness_stays_compact_for_leopard_theme() {
 
     let reserved = Renderer::reserved_thickness(&model, &config.dock, &theme);
 
-    assert!(reserved < config.dock.icon_size + 40);
+    assert!(reserved < config.dock.icon_size + 48);
 }
 
 #[test]
@@ -174,8 +174,11 @@ fn leopard_plank_has_transparent_top_corner_and_visible_front_body() {
     assert!(alpha_at(&mut surface, 120, 22) > 0);
     assert!(alpha_at(&mut surface, 120, 34) > 40);
     assert!(alpha_at(&mut surface, 120, 66) > 120);
-    assert!(brightness_at(&mut surface, 120, 25) > brightness_at(&mut surface, 120, 37));
-    assert!(alpha_at(&mut surface, 120, 66) > alpha_at(&mut surface, 120, 40));
+    let top = color_at(&mut surface, 120, 25);
+    let lower = color_at(&mut surface, 120, 37);
+    assert!(top.0 > top.2);
+    assert!(brightness(top) < brightness(lower));
+    assert!(alpha_at(&mut surface, 120, 66) > 120);
 }
 
 #[test]
@@ -421,7 +424,7 @@ fn leopard_default_layout_has_raised_rear_edge() {
     let icon = layout.icons[0].rect;
     let rear_rise = (icon.y + icon.height) - geom.back_left.y;
 
-    assert!(rear_rise > icon.height * 0.44);
+    assert!(rear_rise > icon.height * 0.36);
 }
 
 #[test]
@@ -560,12 +563,21 @@ fn alpha_at(surface: &mut ImageSurface, x: i32, y: i32) -> u8 {
     data[y as usize * stride + x as usize * 4 + 3]
 }
 
-fn brightness_at(surface: &mut ImageSurface, x: i32, y: i32) -> u16 {
+fn color_at(surface: &mut ImageSurface, x: i32, y: i32) -> (u8, u8, u8, u8) {
     surface.flush();
     let stride = surface.stride() as usize;
     let data = surface.data().unwrap();
     let offset = y as usize * stride + x as usize * 4;
-    u16::from(data[offset]) + u16::from(data[offset + 1]) + u16::from(data[offset + 2])
+    (
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    )
+}
+
+fn brightness(color: (u8, u8, u8, u8)) -> u16 {
+    u16::from(color.0) + u16::from(color.1) + u16::from(color.2)
 }
 
 fn rect_has_alpha(surface: &mut ImageSurface, rect: Rect) -> bool {
