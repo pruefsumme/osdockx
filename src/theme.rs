@@ -1,4 +1,4 @@
-use crate::config::{RenderMode, ShelfStyle, ThemeConfig};
+use crate::config::{RenderMode, ThemeConfig};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -13,7 +13,6 @@ pub struct Color {
 pub struct Theme {
     pub id: String,
     pub renderer: RenderMode,
-    pub shelf_style: ShelfStyle,
     pub shelf_top: Color,
     pub shelf_bottom: Color,
     pub shelf_stroke: Color,
@@ -52,19 +51,32 @@ pub struct ThemeAssets {
 
 impl Theme {
     pub fn from_config(config: &ThemeConfig) -> Self {
+        let defaults = Self::default();
+
+        let parse_color = |field: &str, value: &str, fallback: Color| {
+            Color::parse(value).unwrap_or_else(|| {
+                tracing::warn!(
+                    "invalid theme color for {}: '{}'; using fallback",
+                    field,
+                    value
+                );
+                fallback
+            })
+        };
+
         Self {
             id: config.preset.clone(),
-            renderer: config.renderer.unwrap_or(RenderMode::Procedural2d),
-            shelf_style: config.shelf_style,
-            shelf_top: Color::parse(&config.shelf_top).unwrap_or(Color::rgba(0.97, 0.99, 1.0, 1.0)),
-            shelf_bottom: Color::parse(&config.shelf_bottom)
-                .unwrap_or(Color::rgba(0.47, 0.56, 0.66, 0.86)),
-            shelf_stroke: Color::parse(&config.shelf_stroke)
-                .unwrap_or(Color::rgba(0.18, 0.25, 0.33, 0.8)),
-            shelf_highlight: Color::parse(&config.shelf_highlight)
-                .unwrap_or(Color::rgba(1.0, 1.0, 1.0, 1.0)),
-            indicator: Color::parse(&config.indicator).unwrap_or(Color::rgba(0.49, 0.84, 1.0, 1.0)),
-            badge: Color::parse(&config.badge).unwrap_or(Color::rgba(0.89, 0.13, 0.18, 1.0)),
+            renderer: config.renderer.unwrap_or(defaults.renderer),
+            shelf_top: parse_color("shelf_top", &config.shelf_top, defaults.shelf_top),
+            shelf_bottom: parse_color("shelf_bottom", &config.shelf_bottom, defaults.shelf_bottom),
+            shelf_stroke: parse_color("shelf_stroke", &config.shelf_stroke, defaults.shelf_stroke),
+            shelf_highlight: parse_color(
+                "shelf_highlight",
+                &config.shelf_highlight,
+                defaults.shelf_highlight,
+            ),
+            indicator: parse_color("indicator", &config.indicator, defaults.indicator),
+            badge: parse_color("badge", &config.badge, defaults.badge),
             reflection_opacity: config.reflection_opacity,
             reflection_height: config.reflection_height,
             shelf_height_ratio: config.shelf_height_ratio,
@@ -83,13 +95,7 @@ impl Theme {
             reflection_blur: config.reflection_blur,
             material_roughness: config.material_roughness,
             icon_floor_offset: config.icon_floor_offset,
-            assets: ThemeAssets {
-                shelf_texture: config.shelf_texture.as_ref().map(PathBuf::from),
-                shelf_overlay: config.shelf_overlay.as_ref().map(PathBuf::from),
-                noise_texture: config.noise_texture.as_ref().map(PathBuf::from),
-                normal_map: config.normal_map.as_ref().map(PathBuf::from),
-                fallback_texture: config.fallback_texture.as_ref().map(PathBuf::from),
-            },
+            assets: ThemeAssets::default(),
         }
     }
 
@@ -114,6 +120,40 @@ impl Theme {
     }
 }
 
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            id: "default".to_string(),
+            renderer: RenderMode::Procedural2d,
+            shelf_top: Color::rgba(0.81, 0.84, 0.86, 1.0),
+            shelf_bottom: Color::rgba(0.59, 0.64, 0.69, 1.0),
+            shelf_stroke: Color::rgba(0.36, 0.42, 0.47, 1.0),
+            shelf_highlight: Color::rgba(0.86, 0.89, 0.91, 1.0),
+            indicator: Color::rgba(0.44, 0.83, 1.0, 1.0),
+            badge: Color::rgba(0.89, 0.13, 0.18, 1.0),
+            reflection_opacity: 0.26,
+            reflection_height: 0.46,
+            shelf_height_ratio: 0.62,
+            shelf_slant_ratio: 0.42,
+            icon_gap_ratio: 0.04,
+            side_margin_ratio: 0.82,
+            shelf_horizon_ratio: 0.62,
+            front_lip_ratio: 0.18,
+            reflection_band_ratio: 0.16,
+            tilt: 0.58,
+            depth: 0.58,
+            bevel: 0.10,
+            floor_opacity: 0.72,
+            shadow_strength: 0.28,
+            highlight_strength: 0.60,
+            reflection_blur: 0.44,
+            material_roughness: 0.12,
+            icon_floor_offset: 0.02,
+            assets: ThemeAssets::default(),
+        }
+    }
+}
+
 impl Color {
     pub const fn rgba(red: f64, green: f64, blue: f64, alpha: f64) -> Self {
         Self {
@@ -125,7 +165,12 @@ impl Color {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
+        let value = value.trim();
+        if let Some(rgb) = parse_rgb_function(value) {
+            return Some(rgb);
+        }
+
+        let hex = value.strip_prefix('#').unwrap_or(value);
         if hex.len() != 6 && hex.len() != 8 {
             return None;
         }
@@ -162,6 +207,57 @@ impl Color {
     }
 }
 
+fn parse_rgb_function(value: &str) -> Option<Color> {
+    let open = value.find('(')?;
+    let close = value.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+
+    let name = value[..open].trim().to_ascii_lowercase();
+    if name != "rgb" && name != "rgba" {
+        return None;
+    }
+
+    let args = value[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if name == "rgb" && args.len() != 3 {
+        return None;
+    }
+    if name == "rgba" && args.len() != 4 {
+        return None;
+    }
+
+    let red = parse_rgb_channel(args[0])?;
+    let green = parse_rgb_channel(args[1])?;
+    let blue = parse_rgb_channel(args[2])?;
+    let alpha = if name == "rgba" {
+        parse_alpha_channel(args[3])?
+    } else {
+        1.0
+    };
+    Some(Color::rgba(red, green, blue, alpha))
+}
+
+fn parse_rgb_channel(value: &str) -> Option<f64> {
+    if let Some(percent) = value.strip_suffix('%') {
+        let parsed = percent.trim().parse::<f64>().ok()?;
+        return Some((parsed / 100.0).clamp(0.0, 1.0));
+    }
+    let parsed = value.parse::<f64>().ok()?;
+    Some((parsed / 255.0).clamp(0.0, 1.0))
+}
+
+fn parse_alpha_channel(value: &str) -> Option<f64> {
+    if let Some(percent) = value.strip_suffix('%') {
+        let parsed = percent.trim().parse::<f64>().ok()?;
+        return Some((parsed / 100.0).clamp(0.0, 1.0));
+    }
+    Some(value.parse::<f64>().ok()?.clamp(0.0, 1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +269,18 @@ mod tests {
             Color::rgba(1.0, 128.0 / 255.0, 0.0, 1.0)
         );
         assert_eq!(Color::parse("#00000080").unwrap().alpha, 128.0 / 255.0);
+    }
+
+    #[test]
+    fn parses_rgb_and_rgba_functions() {
+        assert_eq!(
+            Color::parse("rgb(0, 128, 255)").unwrap(),
+            Color::rgba(0.0, 128.0 / 255.0, 1.0, 1.0)
+        );
+        assert_eq!(
+            Color::parse("rgba(255, 0, 0, 0.5)").unwrap(),
+            Color::rgba(1.0, 0.0, 0.0, 0.5)
+        );
     }
 
     #[test]

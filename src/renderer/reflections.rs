@@ -1,8 +1,7 @@
 use super::{
-    IconCache, ResolvedIcon, crystal_floor_path, crystal_shelf_geometry, draw_icon_art,
+    IconCache, ResolvedIcon, crystal_shelf_geometry, draw_icon_art,
     draw_icon_source, leopard_glass_plane_path, rounded_rect,
 };
-use crate::config::ShelfStyle;
 use crate::layout::{DockLayout, Point, Rect};
 use crate::model::DockItem;
 use crate::theme::Theme;
@@ -53,15 +52,9 @@ pub(super) fn draw_shelf_plane_reflections(
     if cr.set_source_surface(&mirror, 0.0, reflection.y).is_ok() {
         let fade = LinearGradient::new(0.0, reflection.y, 0.0, reflection.y + reflection.height);
         let alpha = theme.reflection_opacity.min(0.30);
-        if theme.shelf_style == ShelfStyle::LeopardPlank {
-            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha * 0.12);
-            fade.add_color_stop_rgba(0.58, 1.0, 1.0, 1.0, alpha * 0.42);
-            fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, alpha);
-        } else {
-            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha);
-            fade.add_color_stop_rgba(0.65, 1.0, 1.0, 1.0, alpha * 0.38);
-            fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, 0.0);
-        }
+        fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, alpha * 0.12);
+        fade.add_color_stop_rgba(0.58, 1.0, 1.0, 1.0, alpha * 0.42);
+        fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, alpha);
         let _ = cr.mask(&fade);
     }
     cr.restore().ok();
@@ -100,44 +93,24 @@ fn mirrored_band_surface(
 
 pub(super) fn shelf_plane_reflection_rect(layout: &DockLayout, theme: &Theme) -> Rect {
     let geom = crystal_shelf_geometry(&layout.shelf, theme);
-    match theme.shelf_style {
-        ShelfStyle::LeopardPlank => {
-            let height = (layout.shelf.height * theme.reflection_band_ratio)
-                .min(geom.horizon_y - layout.shelf.y - 1.0)
-                .max(0.0);
-            Rect {
-                x: layout.shelf.x,
-                y: geom.horizon_y - height,
-                width: layout.shelf.width,
-                height,
-            }
-        }
-        _ => {
-            let height = (layout.shelf.height * theme.reflection_band_ratio)
-                .min(geom.bottom_y - geom.horizon_y)
-                .max(0.0);
-            Rect {
-                x: layout.shelf.x,
-                y: geom.horizon_y,
-                width: layout.shelf.width,
-                height,
-            }
-        }
+    let height = (layout.shelf.height * theme.reflection_band_ratio)
+        .min(geom.horizon_y - layout.shelf.y - 1.0)
+        .max(0.0);
+    Rect {
+        x: layout.shelf.x,
+        y: geom.horizon_y - height,
+        width: layout.shelf.width,
+        height,
     }
 }
 
 fn shelf_plane_reflection_clip_path(cr: &Context, shelf: &Rect, theme: &Theme) {
-    match theme.shelf_style {
-        ShelfStyle::LeopardPlank => leopard_glass_plane_path(cr, shelf, theme),
-        _ => crystal_floor_path(cr, shelf, theme),
-    }
+    leopard_glass_plane_path(cr, shelf, theme);
 }
 
 pub(super) fn uses_shelf_plane_reflections(theme: &Theme) -> bool {
-    matches!(
-        theme.shelf_style,
-        ShelfStyle::LeopardPlank | ShelfStyle::CrystalGlass
-    )
+    let _ = theme;
+    true
 }
 
 pub(super) fn draw_icon_reflections_on_shelf(
