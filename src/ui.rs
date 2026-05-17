@@ -40,7 +40,7 @@ const EDGE_VISIBLE_PIXELS: i32 = 4;
 const SLOW_UI_OP: Duration = Duration::from_millis(4);
 const CONTEXT_MENU_WIDTH: i32 = 198;
 const CONTEXT_MENU_ITEM_HEIGHT: i32 = 24;
-const CONTEXT_MENU_SETTINGS_COUNT: usize = 4;
+const CONTEXT_MENU_SETTINGS_COUNT: usize = 5;
 const CONTEXT_MENU_SEPARATOR_HEIGHT: i32 = 12;
 const CONTEXT_MENU_CHROME_HEIGHT: i32 = 12;
 const CONTEXT_MENU_GAP: f64 = 18.0;
@@ -241,6 +241,7 @@ impl Runtime {
             .unwrap_or_default();
         let mut next_model = DockModel::from_sources_with_applets(
             &self.config.pinned,
+            &self.config.hidden,
             &self.desktop_index,
             windows,
             &self.config.applets,
@@ -1828,10 +1829,12 @@ fn show_context_menu(
     }
 
     let keep = context_menu_button("Keep in Dock", pinned);
+    let hide_from_dock = context_menu_button("Don't Show in Dock Anymore", false);
     let select = context_menu_button("Select Icon File...", false);
     let theme_icon = context_menu_button("Use Theme Icon...", false);
     let default_icon = context_menu_button("Set Default Icon", false);
     menu.append(&keep);
+    menu.append(&hide_from_dock);
     menu.append(&select);
     menu.append(&theme_icon);
     menu.append(&default_icon);
@@ -1845,6 +1848,17 @@ fn show_context_menu(
         keep.connect_clicked(move |_| {
             dismiss_context_menu(&state);
             toggle_keep_in_dock(&state, &window, &drawing, &gl_area, &item_key, pinned);
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let item_key = item_key.clone();
+        hide_from_dock.connect_clicked(move |_| {
+            dismiss_context_menu(&state);
+            hide_application_from_dock(&state, &window, &drawing, &gl_area, &item_key);
         });
     }
     {
@@ -3513,7 +3527,46 @@ fn toggle_keep_in_dock(
             .any(|id| id.eq_ignore_ascii_case(item_key))
         {
             state.config.pinned.push(item_key.to_string());
+            state
+                .config
+                .hidden
+                .retain(|id| !id.eq_ignore_ascii_case(item_key));
         }
+        save_runtime_config(&state);
+        state.refresh_model();
+        state.icons.clear();
+    }
+    ensure_icon_animation_if_needed(state, window, drawing, gl_area);
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn hide_application_from_dock(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item_key: &str,
+) {
+    {
+        let mut state = state.borrow_mut();
+        state
+            .config
+            .pinned
+            .retain(|id| !id.eq_ignore_ascii_case(item_key));
+        if !state
+            .config
+            .hidden
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(item_key))
+        {
+            state.config.hidden.push(item_key.to_string());
+        }
+        state
+            .config
+            .item_order
+            .retain(|key| !key.eq_ignore_ascii_case(item_key));
         save_runtime_config(&state);
         state.refresh_model();
         state.icons.clear();
@@ -4648,7 +4701,7 @@ mod tests {
         assert_eq!(
             context_menu_height(3),
             CONTEXT_MENU_CHROME_HEIGHT
-                + (7 * CONTEXT_MENU_ITEM_HEIGHT)
+                + (8 * CONTEXT_MENU_ITEM_HEIGHT)
                 + CONTEXT_MENU_SEPARATOR_HEIGHT
         );
     }

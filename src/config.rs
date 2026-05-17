@@ -10,6 +10,7 @@ pub struct Config {
     pub dock: DockConfig,
     pub theme: ThemeConfig,
     pub pinned: Vec<String>,
+    pub hidden: Vec<String>,
     pub applets: Vec<AppletConfig>,
     pub item_order: Vec<String>,
     pub custom_icons: BTreeMap<String, String>,
@@ -118,6 +119,7 @@ impl Default for Config {
                 "firefox.desktop".to_string(),
                 "xfce-settings-manager.desktop".to_string(),
             ],
+            hidden: Vec::new(),
             applets: Vec::new(),
             item_order: Vec::new(),
             custom_icons: BTreeMap::new(),
@@ -259,6 +261,12 @@ impl Config {
         }
         self.pinned.retain(|id| !id.trim().is_empty());
 
+        for hidden in &mut self.hidden {
+            *hidden = normalize_custom_icon_key(hidden);
+        }
+        dedupe_case_insensitive(&mut self.hidden);
+        self.hidden.retain(|id| !id.trim().is_empty());
+
         for applet in &mut self.applets {
             applet.label = applet.label.trim().to_string();
             applet.icon_name = applet
@@ -379,6 +387,11 @@ mod tests {
         config.dock.zoom_strength = 9.0;
         config.dock.refresh_ms = 1;
         config.pinned = vec!["org.xfce.Terminal.desktop".to_string()];
+        config.hidden = vec![
+            " org.xfce.Terminal.desktop ".to_string(),
+            "Org.Xfce.Terminal.desktop".to_string(),
+            " ".to_string(),
+        ];
         config.applets = vec![
             AppletConfig {
                 kind: AppletKind::Folder,
@@ -419,6 +432,7 @@ mod tests {
         assert_eq!(config.dock.zoom_strength, 1.6);
         assert_eq!(config.dock.refresh_ms, 100);
         assert_eq!(config.pinned, vec!["xfce4-terminal.desktop"]);
+        assert_eq!(config.hidden, vec!["xfce4-terminal.desktop"]);
         assert_eq!(config.applets.len(), 1);
         assert_eq!(config.applets[0].label, "Downloads");
         assert_eq!(config.applets[0].icon_name.as_deref(), Some("folder"));

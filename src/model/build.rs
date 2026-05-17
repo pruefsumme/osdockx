@@ -10,19 +10,27 @@ impl DockModel {
         desktop_index: &DesktopIndex,
         windows: Vec<WindowInfo>,
     ) -> Self {
-        Self::from_sources_with_applets(pinned_ids, desktop_index, windows, &[])
+        Self::from_sources_with_applets(pinned_ids, &[], desktop_index, windows, &[])
     }
 
     pub fn from_sources_with_applets(
         pinned_ids: &[String],
+        hidden_ids: &[String],
         desktop_index: &DesktopIndex,
         windows: Vec<WindowInfo>,
         applets: &[AppletConfig],
     ) -> Self {
         let mut items = Vec::new();
         let mut seen_pins = HashSet::new();
+        let hidden_ids = hidden_ids
+            .iter()
+            .map(|id| id.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
 
         for desktop_id in pinned_ids {
+            if hidden_ids.contains(&desktop_id.to_ascii_lowercase()) {
+                continue;
+            }
             if !seen_pins.insert(desktop_id.to_ascii_lowercase()) {
                 continue;
             }
@@ -34,6 +42,21 @@ impl DockModel {
         }
 
         for window in windows {
+            if window
+                .class
+                .as_ref()
+                .map(|class| hidden_ids.contains(&class.to_ascii_lowercase()))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if desktop_index
+                .match_window(&window)
+                .map(|app| hidden_ids.contains(&app.desktop_id.to_ascii_lowercase()))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             if let Some(index) = find_matching_item(&items, desktop_index, &window) {
                 items[index].push_window(window);
                 continue;

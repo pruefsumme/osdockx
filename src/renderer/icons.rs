@@ -11,6 +11,14 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const ICON_CACHE_SIZE: i32 = 192;
+const FALLBACK_ICON_CACHE_KEY: &str = "__osdockx_fallback_icon__";
+const FALLBACK_ICON_NAMES: &[&str] = &[
+    "dialog-question",
+    "help-browser",
+    "unknown",
+    "image-missing",
+    "application-x-executable",
+];
 
 #[derive(Debug, Default)]
 pub struct IconCache {
@@ -111,7 +119,30 @@ pub(super) fn draw_icon_source(
         return;
     }
 
+    if let Some(pixbuf) = icons.fallback_pixbuf() {
+        let scale_x = size as f64 / pixbuf.width() as f64;
+        let scale_y = size as f64 / pixbuf.height() as f64;
+        cr.save().ok();
+        cr.scale(scale_x, scale_y);
+        cr.set_source_pixbuf(&pixbuf, 0.0, 0.0);
+        let _ = cr.paint_with_alpha(alpha);
+        cr.restore().ok();
+        return;
+    }
+
     draw_placeholder(cr, item, size as f64, alpha);
+}
+
+impl IconCache {
+    fn fallback_pixbuf(&mut self) -> Option<Pixbuf> {
+        if let Some(value) = self.cache.get(FALLBACK_ICON_CACHE_KEY) {
+            return value.clone();
+        }
+        let loaded = load_fallback_themed_icon(ICON_CACHE_SIZE);
+        self.cache
+            .insert(FALLBACK_ICON_CACHE_KEY.to_string(), loaded.clone());
+        loaded
+    }
 }
 
 fn draw_window_icon(cr: &Context, icon: &WindowIcon, size: i32, alpha: f64) -> bool {
@@ -237,6 +268,15 @@ fn load_themed_icon(name: &str, size: i32) -> Option<Pixbuf> {
     );
     let path = paintable.file()?.path()?;
     Pixbuf::from_file_at_scale(path, size, size, true).ok()
+}
+
+fn load_fallback_themed_icon(size: i32) -> Option<Pixbuf> {
+    for name in FALLBACK_ICON_NAMES {
+        if let Some(icon) = load_themed_icon(name, size) {
+            return Some(icon);
+        }
+    }
+    None
 }
 
 fn pixmap_candidates(name: &str) -> Vec<PathBuf> {

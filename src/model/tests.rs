@@ -282,7 +282,7 @@ fn from_sources_appends_configured_folder_applets() {
     let index = DesktopIndex::default();
     let applets = vec![AppletConfig::folder(PathBuf::from("/tmp/projects"))];
 
-    let model = DockModel::from_sources_with_applets(&[], &index, Vec::new(), &applets);
+    let model = DockModel::from_sources_with_applets(&[], &[], &index, Vec::new(), &applets);
 
     assert!(model.items[0].is_downloads_applet());
     assert!(model.items[1].is_trash_applet());
@@ -291,4 +291,38 @@ fn from_sources_appends_configured_folder_applets() {
         model.items[2].folder_applet_path(),
         Some(PathBuf::from("/tmp/projects"))
     );
+}
+
+#[test]
+fn from_sources_skips_hidden_applications_and_windows() {
+    let index = DesktopIndex::from_apps(vec![DesktopApp {
+        desktop_id: "browser.desktop".to_string(),
+        name: "Browser".to_string(),
+        icon_name: Some("browser".to_string()),
+        startup_wm_class: Some("browser".to_string()),
+        exec: None,
+    }]);
+
+    let model = DockModel::from_sources_with_applets(
+        &["browser.desktop".to_string()],
+        &["browser.desktop".to_string(), "mysteryapp".to_string()],
+        &index,
+        vec![WindowInfo {
+            xid: 77,
+            title: Some("Mystery".to_string()),
+            class: Some("MysteryApp".to_string()),
+            pid: Some(100),
+            executable: Some("mystery".to_string()),
+            workspace: Some(0),
+            icon: None,
+            active: true,
+            urgent: false,
+            minimized: false,
+        }],
+        &[],
+    );
+
+    assert!(model.items[0].is_downloads_applet());
+    assert!(model.items[1].is_trash_applet());
+    assert_eq!(model.items.len(), 2);
 }
