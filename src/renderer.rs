@@ -22,7 +22,8 @@ use self::reflections::{
 use self::shelf::{
     compute_perspective_shelf_geometry, crystal_shelf_geometry, draw_front_lip,
     draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes, draw_shadow,
-    draw_shelf_section_separator, leopard_glass_plane_path, leopard_wedge_body_geometry,
+    draw_shelf_section_separator, leopard_front_face_path, leopard_glass_plane_path,
+    leopard_wedge_body_geometry,
 };
 use crate::config::DockConfig;
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
@@ -562,11 +563,10 @@ fn draw_icons(
         if !item.is_application() {
             continue;
         }
-        if item.is_running() {
-            draw_leopard_running_indicator(cr, icon.rect, layout, theme, item.active, icon.alpha);
-        }
         if item.active {
             draw_leopard_active_indicator(cr, icon.rect, layout, theme, icon.alpha);
+        } else if item.is_running() {
+            draw_leopard_running_indicator(cr, icon.rect, layout, theme, false, icon.alpha);
         }
         if let Some(badge) = item.badge {
             draw_badge(cr, icon.rect, badge, theme.badge, icon.alpha);

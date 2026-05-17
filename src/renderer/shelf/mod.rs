@@ -13,6 +13,7 @@ pub(super) use self::leopard::{
 };
 pub(super) use self::material::{draw_shadow, fill_crystal_material};
 pub(super) use self::paths::{
-    leopard_front_face_path, leopard_glass_plane_path, leopard_wedge_body_path,
+    leopard_front_face_path, leopard_front_lip_bottom_path, leopard_front_lip_top_path,
+    leopard_glass_plane_path, leopard_wedge_body_path,
 };
 pub(super) use self::separator::draw_shelf_section_separator;

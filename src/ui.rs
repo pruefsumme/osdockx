@@ -10,7 +10,7 @@ use crate::renderer::{
 };
 use crate::scene3d::Scene3dRenderer;
 use crate::shelf::ShelfRenderer;
-use crate::theme::Theme;
+use crate::theme::{Color as ThemeColor, Theme};
 use crate::theme_pack::ThemePack;
 use directories::UserDirs;
 use gdk_x11::X11Surface;
@@ -22,12 +22,12 @@ use gtk::gio::prelude::FileExt;
 use gtk::glib::{self, Propagation, object::Cast};
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
-    EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag,
-    IconLookupFlags, IconTheme, Image, Label, Orientation, Overlay, PolicyType, Popover,
-    PositionType, Scale, ScrolledWindow, SearchEntry, TextDirection, gdk,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, ColorDialog,
+    ColorDialogButton, DrawingArea, EventControllerMotion, FileDialog, FileFilter, GLArea,
+    GestureClick, GestureDrag, IconLookupFlags, IconTheme, Image, Label, Orientation, Overlay,
+    PolicyType, Popover, PositionType, Scale, ScrolledWindow, SearchEntry, TextDirection, gdk,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -45,8 +45,11 @@ const CONTEXT_MENU_SEPARATOR_HEIGHT: i32 = 12;
 const CONTEXT_MENU_CHROME_HEIGHT: i32 = 12;
 const CONTEXT_MENU_GAP: f64 = 18.0;
 const DOCK_CONTEXT_MENU_WIDTH: i32 = 228;
-const DOCK_CONTEXT_MENU_ACTIONS: usize = 11;
+const DOCK_CONTEXT_MENU_ACTIONS: usize = 12;
 const HOVER_SETTINGS_MENU_WIDTH: i32 = 272;
+const CUSTOMIZER_WIDTH: i32 = 420;
+const CUSTOMIZER_HEIGHT: i32 = 620;
+const CUSTOMIZER_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(120);
 const ADD_APPLICATION_MENU_WIDTH: i32 = 292;
 const ADD_APPLICATION_MENU_VISIBLE_ROWS: usize = 12;
 const THEME_ICON_MENU_WIDTH: i32 = 292;
@@ -103,6 +106,7 @@ struct Runtime {
     last_shape_size: Option<(i32, i32)>,
     last_shape_label: Option<usize>,
     context_menu: Option<Popover>,
+    customizer_open: bool,
     drag: Option<IconDrag>,
     separator_resize: Option<SeparatorResize>,
     dock_size_transition: Option<DockSizeTransition>,
@@ -227,6 +231,7 @@ enum DockContextAction {
     LargerIcons,
     SmallerIcons,
     HoverEffect,
+    CustomizerDebug,
     ToggleAutohide,
     ToggleReserveSpace,
     ReloadTheme,
@@ -695,6 +700,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_shape_size: None,
         last_shape_label: None,
         context_menu: None,
+        customizer_open: false,
         drag: None,
         separator_resize: None,
         dock_size_transition: None,
@@ -2224,6 +2230,14 @@ fn show_dock_context_menu(
         window,
         drawing,
         gl_area,
+        DockContextAction::CustomizerDebug,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
         DockContextAction::ToggleAutohide,
     );
     append_dock_context_button(
@@ -2333,6 +2347,7 @@ fn dock_context_action_label(action: DockContextAction) -> &'static str {
         DockContextAction::LargerIcons => "Larger Icons",
         DockContextAction::SmallerIcons => "Smaller Icons",
         DockContextAction::HoverEffect => "Hover Effect...",
+        DockContextAction::CustomizerDebug => "Customizer (Debug)",
         DockContextAction::ToggleAutohide => "Auto Hide",
         DockContextAction::ToggleReserveSpace => "Reserve Screen Space",
         DockContextAction::ReloadTheme => "Reload Theme",
@@ -2349,6 +2364,7 @@ fn dock_context_action_icon(action: DockContextAction) -> &'static str {
         DockContextAction::LargerIcons => "zoom-in",
         DockContextAction::SmallerIcons => "zoom-out",
         DockContextAction::HoverEffect => "media-playback-start",
+        DockContextAction::CustomizerDebug => "applications-graphics",
         DockContextAction::ToggleAutohide => "view-fullscreen",
         DockContextAction::ToggleReserveSpace => "view-restore",
         DockContextAction::ReloadTheme => "view-refresh",
@@ -3394,6 +3410,9 @@ fn run_dock_context_action(
         DockContextAction::HoverEffect => {
             show_hover_settings_menu(state, window, drawing, gl_area);
         }
+        DockContextAction::CustomizerDebug => {
+            show_customizer_debug_window(state, window, drawing, gl_area);
+        }
         DockContextAction::ToggleAutohide => {
             update_dock_config(state, window, drawing, gl_area, |state| {
                 state.config.dock.autohide = !state.config.dock.autohide;
@@ -3624,6 +3643,560 @@ fn set_hover_strength(
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CustomizerSliderField {
+    IconSize,
+    ZoomStrength,
+    ShelfHeightRatio,
+    ShelfSlantRatio,
+    SideMarginRatio,
+    ShelfHorizonRatio,
+    FrontLipRatio,
+    ReflectionOpacity,
+    ReflectionHeight,
+    ReflectionBandRatio,
+    ReflectionBlur,
+    Tilt,
+    Depth,
+    Bevel,
+    FloorOpacity,
+    ShadowStrength,
+    HighlightStrength,
+    MaterialRoughness,
+    IconFloorOffset,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CustomizerColorField {
+    ShelfTop,
+    ShelfBottom,
+    ShelfStroke,
+    ShelfHighlight,
+    Indicator,
+    Badge,
+}
+
+impl CustomizerSliderField {
+    fn label(self) -> &'static str {
+        match self {
+            Self::IconSize => "Icon Size",
+            Self::ZoomStrength => "Zoom Strength",
+            Self::ShelfHeightRatio => "Shelf Height",
+            Self::ShelfSlantRatio => "Shelf Slant",
+            Self::SideMarginRatio => "Side Margin",
+            Self::ShelfHorizonRatio => "Shelf Horizon",
+            Self::FrontLipRatio => "Front Lip",
+            Self::ReflectionOpacity => "Reflection Opacity",
+            Self::ReflectionHeight => "Reflection Height",
+            Self::ReflectionBandRatio => "Reflection Band",
+            Self::ReflectionBlur => "Reflection Blur",
+            Self::Tilt => "Tilt",
+            Self::Depth => "Depth",
+            Self::Bevel => "Bevel",
+            Self::FloorOpacity => "Floor Opacity",
+            Self::ShadowStrength => "Shadow Strength",
+            Self::HighlightStrength => "Highlight Strength",
+            Self::MaterialRoughness => "Material Roughness",
+            Self::IconFloorOffset => "Icon Floor Offset",
+        }
+    }
+
+    fn range(self) -> (f64, f64, f64, i32) {
+        match self {
+            Self::IconSize => (24.0, 160.0, 1.0, 0),
+            Self::ZoomStrength => (0.0, 1.6, 0.02, 2),
+            Self::ShelfHeightRatio => (0.18, 1.30, 0.01, 2),
+            Self::ShelfSlantRatio => (0.0, 1.0, 0.01, 2),
+            Self::SideMarginRatio => (0.0, 2.0, 0.01, 2),
+            Self::ShelfHorizonRatio => (0.0, 1.0, 0.01, 2),
+            Self::FrontLipRatio => (0.0, 1.0, 0.01, 2),
+            Self::ReflectionOpacity => (0.0, 1.0, 0.01, 2),
+            Self::ReflectionHeight => (0.0, 1.0, 0.01, 2),
+            Self::ReflectionBandRatio => (0.0, 1.0, 0.01, 2),
+            Self::ReflectionBlur => (0.0, 1.0, 0.01, 2),
+            Self::Tilt => (0.0, 1.0, 0.01, 2),
+            Self::Depth => (0.0, 1.0, 0.01, 2),
+            Self::Bevel => (0.0, 1.0, 0.01, 2),
+            Self::FloorOpacity => (0.0, 1.0, 0.01, 2),
+            Self::ShadowStrength => (0.0, 1.6, 0.01, 2),
+            Self::HighlightStrength => (0.0, 1.6, 0.01, 2),
+            Self::MaterialRoughness => (0.0, 1.0, 0.01, 2),
+            Self::IconFloorOffset => (-0.4, 0.4, 0.01, 2),
+        }
+    }
+
+    fn value(self, config: &Config) -> f64 {
+        match self {
+            Self::IconSize => config.dock.icon_size as f64,
+            Self::ZoomStrength => config.dock.zoom_strength,
+            Self::ShelfHeightRatio => config.theme.shelf_height_ratio,
+            Self::ShelfSlantRatio => config.theme.shelf_slant_ratio,
+            Self::SideMarginRatio => config.theme.side_margin_ratio,
+            Self::ShelfHorizonRatio => config.theme.shelf_horizon_ratio,
+            Self::FrontLipRatio => config.theme.front_lip_ratio,
+            Self::ReflectionOpacity => config.theme.reflection_opacity,
+            Self::ReflectionHeight => config.theme.reflection_height,
+            Self::ReflectionBandRatio => config.theme.reflection_band_ratio,
+            Self::ReflectionBlur => config.theme.reflection_blur,
+            Self::Tilt => config.theme.tilt,
+            Self::Depth => config.theme.depth,
+            Self::Bevel => config.theme.bevel,
+            Self::FloorOpacity => config.theme.floor_opacity,
+            Self::ShadowStrength => config.theme.shadow_strength,
+            Self::HighlightStrength => config.theme.highlight_strength,
+            Self::MaterialRoughness => config.theme.material_roughness,
+            Self::IconFloorOffset => config.theme.icon_floor_offset,
+        }
+    }
+
+    fn set(self, config: &mut Config, value: f64) {
+        match self {
+            Self::IconSize => config.dock.icon_size = value.round() as u32,
+            Self::ZoomStrength => config.dock.zoom_strength = value,
+            Self::ShelfHeightRatio => config.theme.shelf_height_ratio = value,
+            Self::ShelfSlantRatio => config.theme.shelf_slant_ratio = value,
+            Self::SideMarginRatio => config.theme.side_margin_ratio = value,
+            Self::ShelfHorizonRatio => config.theme.shelf_horizon_ratio = value,
+            Self::FrontLipRatio => config.theme.front_lip_ratio = value,
+            Self::ReflectionOpacity => config.theme.reflection_opacity = value,
+            Self::ReflectionHeight => config.theme.reflection_height = value,
+            Self::ReflectionBandRatio => config.theme.reflection_band_ratio = value,
+            Self::ReflectionBlur => config.theme.reflection_blur = value,
+            Self::Tilt => config.theme.tilt = value,
+            Self::Depth => config.theme.depth = value,
+            Self::Bevel => config.theme.bevel = value,
+            Self::FloorOpacity => config.theme.floor_opacity = value,
+            Self::ShadowStrength => config.theme.shadow_strength = value,
+            Self::HighlightStrength => config.theme.highlight_strength = value,
+            Self::MaterialRoughness => config.theme.material_roughness = value,
+            Self::IconFloorOffset => config.theme.icon_floor_offset = value,
+        }
+    }
+}
+
+impl CustomizerColorField {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ShelfTop => "Shelf Top",
+            Self::ShelfBottom => "Shelf Bottom",
+            Self::ShelfStroke => "Shelf Stroke",
+            Self::ShelfHighlight => "Shelf Highlight",
+            Self::Indicator => "Indicator",
+            Self::Badge => "Badge",
+        }
+    }
+
+    fn value(self, config: &Config) -> &str {
+        match self {
+            Self::ShelfTop => &config.theme.shelf_top,
+            Self::ShelfBottom => &config.theme.shelf_bottom,
+            Self::ShelfStroke => &config.theme.shelf_stroke,
+            Self::ShelfHighlight => &config.theme.shelf_highlight,
+            Self::Indicator => &config.theme.indicator,
+            Self::Badge => &config.theme.badge,
+        }
+    }
+
+    fn set(self, config: &mut Config, value: String) {
+        match self {
+            Self::ShelfTop => config.theme.shelf_top = value,
+            Self::ShelfBottom => config.theme.shelf_bottom = value,
+            Self::ShelfStroke => config.theme.shelf_stroke = value,
+            Self::ShelfHighlight => config.theme.shelf_highlight = value,
+            Self::Indicator => config.theme.indicator = value,
+            Self::Badge => config.theme.badge = value,
+        }
+    }
+}
+
+fn show_customizer_debug_window(
+    state: &Rc<RefCell<Runtime>>,
+    parent: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let original = state.borrow().config.clone();
+    state.borrow_mut().customizer_open = true;
+    let draft = Rc::new(RefCell::new(original.clone()));
+    let saved = Rc::new(Cell::new(false));
+    let preview_revision = Rc::new(Cell::new(0_u64));
+
+    let customizer = ApplicationWindow::builder()
+        .title("OSDockX Customizer (Debug)")
+        .transient_for(parent)
+        .default_width(CUSTOMIZER_WIDTH)
+        .default_height(CUSTOMIZER_HEIGHT)
+        .resizable(true)
+        .build();
+    if let Some(app) = parent.application() {
+        customizer.set_application(Some(&app));
+    }
+    customizer.add_css_class("osdock-customizer-window");
+
+    let shell = GtkBox::new(Orientation::Vertical, 10);
+    shell.add_css_class("osdock-context-menu");
+    shell.set_margin_top(10);
+    shell.set_margin_bottom(10);
+    shell.set_margin_start(10);
+    shell.set_margin_end(10);
+
+    let title = Label::new(Some("Customizer (Debug)"));
+    title.add_css_class("osdock-menu-title");
+    title.set_xalign(0.0);
+    shell.append(&title);
+
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_policy(PolicyType::Never, PolicyType::Automatic);
+    scrolled.set_vexpand(true);
+
+    let controls = GtkBox::new(Orientation::Vertical, 8);
+    controls.set_margin_start(8);
+    controls.set_margin_end(8);
+    controls.set_margin_bottom(8);
+
+    let colors_title = Label::new(Some("Colors"));
+    colors_title.add_css_class("osdock-menu-title");
+    colors_title.set_xalign(0.0);
+    controls.append(&colors_title);
+    for field in [
+        CustomizerColorField::ShelfTop,
+        CustomizerColorField::ShelfBottom,
+        CustomizerColorField::ShelfStroke,
+        CustomizerColorField::ShelfHighlight,
+        CustomizerColorField::Indicator,
+        CustomizerColorField::Badge,
+    ] {
+        append_customizer_color_row(&controls, field, &draft, state, parent, drawing, gl_area);
+    }
+
+    controls.append(&context_menu_separator());
+    let layout_title = Label::new(Some("Layout and Material"));
+    layout_title.add_css_class("osdock-menu-title");
+    layout_title.set_xalign(0.0);
+    controls.append(&layout_title);
+    for field in [
+        CustomizerSliderField::IconSize,
+        CustomizerSliderField::ZoomStrength,
+        CustomizerSliderField::ShelfHeightRatio,
+        CustomizerSliderField::ShelfSlantRatio,
+        CustomizerSliderField::SideMarginRatio,
+        CustomizerSliderField::ShelfHorizonRatio,
+        CustomizerSliderField::FrontLipRatio,
+        CustomizerSliderField::ReflectionOpacity,
+        CustomizerSliderField::ReflectionHeight,
+        CustomizerSliderField::ReflectionBandRatio,
+        CustomizerSliderField::ReflectionBlur,
+        CustomizerSliderField::Tilt,
+        CustomizerSliderField::Depth,
+        CustomizerSliderField::Bevel,
+        CustomizerSliderField::FloorOpacity,
+        CustomizerSliderField::ShadowStrength,
+        CustomizerSliderField::HighlightStrength,
+        CustomizerSliderField::MaterialRoughness,
+        CustomizerSliderField::IconFloorOffset,
+    ] {
+        append_customizer_slider_row(
+            &controls,
+            field,
+            &draft,
+            &preview_revision,
+            state,
+            parent,
+            drawing,
+            gl_area,
+        );
+    }
+
+    controls.append(&context_menu_separator());
+    append_customizer_toggle_row(
+        &controls,
+        "Auto Hide",
+        original.dock.autohide,
+        &draft,
+        &preview_revision,
+        state,
+        parent,
+        drawing,
+        gl_area,
+        |config, value| config.dock.autohide = value,
+    );
+    append_customizer_toggle_row(
+        &controls,
+        "Reserve Screen Space",
+        original.dock.reserve_space,
+        &draft,
+        &preview_revision,
+        state,
+        parent,
+        drawing,
+        gl_area,
+        |config, value| config.dock.reserve_space = value,
+    );
+
+    scrolled.set_child(Some(&controls));
+    shell.append(&scrolled);
+
+    let footer = GtkBox::new(Orientation::Horizontal, 8);
+    footer.set_halign(Align::End);
+    let close_button = Button::with_label("Close");
+    let save_button = Button::with_label("Save");
+    footer.append(&close_button);
+    footer.append(&save_button);
+    shell.append(&footer);
+    customizer.set_child(Some(&shell));
+
+    {
+        let state = Rc::clone(state);
+        let parent = parent.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let draft = Rc::clone(&draft);
+        let saved = Rc::clone(&saved);
+        let customizer = customizer.clone();
+        save_button.connect_clicked(move |_| {
+            saved.set(true);
+            let config = draft.borrow().clone().normalized();
+            apply_customizer_config(&state, &parent, &drawing, &gl_area, config, true);
+            customizer.close();
+        });
+    }
+    {
+        let customizer = customizer.clone();
+        close_button.connect_clicked(move |_| {
+            customizer.close();
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let parent = parent.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let saved = Rc::clone(&saved);
+        customizer.connect_close_request(move |_| {
+            state.borrow_mut().customizer_open = false;
+            if !saved.get() {
+                apply_customizer_config(
+                    &state,
+                    &parent,
+                    &drawing,
+                    &gl_area,
+                    original.clone(),
+                    false,
+                );
+            }
+            Propagation::Proceed
+        });
+    }
+
+    customizer.present();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_customizer_color_row(
+    controls: &GtkBox,
+    field: CustomizerColorField,
+    draft: &Rc<RefCell<Config>>,
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let row = GtkBox::new(Orientation::Horizontal, 8);
+    row.set_margin_start(8);
+    row.set_margin_end(8);
+
+    let label = Label::new(Some(field.label()));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    row.append(&label);
+
+    let dialog = ColorDialog::builder()
+        .title(field.label())
+        .modal(true)
+        .with_alpha(true)
+        .build();
+    let color_button = ColorDialogButton::new(Some(dialog));
+    color_button.set_rgba(&rgba_from_config_color(field.value(&draft.borrow())));
+    {
+        let draft = Rc::clone(draft);
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        color_button.connect_rgba_notify(move |button| {
+            field.set(&mut draft.borrow_mut(), rgba_to_config_color(button.rgba()));
+            let config = draft.borrow().clone().normalized();
+            apply_customizer_config(&state, &window, &drawing, &gl_area, config, false);
+        });
+    }
+    row.append(&color_button);
+    controls.append(&row);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_customizer_slider_row(
+    controls: &GtkBox,
+    field: CustomizerSliderField,
+    draft: &Rc<RefCell<Config>>,
+    preview_revision: &Rc<Cell<u64>>,
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let row = GtkBox::new(Orientation::Vertical, 3);
+    row.set_margin_start(8);
+    row.set_margin_end(8);
+
+    let label = Label::new(Some(field.label()));
+    label.set_xalign(0.0);
+    row.append(&label);
+
+    let (min, max, step, digits) = field.range();
+    let slider = Scale::with_range(Orientation::Horizontal, min, max, step);
+    slider.set_draw_value(true);
+    slider.set_digits(digits);
+    slider.set_hexpand(true);
+    slider.set_value(field.value(&draft.borrow()));
+    {
+        let draft = Rc::clone(draft);
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let preview_revision = Rc::clone(preview_revision);
+        slider.connect_value_changed(move |slider| {
+            field.set(&mut draft.borrow_mut(), slider.value());
+            schedule_customizer_preview(
+                &state,
+                &window,
+                &drawing,
+                &gl_area,
+                &draft,
+                &preview_revision,
+            );
+        });
+    }
+    row.append(&slider);
+    controls.append(&row);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_customizer_toggle_row(
+    controls: &GtkBox,
+    label: &str,
+    active: bool,
+    draft: &Rc<RefCell<Config>>,
+    preview_revision: &Rc<Cell<u64>>,
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    setter: fn(&mut Config, bool),
+) {
+    let check = CheckButton::with_label(label);
+    check.set_active(active);
+    check.set_margin_start(8);
+    check.set_margin_end(8);
+    {
+        let draft = Rc::clone(draft);
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let preview_revision = Rc::clone(preview_revision);
+        check.connect_toggled(move |check| {
+            setter(&mut draft.borrow_mut(), check.is_active());
+            schedule_customizer_preview(
+                &state,
+                &window,
+                &drawing,
+                &gl_area,
+                &draft,
+                &preview_revision,
+            );
+        });
+    }
+    controls.append(&check);
+}
+
+fn schedule_customizer_preview(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    draft: &Rc<RefCell<Config>>,
+    preview_revision: &Rc<Cell<u64>>,
+) {
+    let revision = preview_revision.get().wrapping_add(1);
+    preview_revision.set(revision);
+    let state = Rc::clone(state);
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    let draft = Rc::clone(draft);
+    let preview_revision = Rc::clone(preview_revision);
+    glib::timeout_add_local_once(CUSTOMIZER_PREVIEW_DEBOUNCE, move || {
+        if preview_revision.get() != revision {
+            return;
+        }
+        let config = draft.borrow().clone().normalized();
+        apply_customizer_config(&state, &window, &drawing, &gl_area, config, false);
+    });
+}
+
+fn apply_customizer_config(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    config: Config,
+    save: bool,
+) {
+    {
+        let mut state = state.borrow_mut();
+        state.config = config.normalized();
+        let (_, _, theme) = resolve_runtime_theme(state.composited, &state.config.theme);
+        state.theme = theme;
+        state.hidden = false;
+        state.hover = None;
+        state.last_size = None;
+        state.last_geometry = None;
+        state.last_reserved_geometry = None;
+        state.last_shape_size = None;
+        state.last_shape_label = None;
+        if save {
+            save_runtime_config(&state);
+        }
+        state.refresh_model();
+    }
+    ensure_icon_animation_if_needed(state, window, drawing, gl_area);
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn rgba_from_config_color(value: &str) -> gdk::RGBA {
+    let color = ThemeColor::parse(value).unwrap_or_else(|| ThemeColor::rgba(1.0, 1.0, 1.0, 1.0));
+    gdk::RGBA::new(
+        color.red as f32,
+        color.green as f32,
+        color.blue as f32,
+        color.alpha as f32,
+    )
+}
+
+fn rgba_to_config_color(rgba: gdk::RGBA) -> String {
+    let channel = |value: f32| -> u8 { (value.clamp(0.0, 1.0) * 255.0).round() as u8 };
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        channel(rgba.red()),
+        channel(rgba.green()),
+        channel(rgba.blue()),
+        channel(rgba.alpha())
+    )
 }
 
 fn toggle_keep_in_dock(
@@ -4323,6 +4896,7 @@ fn wire_refresh(
                 && state.separator_resize.is_none()
                 && state.icon_slide.is_none()
                 && state.icon_presence.is_none()
+                && !state.customizer_open
             {
                 refresh_config_and_theme(&mut state);
                 state.refresh_model();
@@ -5003,6 +5577,41 @@ mod tests {
         assert!((ease_in_out_cubic(0.5) - 0.5).abs() < 0.001);
         assert!(ease_in_out_cubic(0.25) < 0.25);
         assert!(ease_in_out_cubic(0.75) > 0.75);
+    }
+
+    #[test]
+    fn customizer_color_serialization_uses_hex_rgba() {
+        let rgba = gdk::RGBA::new(90.0 / 255.0, 131.0 / 255.0, 170.0 / 255.0, 1.0);
+
+        assert_eq!(rgba_to_config_color(rgba), "#5a83aaff");
+        assert_eq!(
+            rgba_from_config_color("rgb(90, 131, 170)"),
+            gdk::RGBA::new(90.0 / 255.0, 131.0 / 255.0, 170.0 / 255.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn customizer_slider_fields_update_draft_config() {
+        let mut config = Config::default().normalized();
+
+        CustomizerSliderField::IconSize.set(&mut config, 96.4);
+        CustomizerSliderField::FrontLipRatio.set(&mut config, 0.12);
+        CustomizerSliderField::IconFloorOffset.set(&mut config, -0.08);
+
+        assert_eq!(config.dock.icon_size, 96);
+        assert_eq!(config.theme.front_lip_ratio, 0.12);
+        assert_eq!(config.theme.icon_floor_offset, -0.08);
+    }
+
+    #[test]
+    fn customizer_color_fields_update_draft_config() {
+        let mut config = Config::default().normalized();
+
+        CustomizerColorField::ShelfTop.set(&mut config, "#112233ff".to_string());
+        CustomizerColorField::Indicator.set(&mut config, "#abcdefcc".to_string());
+
+        assert_eq!(config.theme.shelf_top, "#112233ff");
+        assert_eq!(config.theme.indicator, "#abcdefcc");
     }
 
     #[test]

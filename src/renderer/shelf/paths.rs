@@ -25,19 +25,16 @@ pub(crate) fn leopard_wedge_body_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
-    rounded_polygon_path(
-        cr,
-        &[
-            geom.back_left,
-            geom.back_right,
-            geom.lip_right,
-            body.face_right_bottom,
-            body.face_left_bottom,
-            geom.lip_left,
-        ],
-        (face_height * 1.05).clamp(4.0, 12.0),
-    );
+    let radius = leopard_front_face_radius(geom, body);
+    cr.new_path();
+    cr.move_to(geom.back_left.x, geom.back_left.y);
+    cr.line_to(geom.back_right.x, geom.back_right.y);
+    cr.line_to(geom.lip_right.x - radius, geom.lip_right.y);
+    leopard_right_fascia_corner(cr, geom, body, radius);
+    cr.line_to(body.face_left_bottom.x + radius, body.face_left_bottom.y);
+    leopard_left_fascia_corner(cr, geom, body, radius);
+    cr.line_to(geom.back_left.x, geom.back_left.y);
+    cr.close_path();
 }
 
 pub(crate) fn leopard_front_face_path(
@@ -45,24 +42,80 @@ pub(crate) fn leopard_front_face_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
+    let radius = leopard_front_face_radius(geom, body);
+    cr.new_path();
+    cr.move_to(geom.lip_left.x + radius, geom.lip_left.y);
+    cr.line_to(geom.lip_right.x - radius, geom.lip_right.y);
+    leopard_right_fascia_corner(cr, geom, body, radius);
+    cr.line_to(body.face_left_bottom.x + radius, body.face_left_bottom.y);
+    leopard_left_fascia_corner(cr, geom, body, radius);
+    cr.close_path();
+}
+
+pub(crate) fn leopard_front_lip_top_path(
+    cr: &Context,
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) {
+    let radius = leopard_front_face_radius(geom, body);
+    cr.new_path();
+    let _ = body;
+    cr.move_to(geom.lip_left.x + radius * 1.18, geom.lip_left.y + 0.45);
+    cr.line_to(geom.lip_right.x - radius * 1.18, geom.lip_right.y + 0.45);
+}
+
+pub(crate) fn leopard_front_lip_bottom_path(
+    cr: &Context,
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) {
+    let radius = leopard_front_face_radius(geom, body);
+    let y = body.face_left_bottom.y - 0.55;
+    cr.new_path();
+    cr.move_to(body.face_left_bottom.x + radius * 1.24, y);
+    cr.line_to(body.face_right_bottom.x - radius * 1.24, y);
+}
+
+fn leopard_front_face_radius(
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) -> f64 {
     let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
-    let face_top_left = Point {
-        x: geom.lip_left.x + (geom.front_left.x - geom.lip_left.x) * 0.30,
-        y: geom.front_left.y,
-    };
-    let face_top_right = Point {
-        x: geom.lip_right.x + (geom.front_right.x - geom.lip_right.x) * 0.30,
-        y: geom.front_right.y,
-    };
-    rounded_polygon_path(
-        cr,
-        &[
-            face_top_left,
-            face_top_right,
-            body.face_right_bottom,
-            body.face_left_bottom,
-        ],
-        (face_height * 1.20).clamp(4.6, 13.5),
+    let face_width = (geom.lip_right.x - geom.lip_left.x).max(1.0);
+    (face_height * 0.86).clamp(3.2, 8.4).min(face_width * 0.08)
+}
+
+fn leopard_right_fascia_corner(
+    cr: &Context,
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+    radius: f64,
+) {
+    let face_height = (body.face_right_bottom.y - geom.lip_right.y).max(1.0);
+    cr.curve_to(
+        geom.lip_right.x - radius * 0.18,
+        geom.lip_right.y + face_height * 0.22,
+        body.face_right_bottom.x + radius * 0.72,
+        body.face_right_bottom.y - face_height * 0.20,
+        body.face_right_bottom.x,
+        body.face_right_bottom.y,
+    );
+}
+
+fn leopard_left_fascia_corner(
+    cr: &Context,
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+    radius: f64,
+) {
+    let face_height = (body.face_left_bottom.y - geom.lip_left.y).max(1.0);
+    cr.curve_to(
+        body.face_left_bottom.x - radius * 0.72,
+        body.face_left_bottom.y - face_height * 0.20,
+        geom.lip_left.x + radius * 0.18,
+        geom.lip_left.y + face_height * 0.22,
+        geom.lip_left.x + radius,
+        geom.lip_left.y,
     );
 }
 
