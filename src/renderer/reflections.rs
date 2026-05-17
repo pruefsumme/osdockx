@@ -1,15 +1,15 @@
 use super::{
-    IconCache, crystal_floor_path, crystal_shelf_geometry, draw_icon_art, draw_icon_source,
-    leopard_glass_plane_path, rounded_rect,
+    IconCache, ResolvedIcon, crystal_floor_path, crystal_shelf_geometry, draw_icon_art,
+    draw_icon_source, leopard_glass_plane_path, rounded_rect,
 };
 use crate::config::ShelfStyle;
 use crate::layout::{DockLayout, Point, Rect};
-use crate::model::{DockItem, DockModel};
+use crate::model::DockItem;
 use crate::theme::Theme;
 use gtk::cairo::{Context, Format, ImageSurface, LinearGradient};
 
 pub(super) fn render_icon_surface(
-    model: &DockModel,
+    resolved_icons: &[ResolvedIcon<'_>],
     layout: &DockLayout,
     icons: &mut IconCache,
 ) -> Option<ImageSurface> {
@@ -17,7 +17,7 @@ pub(super) fn render_icon_surface(
     let height = layout.size.1.max(1);
     let surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
     let cr = Context::new(&surface).ok()?;
-    draw_icon_art(&cr, model, layout, icons, 1.0);
+    draw_icon_art(&cr, resolved_icons, icons);
     surface.flush();
     Some(surface)
 }
@@ -142,7 +142,7 @@ pub(super) fn uses_shelf_plane_reflections(theme: &Theme) -> bool {
 
 pub(super) fn draw_icon_reflections_on_shelf(
     cr: &Context,
-    model: &DockModel,
+    resolved_icons: &[ResolvedIcon<'_>],
     layout: &DockLayout,
     theme: &Theme,
     icons: &mut IconCache,
@@ -160,11 +160,11 @@ pub(super) fn draw_icon_reflections_on_shelf(
     );
     cr.clip();
 
-    for icon in &layout.icons {
-        let item = &model.items[icon.item_index];
+    for icon in resolved_icons {
+        let item = icon.item.as_ref();
         let max_height = (geom.lip_y - (icon.rect.y + icon.rect.height) - layout.shelf.height * 0.055)
             .max(icon.rect.height * 0.07);
-        draw_icon_reflection(cr, item, icon.rect, max_height, theme, icons);
+        draw_icon_reflection(cr, item, icon.rect, max_height, theme, icons, icon.alpha);
     }
 
     cr.restore().ok();
@@ -177,7 +177,12 @@ fn draw_icon_reflection(
     max_height: f64,
     theme: &Theme,
     icons: &mut IconCache,
+    alpha: f64,
 ) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
     let default_height = icon_rect.height * (theme.reflection_height * 0.90).clamp(0.22, 0.44);
     let reflection_height = default_height.min(max_height.max(icon_rect.height * 0.07));
     if reflection_height <= 1.0 {
@@ -191,11 +196,14 @@ fn draw_icon_reflection(
     let Ok(icon_cr) = Context::new(&icon_surface) else {
         return;
     };
-    draw_icon_source(&icon_cr, item, icon_size, icons, 1.0);
+    draw_icon_source(&icon_cr, item, icon_size, icons, alpha);
     icon_surface.flush();
 
     let reflection_y = icon_rect.y + icon_rect.height;
-    let alpha = (theme.reflection_opacity * 0.94).clamp(0.10, 0.26);
+    let alpha = (theme.reflection_opacity * 0.94 * alpha).clamp(0.0, 0.26);
+    if alpha <= 0.0 {
+        return;
+    }
     let blur = 1.8 + theme.reflection_blur * 3.0;
     let passes = [
         (0.0, 0.0, alpha),
@@ -246,8 +254,7 @@ fn create_polygon_mask(cr: &Context, points: &[Point]) {
 
 pub(super) fn draw_reflections(
     cr: &Context,
-    model: &DockModel,
-    layout: &DockLayout,
+    resolved_icons: &[ResolvedIcon<'_>],
     theme: &Theme,
     icons: &mut IconCache,
 ) {
@@ -255,8 +262,8 @@ pub(super) fn draw_reflections(
         return;
     }
 
-    for icon in &layout.icons {
-        let item = &model.items[icon.item_index];
+    for icon in resolved_icons {
+        let item = icon.item.as_ref();
         let reflect_h = icon.rect.height * theme.reflection_height;
         if reflect_h <= 1.0 {
             continue;
@@ -275,7 +282,7 @@ pub(super) fn draw_reflections(
             item,
             icon.rect.height as i32,
             icons,
-            theme.reflection_opacity,
+            theme.reflection_opacity * icon.alpha,
         );
         cr.restore().ok();
     }

@@ -76,7 +76,12 @@ impl X11Backend {
         })
     }
 
-    fn configure_dock(&self, xid: WindowId, geometry: DockGeometry) -> anyhow::Result<()> {
+    fn configure_dock(
+        &self,
+        xid: WindowId,
+        geometry: DockGeometry,
+        update_reserved_space: bool,
+    ) -> anyhow::Result<()> {
         self.conn.configure_window(
             xid,
             &ConfigureWindowAux::new()
@@ -87,41 +92,43 @@ impl X11Backend {
                 .stack_mode(StackMode::ABOVE),
         )?;
 
-        self.conn.change_property32(
-            PropMode::REPLACE,
-            xid,
-            self.atoms.net_wm_window_type,
-            AtomEnum::ATOM,
-            &[self.atoms.net_wm_window_type_dock],
-        )?;
-        self.conn.change_property32(
-            PropMode::REPLACE,
-            xid,
-            self.atoms.net_wm_state,
-            AtomEnum::ATOM,
-            &[
-                self.atoms.net_wm_state_above,
-                self.atoms.net_wm_state_skip_taskbar,
-                self.atoms.net_wm_state_skip_pager,
-                self.atoms.net_wm_state_sticky,
-            ],
-        )?;
+        if update_reserved_space {
+            self.conn.change_property32(
+                PropMode::REPLACE,
+                xid,
+                self.atoms.net_wm_window_type,
+                AtomEnum::ATOM,
+                &[self.atoms.net_wm_window_type_dock],
+            )?;
+            self.conn.change_property32(
+                PropMode::REPLACE,
+                xid,
+                self.atoms.net_wm_state,
+                AtomEnum::ATOM,
+                &[
+                    self.atoms.net_wm_state_above,
+                    self.atoms.net_wm_state_skip_taskbar,
+                    self.atoms.net_wm_state_skip_pager,
+                    self.atoms.net_wm_state_sticky,
+                ],
+            )?;
 
-        let strut = self.struts_for(geometry);
-        self.conn.change_property32(
-            PropMode::REPLACE,
-            xid,
-            self.atoms.net_wm_strut_partial,
-            AtomEnum::CARDINAL,
-            &strut,
-        )?;
-        self.conn.change_property32(
-            PropMode::REPLACE,
-            xid,
-            self.atoms.net_wm_strut,
-            AtomEnum::CARDINAL,
-            &strut[0..4],
-        )?;
+            let strut = self.struts_for(geometry);
+            self.conn.change_property32(
+                PropMode::REPLACE,
+                xid,
+                self.atoms.net_wm_strut_partial,
+                AtomEnum::CARDINAL,
+                &strut,
+            )?;
+            self.conn.change_property32(
+                PropMode::REPLACE,
+                xid,
+                self.atoms.net_wm_strut,
+                AtomEnum::CARDINAL,
+                &strut[0..4],
+            )?;
+        }
         self.conn.flush()?;
         Ok(())
     }
@@ -444,12 +451,16 @@ impl PlatformBackend for X11Backend {
 
     fn set_dock_window(&mut self, xid: WindowId, geometry: DockGeometry) -> anyhow::Result<()> {
         self.dock_window = Some(xid);
-        self.configure_dock(xid, geometry)
+        self.configure_dock(xid, geometry, true)
     }
 
-    fn move_dock_window(&mut self, geometry: DockGeometry) -> anyhow::Result<()> {
+    fn move_dock_window(
+        &mut self,
+        geometry: DockGeometry,
+        update_reserved_space: bool,
+    ) -> anyhow::Result<()> {
         if let Some(xid) = self.dock_window {
-            self.configure_dock(xid, geometry)?;
+            self.configure_dock(xid, geometry, update_reserved_space)?;
         }
         Ok(())
     }

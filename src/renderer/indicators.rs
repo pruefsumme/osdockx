@@ -17,7 +17,12 @@ pub(super) fn draw_leopard_running_indicator(
     layout: &DockLayout,
     theme: &Theme,
     active: bool,
+    alpha: f64,
 ) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
     let y = leopard_running_indicator_center_y(&layout.shelf, theme);
     let (width, height) = leopard_running_indicator_size(active);
     let x = rect.center_x() - width / 2.0;
@@ -27,33 +32,43 @@ pub(super) fn draw_leopard_running_indicator(
 
     cr.save().ok();
     rounded_rect(cr, x - 2.1, y - height * 0.80, width + 4.2, height * 1.60, height * 0.92);
-    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.20 } else { 0.11 });
+    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.20 } else { 0.11 }) * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
     rounded_rect(cr, x - 0.9, y - height * 0.56, width + 1.8, height * 1.12, height * 0.64);
-    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.14 } else { 0.07 });
+    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.14 } else { 0.07 }) * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
     rounded_rect(cr, x, y - height / 2.0, width, height, height / 2.0);
     let fill = LinearGradient::new(0.0, y - height / 2.0, 0.0, y + height / 2.0);
-    add_stop(&fill, 0.00, theme.shelf_highlight.with_alpha(if active { 0.78 } else { 0.60 }));
-    add_stop(&fill, 0.24, color.with_alpha(if active { 0.90 } else { 0.78 }));
+    add_stop(
+        &fill,
+        0.00,
+        theme
+            .shelf_highlight
+            .with_alpha((if active { 0.78 } else { 0.60 }) * alpha),
+    );
+    add_stop(
+        &fill,
+        0.24,
+        color.with_alpha((if active { 0.90 } else { 0.78 }) * alpha),
+    );
     add_stop(
         &fill,
         1.00,
         theme
             .shelf_highlight
             .mix(theme.indicator, if active { 0.18 } else { 0.10 })
-            .with_alpha(if active { 0.84 } else { 0.68 }),
+            .with_alpha((if active { 0.84 } else { 0.68 }) * alpha),
     );
     let _ = cr.set_source(&fill);
     let _ = cr.fill_preserve();
     cr.set_line_width(0.7);
-    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.34 } else { 0.22 });
+    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.34 } else { 0.22 }) * alpha);
     let _ = cr.stroke();
     cr.restore().ok();
 
@@ -66,7 +81,7 @@ pub(super) fn draw_leopard_running_indicator(
         height * 0.22,
         height * 0.20,
     );
-    cr.set_source_rgba(1.0, 1.0, 1.0, if active { 0.56 } else { 0.34 });
+    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.56 } else { 0.34 }) * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 }
@@ -76,26 +91,31 @@ pub(super) fn draw_leopard_active_indicator(
     rect: Rect,
     layout: &DockLayout,
     theme: &Theme,
+    alpha: f64,
 ) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
     let y = leopard_active_indicator_center_y(rect, &layout.shelf, theme);
     let x = rect.center_x();
     let color = theme.indicator;
 
     cr.save().ok();
     cr.arc(x, y, 6.1, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(color.red, color.green, color.blue, 0.12);
+    cr.set_source_rgba(color.red, color.green, color.blue, 0.12 * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
     cr.arc(x, y, 3.8, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.94);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.94 * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
     cr.arc(x, y, 1.9, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(color.red, color.green, color.blue, 0.74);
+    cr.set_source_rgba(color.red, color.green, color.blue, 0.74 * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 }

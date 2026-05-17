@@ -4,6 +4,7 @@ mod legacy;
 mod leopard;
 mod material;
 mod paths;
+mod separator;
 
 pub(super) use self::crystal::draw_crystal_shelf;
 pub(super) use self::geometry::{
@@ -20,3 +21,4 @@ pub(super) use self::paths::{
     crystal_floor_path, crystal_lip_path, crystal_side_path, crystal_top_path,
     leopard_front_face_path, leopard_glass_plane_path, leopard_wedge_body_path,
 };
+pub(super) use self::separator::draw_shelf_section_separator;

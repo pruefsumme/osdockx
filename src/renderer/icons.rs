@@ -3,7 +3,9 @@ use crate::model::{DockItem, WindowIcon};
 use gtk::cairo::{Context, FontSlant, FontWeight, Format, ImageSurface};
 use gtk::gdk::prelude::GdkCairoContextExt;
 use gtk::gdk_pixbuf::Pixbuf;
-use std::collections::HashMap;
+use gtk::gio::prelude::FileExt;
+use gtk::{IconLookupFlags, IconTheme, TextDirection, gdk};
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -14,6 +16,7 @@ const ICON_CACHE_SIZE: i32 = 192;
 pub struct IconCache {
     enabled: bool,
     cache: HashMap<String, Option<Pixbuf>>,
+    custom_icons: BTreeMap<String, String>,
 }
 
 impl IconCache {
@@ -21,6 +24,7 @@ impl IconCache {
         Self {
             enabled: true,
             cache: HashMap::new(),
+            custom_icons: BTreeMap::new(),
         }
     }
 
@@ -28,6 +32,18 @@ impl IconCache {
         Self {
             enabled: false,
             cache: HashMap::new(),
+            custom_icons: BTreeMap::new(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn set_custom_icons(&mut self, custom_icons: &BTreeMap<String, String>) {
+        if &self.custom_icons != custom_icons {
+            self.custom_icons = custom_icons.clone();
+            self.clear();
         }
     }
 
@@ -35,26 +51,39 @@ impl IconCache {
         if !self.enabled {
             return None;
         }
-        let key = item
-            .icon_name
-            .clone()
-            .or_else(|| item.startup_wm_class.clone())
-            .unwrap_or_else(|| item.id.clone());
-        if let Some(value) = self.cache.get(&key) {
-            return value.clone();
+        let lookup_keys = icon_lookup_keys(item);
+        let mut keys = Vec::new();
+        if let Some(custom_icon) = lookup_keys
+            .iter()
+            .find_map(|key| self.custom_icons.get(key).cloned())
+        {
+            keys.push(custom_icon);
         }
+        keys.extend(lookup_keys);
 
-        let started = Instant::now();
-        let loaded = load_icon(&key, ICON_CACHE_SIZE);
-        tracing::debug!(
-            target: "osdockx::perf",
-            icon = %key,
-            found = loaded.is_some(),
-            elapsed_ms = elapsed_ms(started.elapsed()),
-            "loaded dock icon"
-        );
-        self.cache.insert(key, loaded.clone());
-        loaded
+        for key in keys {
+            if let Some(value) = self.cache.get(&key) {
+                if value.is_some() {
+                    return value.clone();
+                }
+                continue;
+            }
+
+            let started = Instant::now();
+            let loaded = load_icon(&key, ICON_CACHE_SIZE);
+            tracing::debug!(
+                target: "osdockx::perf",
+                icon = %key,
+                found = loaded.is_some(),
+                elapsed_ms = elapsed_ms(started.elapsed()),
+                "loaded dock icon"
+            );
+            self.cache.insert(key, loaded.clone());
+            if loaded.is_some() {
+                return loaded;
+            }
+        }
+        None
     }
 }
 
@@ -178,66 +207,192 @@ fn load_icon(name: &str, size: i32) -> Option<Pixbuf> {
         return Pixbuf::from_file_at_scale(path, size, size, true).ok();
     }
 
-    for candidate in icon_candidates(name) {
-        if candidate.exists()
-            && let Ok(pixbuf) = Pixbuf::from_file_at_scale(&candidate, size, size, true)
-        {
-            return Some(pixbuf);
+    load_themed_icon(name, size).or_else(|| {
+        for candidate in pixmap_candidates(name) {
+            if candidate.exists()
+                && let Ok(pixbuf) = Pixbuf::from_file_at_scale(&candidate, size, size, true)
+            {
+                return Some(pixbuf);
+            }
         }
-    }
-    None
+        None
+    })
 }
 
-fn icon_candidates(name: &str) -> Vec<PathBuf> {
-    let clean = name
-        .trim()
-        .trim_end_matches(".png")
-        .trim_end_matches(".svg")
-        .trim_end_matches(".xpm");
-    if clean.is_empty() {
-        return Vec::new();
+fn load_themed_icon(name: &str, size: i32) -> Option<Pixbuf> {
+    let icon_name = themed_icon_name(name)?;
+    let display = gdk::Display::default()?;
+    let icon_theme = IconTheme::for_display(&display);
+    if !icon_theme.has_icon(&icon_name) {
+        return None;
     }
 
-    let data_dirs = env::var_os("XDG_DATA_DIRS")
-        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![PathBuf::from("/usr/local/share"), PathBuf::from("/usr/share")]);
-    let themes = [
-        "hicolor",
-        "Papirus",
-        "Papirus-Dark",
-        "elementary-xfce",
-        "Adwaita",
-        "gnome",
-    ];
-    let buckets = [
-        "scalable/apps",
-        "symbolic/apps",
-        "256x256/apps",
-        "128x128/apps",
-        "64x64/apps",
-        "48x48/apps",
-        "32x32/apps",
-    ];
+    let paintable = icon_theme.lookup_icon(
+        &icon_name,
+        &[],
+        size,
+        1,
+        TextDirection::None,
+        IconLookupFlags::empty(),
+    );
+    let path = paintable.file()?.path()?;
+    Pixbuf::from_file_at_scale(path, size, size, true).ok()
+}
+
+fn pixmap_candidates(name: &str) -> Vec<PathBuf> {
+    let Some(clean) = themed_icon_name(name) else {
+        return Vec::new();
+    };
     let extensions = ["svg", "png", "xpm"];
 
     let mut candidates = Vec::new();
-    for data_dir in data_dirs {
-        for theme in themes {
-            for bucket in buckets {
-                for extension in extensions {
-                    candidates.push(
-                        data_dir
-                            .join("icons")
-                            .join(theme)
-                            .join(bucket)
-                            .join(format!("{clean}.{extension}")),
-                    );
-                }
-            }
-        }
+    for data_dir in icon_data_dirs() {
         for extension in extensions {
-            candidates.push(data_dir.join("pixmaps").join(format!("{clean}.{extension}")));
+            candidates.push(
+                data_dir
+                    .join("pixmaps")
+                    .join(format!("{clean}.{extension}")),
+            );
         }
     }
     candidates
+}
+
+fn icon_lookup_keys(item: &DockItem) -> Vec<String> {
+    let mut keys = Vec::new();
+    if item.is_downloads_applet() {
+        for icon_name in ["folder-download", "folder-downloads", "folder", "inode-directory"] {
+            push_icon_key(&mut keys, Some(icon_name));
+        }
+    } else if item.is_trash_applet() {
+        for icon_name in ["user-trash-full", "user-trash", "trashcan_full", "trashcan_empty"] {
+            push_icon_key(&mut keys, Some(icon_name));
+        }
+    }
+    push_icon_key(&mut keys, item.icon_name.as_deref());
+    push_icon_key(&mut keys, item.startup_wm_class.as_deref());
+    push_icon_key(&mut keys, item.desktop_id.as_deref());
+    push_icon_key(&mut keys, Some(&item.config_key()));
+    push_icon_key(&mut keys, Some(&item.id));
+    keys
+}
+
+fn push_icon_key(keys: &mut Vec<String>, value: Option<&str>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    push_unique(keys, value.to_string());
+
+    if !Path::new(value).is_absolute() {
+        if let Some(stem) = value.strip_suffix(".desktop") {
+            push_unique(keys, stem.to_string());
+            let lower = stem.to_ascii_lowercase();
+            if lower != stem {
+                push_unique(keys, lower);
+            }
+        }
+        if let Some(stem) = value
+            .trim_end_matches(".desktop")
+            .strip_prefix("application-")
+        {
+            push_unique(keys, stem.to_string());
+        }
+        let lower = value.to_ascii_lowercase();
+        if lower != value {
+            push_unique(keys, lower);
+        }
+    }
+}
+
+fn push_unique(keys: &mut Vec<String>, value: String) {
+    if !keys.contains(&value) {
+        keys.push(value);
+    }
+}
+
+fn themed_icon_name(name: &str) -> Option<String> {
+    let clean = name.trim();
+    if clean.is_empty() || Path::new(clean).is_absolute() {
+        return None;
+    }
+
+    let path = Path::new(clean);
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    if matches!(extension.as_deref(), Some("png" | "svg" | "xpm"))
+        && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+    {
+        return Some(stem.to_string());
+    }
+
+    Some(clean.to_string())
+}
+
+fn icon_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(data_home) = env::var_os("XDG_DATA_HOME") {
+        dirs.push(PathBuf::from(data_home));
+    } else if let Some(home) = env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".local/share"));
+    }
+
+    dirs.extend(
+        env::var_os("XDG_DATA_DIRS")
+            .map(|value| env::split_paths(&value).collect::<Vec<_>>())
+            .unwrap_or_else(|| {
+                vec![
+                    PathBuf::from("/usr/local/share"),
+                    PathBuf::from("/usr/share"),
+                ]
+            }),
+    );
+    dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_item() -> DockItem {
+        DockItem {
+            id: "org.example.App.desktop".to_string(),
+            name: "Example".to_string(),
+            desktop_id: Some("org.example.App.desktop".to_string()),
+            startup_wm_class: Some("ExampleApp".to_string()),
+            icon_name: Some("org.example.App.png".to_string()),
+            window_icon: None,
+            pinned: true,
+            windows: Vec::new(),
+            active: false,
+            urgent: false,
+            badge: None,
+        }
+    }
+
+    #[test]
+    fn themed_icon_name_strips_file_extensions_only() {
+        assert_eq!(
+            themed_icon_name("org.example.App.png"),
+            Some("org.example.App".to_string())
+        );
+        assert_eq!(
+            themed_icon_name("org.example.App"),
+            Some("org.example.App".to_string())
+        );
+        assert_eq!(themed_icon_name("/tmp/app.png"), None);
+        assert_eq!(themed_icon_name(" "), None);
+    }
+
+    #[test]
+    fn lookup_keys_keep_desktop_icon_then_theme_fallback_names() {
+        let keys = icon_lookup_keys(&test_item());
+        assert_eq!(keys[0], "org.example.App.png");
+        assert!(keys.contains(&"org.example.app.png".to_string()));
+        assert!(keys.contains(&"ExampleApp".to_string()));
+        assert!(keys.contains(&"exampleapp".to_string()));
+        assert!(keys.contains(&"org.example.App.desktop".to_string()));
+        assert!(keys.contains(&"org.example.App".to_string()));
+    }
 }
