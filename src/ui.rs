@@ -1,6 +1,6 @@
 use crate::backend::x11::X11Backend;
 use crate::backend::{DockGeometry, PlatformBackend};
-use crate::config::{Config, RenderMode};
+use crate::config::{AppletConfig, Config, RenderMode};
 use crate::desktop::DesktopIndex;
 use crate::layout::{Point, Rect};
 use crate::model::{DockItem, DockModel, DockSectionKind};
@@ -23,8 +23,8 @@ use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
     EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag,
-    IconLookupFlags, IconTheme, Label, Orientation, Overlay, Popover, PositionType, TextDirection,
-    gdk,
+    IconLookupFlags, IconTheme, Image, Label, Orientation, Overlay, PolicyType, Popover,
+    PositionType, ScrolledWindow, SearchEntry, TextDirection, gdk,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -39,10 +39,17 @@ const EDGE_VISIBLE_PIXELS: i32 = 4;
 const SLOW_UI_OP: Duration = Duration::from_millis(4);
 const CONTEXT_MENU_WIDTH: i32 = 198;
 const CONTEXT_MENU_ITEM_HEIGHT: i32 = 24;
-const CONTEXT_MENU_SETTINGS_COUNT: usize = 3;
+const CONTEXT_MENU_SETTINGS_COUNT: usize = 4;
 const CONTEXT_MENU_SEPARATOR_HEIGHT: i32 = 12;
 const CONTEXT_MENU_CHROME_HEIGHT: i32 = 12;
 const CONTEXT_MENU_GAP: f64 = 18.0;
+const DOCK_CONTEXT_MENU_WIDTH: i32 = 228;
+const DOCK_CONTEXT_MENU_ACTIONS: usize = 8;
+const ADD_APPLICATION_MENU_WIDTH: i32 = 292;
+const ADD_APPLICATION_MENU_VISIBLE_ROWS: usize = 12;
+const THEME_ICON_MENU_WIDTH: i32 = 292;
+const THEME_ICON_MENU_VISIBLE_ROWS: usize = 12;
+const THEME_ICON_MENU_MAX_MATCHES: usize = 80;
 const APPLET_FAN_WIDTH: i32 = 390;
 const APPLET_FAN_MAX_ITEMS: usize = 7;
 const APPLET_FAN_GAP: f64 = 10.0;
@@ -180,6 +187,18 @@ enum ApplicationContextAction {
     Close,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DockContextAction {
+    AddApplication,
+    AddFolderApplet,
+    LargerIcons,
+    SmallerIcons,
+    ToggleAutohide,
+    ToggleReserveSpace,
+    ReloadTheme,
+    OpenConfigFolder,
+}
+
 impl Runtime {
     fn refresh_model(&mut self) {
         let windows = self
@@ -193,7 +212,12 @@ impl Runtime {
                 }
             })
             .unwrap_or_default();
-        self.model = DockModel::from_sources(&self.config.pinned, &self.desktop_index, windows);
+        self.model = DockModel::from_sources_with_applets(
+            &self.config.pinned,
+            &self.desktop_index,
+            windows,
+            &self.config.applets,
+        );
         self.model.apply_order(&self.config.item_order);
     }
 
@@ -218,24 +242,13 @@ impl Runtime {
 
         if self.hidden {
             let hidden_offset = hidden_edge_offset(&geometry, self.config.dock.edge);
-            apply_edge_offset(
-                &mut geometry,
-                self.config.dock.edge,
-                hidden_offset,
-            );
+            apply_edge_offset(&mut geometry, self.config.dock.edge, hidden_offset);
         }
 
         if let Some(startup_reveal) = self.startup_reveal.as_ref() {
-            let startup_offset = startup_reveal_offset(
-                &geometry,
-                self.config.dock.edge,
-                startup_reveal.progress(),
-            );
-            apply_edge_offset(
-                &mut geometry,
-                self.config.dock.edge,
-                startup_offset,
-            );
+            let startup_offset =
+                startup_reveal_offset(&geometry, self.config.dock.edge, startup_reveal.progress());
+            apply_edge_offset(&mut geometry, self.config.dock.edge, startup_offset);
         }
         Some(geometry)
     }
@@ -258,11 +271,7 @@ impl StartupReveal {
     }
 }
 
-fn apply_edge_offset(
-    geometry: &mut DockGeometry,
-    edge: crate::config::DockEdge,
-    distance: i32,
-) {
+fn apply_edge_offset(geometry: &mut DockGeometry, edge: crate::config::DockEdge, distance: i32) {
     match edge {
         crate::config::DockEdge::Bottom => {
             geometry.y += distance;
@@ -335,11 +344,10 @@ fn separator_resize_drag_delta(
 
 fn resize_icon_size_for_drag(start_icon_size: u32, offset_y: f64) -> u32 {
     let size_delta = (-offset_y / SEPARATOR_RESIZE_PIXELS_PER_ICON).round() as i32;
-    (start_icon_size as i32 + size_delta)
-        .clamp(
-            SEPARATOR_RESIZE_MIN_ICON_SIZE as i32,
-            SEPARATOR_RESIZE_MAX_ICON_SIZE as i32,
-        ) as u32
+    (start_icon_size as i32 + size_delta).clamp(
+        SEPARATOR_RESIZE_MIN_ICON_SIZE as i32,
+        SEPARATOR_RESIZE_MAX_ICON_SIZE as i32,
+    ) as u32
 }
 
 fn set_separator_resize_cursor(drawing: &DrawingArea, enabled: bool) {
@@ -534,6 +542,50 @@ fn install_css() {
         .osdock-menu-box {
             padding: 1px 0;
         }
+        .osdock-menu-title {
+            color: alpha(#eef2f7, 0.86);
+            font-size: 11px;
+            font-weight: 700;
+            margin: 5px 10px 4px 10px;
+        }
+        .osdock-menu-search,
+        searchentry.osdock-menu-search,
+        entry.osdock-menu-search {
+            min-height: 28px;
+            margin: 3px 8px 7px 8px;
+            padding: 0 12px;
+            border-radius: 999px;
+            border: 1px solid alpha(#000000, 0.22);
+            background: #f8f9fb;
+            color: #1d232b;
+            box-shadow:
+                inset 0 1px 2px alpha(#000000, 0.13),
+                0 1px alpha(#ffffff, 0.42);
+        }
+        .osdock-menu-search:focus,
+        searchentry.osdock-menu-search:focus,
+        entry.osdock-menu-search:focus {
+            border-color: alpha(#3b82f6, 0.58);
+            box-shadow:
+                inset 0 1px 2px alpha(#000000, 0.11),
+                0 0 0 2px alpha(#5aa7ff, 0.22);
+        }
+        .osdock-menu-search text,
+        searchentry.osdock-menu-search text,
+        entry.osdock-menu-search text {
+            color: #1d232b;
+            background: transparent;
+        }
+        .osdock-menu-search placeholder,
+        searchentry.osdock-menu-search placeholder,
+        entry.osdock-menu-search placeholder {
+            color: alpha(#6f7782, 0.78);
+        }
+        .osdock-menu-search image,
+        searchentry.osdock-menu-search image,
+        entry.osdock-menu-search image {
+            color: #7a818c;
+        }
         button.osdock-menu-item {
             min-height: 24px;
             min-width: 182px;
@@ -577,6 +629,9 @@ fn install_css() {
         }
         .osdock-menu-row {
             padding: 2px 10px 2px 6px;
+        }
+        .osdock-menu-icon {
+            margin-right: 7px;
         }
         .osdock-menu-check {
             min-width: 14px;
@@ -710,6 +765,7 @@ fn wire_motion(
                     };
                     if state.hidden {
                         state.hidden = false;
+                        state.last_shape_size = None;
                         move_dock(&mut state, true);
                     }
                     state.hover = next_hover;
@@ -739,9 +795,7 @@ fn wire_motion(
                 let mut state = state.borrow_mut();
                 resizing = state.separator_resize.is_some();
                 state.hover = None;
-                autohide = state.config.dock.autohide
-                    && state.context_menu.is_none()
-                    && !resizing;
+                autohide = state.config.dock.autohide && state.context_menu.is_none() && !resizing;
                 delay = state.config.dock.hide_delay_ms;
             }
             if resizing {
@@ -754,11 +808,28 @@ fn wire_motion(
 
             if autohide {
                 let state = Rc::clone(&state);
+                let window = window.clone();
+                let drawing = drawing.clone();
+                let gl_area = gl_area.clone();
                 glib::timeout_add_local_once(Duration::from_millis(delay as u64), move || {
-                    let mut state = state.borrow_mut();
-                    if state.hover.is_none() {
-                        state.hidden = true;
-                        move_dock(&mut state, true);
+                    let changed = {
+                        let mut state = state.borrow_mut();
+                        if state.hover.is_none()
+                            && state.context_menu.is_none()
+                            && state.separator_resize.is_none()
+                            && !state.hidden
+                        {
+                            state.hidden = true;
+                            state.last_shape_size = None;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if changed {
+                        sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                        queue_gl_render_if_enabled(&state, &gl_area);
+                        drawing.queue_draw();
                     }
                 });
             }
@@ -815,14 +886,7 @@ fn wire_clicks(
                     return;
                 };
                 if button == 3 {
-                    if item.is_application() {
-                        show_context_menu(&state, &window, &drawing, &gl_area, index, x, y);
-                    } else {
-                        let dismissed = dismiss_context_menu(&state);
-                        if dismissed {
-                            sync_dock_window(&state, &window, &drawing, &gl_area, true);
-                        }
-                    }
+                    show_context_menu(&state, &window, &drawing, &gl_area, index, x, y);
                 } else if button == 1 || button == 2 {
                     let dismissed = dismiss_context_menu(&state);
                     if dismissed {
@@ -831,9 +895,13 @@ fn wire_clicks(
                     if item.is_application() {
                         activate_item(&state, index, button);
                     } else {
-                        activate_applet(&state, &window, &drawing, &gl_area, &item, index, button, x, y);
+                        activate_applet(
+                            &state, &window, &drawing, &gl_area, &item, index, button, x, y,
+                        );
                     }
                 }
+            } else if button == 3 && dock_surface_hit_test(&state, Point { x, y }) {
+                show_dock_context_menu(&state, &window, &drawing, &gl_area, x, y);
             } else if button != 0 {
                 let dismissed = dismiss_context_menu(&state);
                 if dismissed {
@@ -844,6 +912,16 @@ fn wire_clicks(
         });
     }
     drawing.add_controller(click);
+}
+
+fn dock_surface_hit_test(state: &Rc<RefCell<Runtime>>, point: Point) -> bool {
+    let state = state.borrow();
+    let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+    layout.shelf.contains(point)
+        || layout
+            .sections
+            .iter()
+            .any(|section| section.rect.contains(point))
 }
 
 fn wire_icon_drag(
@@ -866,7 +944,7 @@ fn wire_icon_drag(
                 Renderer::icon_hit_test(&state.model, &state.config.dock, &state.theme, point)
                     .and_then(|index| {
                         let item = state.model.items.get(index)?;
-                        if !item.is_application() {
+                        if !item.is_application() && !item.is_applet() {
                             return None;
                         }
                         let rect = Renderer::layout_for(
@@ -971,12 +1049,8 @@ fn wire_separator_resize_drag(
                 if state.separator_resize.is_some() {
                     return;
                 }
-                let layout = Renderer::layout_for(
-                    &state.model,
-                    &state.config.dock,
-                    &state.theme,
-                    None,
-                );
+                let layout =
+                    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
                 let start_window_y = state
                     .last_geometry
                     .or_else(|| state.desired_geometry())
@@ -1150,22 +1224,33 @@ fn finish_icon_drag(state: &mut Runtime, offset_x: f64, offset_y: f64) -> bool {
 }
 
 fn drag_target_index(state: &Runtime, point: Point) -> Option<usize> {
-    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
+    let dragged_key = &state.drag.as_ref()?.item_key;
+    let dragged_is_applet = state
+        .model
+        .items
+        .iter()
+        .find(|item| item.config_key().eq_ignore_ascii_case(dragged_key))?
+        .is_applet();
+    let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+    let mut section_index = 0;
+    layout
         .icons
         .iter()
-        .filter(|icon| {
-            state
-                .model
-                .items
-                .get(icon.item_index)
-                .is_some_and(|item| item.is_application())
+        .filter_map(|icon| {
+            let item = state.model.items.get(icon.item_index)?;
+            if item.is_applet() != dragged_is_applet {
+                return None;
+            }
+            let candidate = (section_index, icon);
+            section_index += 1;
+            Some(candidate)
         })
-        .min_by(|left, right| {
+        .min_by(|(_, left), (_, right)| {
             let left_distance = (left.rect.center_x() - point.x).abs();
             let right_distance = (right.rect.center_x() - point.x).abs();
             left_distance.total_cmp(&right_distance)
         })
-        .map(|icon| icon.item_index)
+        .map(|(index, _)| index)
 }
 
 fn drag_distance(offset_x: f64, offset_y: f64) -> f64 {
@@ -1379,18 +1464,22 @@ fn show_context_menu(
     let Some(item) = item else {
         return;
     };
-    if !item.is_application() {
-        return;
-    }
-    let app_actions = application_context_actions(&item);
-    let item_key = item.config_key();
-    let pinned = item.pinned;
     let anchor = icon_rect.unwrap_or(Rect {
         x,
         y,
         width: 1.0,
         height: 1.0,
     });
+    if item.is_applet() {
+        show_applet_context_menu(state, window, drawing, gl_area, item, anchor, dock_width);
+        return;
+    }
+    if !item.is_application() {
+        return;
+    }
+    let app_actions = application_context_actions(&item);
+    let item_key = item.config_key();
+    let pinned = item.pinned;
     dismiss_context_menu(state);
     {
         let mut state = state.borrow_mut();
@@ -1432,10 +1521,12 @@ fn show_context_menu(
     }
 
     let keep = context_menu_button("Keep in Dock", pinned);
-    let select = context_menu_button("Select Icon", false);
+    let select = context_menu_button("Select Icon File...", false);
+    let theme_icon = context_menu_button("Use Theme Icon...", false);
     let default_icon = context_menu_button("Set Default Icon", false);
     menu.append(&keep);
     menu.append(&select);
+    menu.append(&theme_icon);
     menu.append(&default_icon);
 
     {
@@ -1468,6 +1559,17 @@ fn show_context_menu(
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         let item_key = item_key.clone();
+        theme_icon.connect_clicked(move |_| {
+            dismiss_context_menu(&state);
+            show_theme_icon_menu(&state, &window, &drawing, &gl_area, item_key.clone());
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let item_key = item_key.clone();
         default_icon.connect_clicked(move |_| {
             dismiss_context_menu(&state);
             reset_custom_icon(&state, &window, &drawing, &gl_area, &item_key);
@@ -1476,7 +1578,7 @@ fn show_context_menu(
 
     let popover = Popover::new();
     popover.add_css_class("osdock-context-popover");
-    popover.set_autohide(true);
+    popover.set_autohide(false);
     popover.set_has_arrow(false);
     popover.set_position(PositionType::Top);
     popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
@@ -1485,6 +1587,318 @@ fn show_context_menu(
     popover.set_parent(drawing);
 
     present_runtime_popover(state, window, drawing, gl_area, &popover);
+}
+
+fn show_applet_context_menu(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item: DockItem,
+    anchor: Rect,
+    dock_width: i32,
+) {
+    let item_key = item.config_key();
+    let folder_path = item.folder_applet_path();
+    let can_remove = folder_path.is_some();
+    dismiss_context_menu(state);
+    {
+        let mut state = state.borrow_mut();
+        state.hover = None;
+    }
+
+    let menu = GtkBox::new(Orientation::Vertical, 0);
+    menu.add_css_class("osdock-context-menu");
+    menu.add_css_class("osdock-menu-box");
+    let action_count = 4 + if can_remove { 1 } else { 0 };
+    let separator_count = if can_remove { 2 } else { 1 };
+    menu.set_size_request(
+        CONTEXT_MENU_WIDTH,
+        menu_height(action_count, separator_count) + 22,
+    );
+
+    let title = Label::new(Some(&item.name));
+    title.add_css_class("osdock-menu-title");
+    title.set_xalign(0.0);
+    menu.append(&title);
+
+    let select = context_menu_icon_button("Select Icon File...", "image-x-generic", false);
+    let theme_icon =
+        context_menu_icon_button("Use Theme Icon...", "preferences-desktop-icons", false);
+    let default_icon = context_menu_icon_button("Set Default Icon", "edit-clear", false);
+    menu.append(&select);
+    menu.append(&theme_icon);
+    menu.append(&default_icon);
+
+    if let Some(path) = folder_path {
+        menu.append(&context_menu_separator());
+        let remove = context_menu_icon_button("Remove Applet", "list-remove", false);
+        {
+            let state = Rc::clone(state);
+            let window = window.clone();
+            let drawing = drawing.clone();
+            let gl_area = gl_area.clone();
+            let item_key = item_key.clone();
+            remove.connect_clicked(move |_| {
+                dismiss_context_menu(&state);
+                remove_folder_applet(&state, &window, &drawing, &gl_area, &item_key, &path);
+            });
+        }
+        menu.append(&remove);
+    }
+
+    menu.append(&context_menu_separator());
+    let settings = context_menu_icon_button("OSDockX Settings...", "preferences-system", false);
+    menu.append(&settings);
+
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let item_key = item_key.clone();
+        select.connect_clicked(move |_| {
+            dismiss_context_menu(&state);
+            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+            drawing.queue_draw();
+            select_custom_icon(&state, &window, &drawing, &gl_area, item_key.clone());
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let item_key = item_key.clone();
+        theme_icon.connect_clicked(move |_| {
+            dismiss_context_menu(&state);
+            show_theme_icon_menu(&state, &window, &drawing, &gl_area, item_key.clone());
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let item_key = item_key.clone();
+        default_icon.connect_clicked(move |_| {
+            dismiss_context_menu(&state);
+            reset_custom_icon(&state, &window, &drawing, &gl_area, &item_key);
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        settings.connect_clicked(move |_| {
+            dismiss_context_menu(&state);
+            show_dock_context_menu(
+                &state,
+                &window,
+                &drawing,
+                &gl_area,
+                anchor.center_x(),
+                anchor.y + anchor.height / 2.0,
+            );
+        });
+    }
+
+    let popover = Popover::new();
+    popover.add_css_class("osdock-context-popover");
+    popover.set_autohide(false);
+    popover.set_has_arrow(false);
+    popover.set_position(PositionType::Top);
+    popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
+    popover.set_pointing_to(Some(&context_menu_anchor_rect(anchor, dock_width)));
+    popover.set_child(Some(&menu));
+    popover.set_parent(drawing);
+
+    present_runtime_popover(state, window, drawing, gl_area, &popover);
+}
+
+fn show_dock_context_menu(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    x: f64,
+    y: f64,
+) {
+    let dock_width = {
+        let state = state.borrow();
+        Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
+            .size
+            .0
+    };
+    dismiss_context_menu(state);
+    {
+        let mut state = state.borrow_mut();
+        state.hover = None;
+    }
+
+    let menu = GtkBox::new(Orientation::Vertical, 0);
+    menu.add_css_class("osdock-context-menu");
+    menu.add_css_class("osdock-menu-box");
+    menu.set_size_request(
+        DOCK_CONTEXT_MENU_WIDTH,
+        menu_height(DOCK_CONTEXT_MENU_ACTIONS, 2) + 22,
+    );
+
+    let title = Label::new(Some("OSDockX Settings"));
+    title.add_css_class("osdock-menu-title");
+    title.set_xalign(0.0);
+    menu.append(&title);
+
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::AddApplication,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::AddFolderApplet,
+    );
+    menu.append(&context_menu_separator());
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::LargerIcons,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::SmallerIcons,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::ToggleAutohide,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::ToggleReserveSpace,
+    );
+    menu.append(&context_menu_separator());
+
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::ReloadTheme,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::OpenConfigFolder,
+    );
+
+    let popover = Popover::new();
+    popover.add_css_class("osdock-context-popover");
+    popover.set_autohide(true);
+    popover.set_has_arrow(false);
+    popover.set_position(PositionType::Top);
+    popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
+    popover.set_pointing_to(Some(&context_menu_anchor_rect(
+        Rect {
+            x,
+            y,
+            width: 1.0,
+            height: 1.0,
+        },
+        dock_width,
+    )));
+    popover.set_child(Some(&menu));
+    popover.set_parent(drawing);
+
+    present_runtime_popover(state, window, drawing, gl_area, &popover);
+}
+
+fn append_dock_context_button(
+    menu: &GtkBox,
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    action: DockContextAction,
+) {
+    let checked = dock_context_action_checked(state, action);
+    let button = context_menu_icon_button(
+        dock_context_action_label(action),
+        dock_context_action_icon(action),
+        checked,
+    );
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        button.connect_clicked(move |_| {
+            dismiss_context_menu(&state);
+            run_dock_context_action(&state, &window, &drawing, &gl_area, action);
+        });
+    }
+    menu.append(&button);
+}
+
+fn dock_context_action_checked(state: &Rc<RefCell<Runtime>>, action: DockContextAction) -> bool {
+    let state = state.borrow();
+    match action {
+        DockContextAction::ToggleAutohide => state.config.dock.autohide,
+        DockContextAction::ToggleReserveSpace => state.config.dock.reserve_space,
+        _ => false,
+    }
+}
+
+fn dock_context_action_label(action: DockContextAction) -> &'static str {
+    match action {
+        DockContextAction::AddApplication => "Add Application...",
+        DockContextAction::AddFolderApplet => "Add Folder Applet...",
+        DockContextAction::LargerIcons => "Larger Icons",
+        DockContextAction::SmallerIcons => "Smaller Icons",
+        DockContextAction::ToggleAutohide => "Auto Hide",
+        DockContextAction::ToggleReserveSpace => "Reserve Screen Space",
+        DockContextAction::ReloadTheme => "Reload Theme",
+        DockContextAction::OpenConfigFolder => "Open Config Folder",
+    }
+}
+
+fn dock_context_action_icon(action: DockContextAction) -> &'static str {
+    match action {
+        DockContextAction::AddApplication => "list-add",
+        DockContextAction::AddFolderApplet => "folder-new",
+        DockContextAction::LargerIcons => "zoom-in",
+        DockContextAction::SmallerIcons => "zoom-out",
+        DockContextAction::ToggleAutohide => "view-fullscreen",
+        DockContextAction::ToggleReserveSpace => "view-restore",
+        DockContextAction::ReloadTheme => "view-refresh",
+        DockContextAction::OpenConfigFolder => "preferences-system",
+    }
 }
 
 fn application_context_actions(item: &DockItem) -> Vec<ApplicationContextAction> {
@@ -1524,9 +1938,16 @@ fn application_context_action_label(
 
 fn context_menu_height(app_action_count: usize) -> i32 {
     let separator_count = i32::from(app_action_count > 0);
+    menu_height(
+        app_action_count + CONTEXT_MENU_SETTINGS_COUNT,
+        separator_count as usize,
+    )
+}
+
+fn menu_height(action_count: usize, separator_count: usize) -> i32 {
     CONTEXT_MENU_CHROME_HEIGHT
-        + ((app_action_count + CONTEXT_MENU_SETTINGS_COUNT) as i32 * CONTEXT_MENU_ITEM_HEIGHT)
-        + separator_count * CONTEXT_MENU_SEPARATOR_HEIGHT
+        + (action_count as i32 * CONTEXT_MENU_ITEM_HEIGHT)
+        + separator_count as i32 * CONTEXT_MENU_SEPARATOR_HEIGHT
 }
 
 fn context_menu_anchor_rect(icon_rect: Rect, dock_width: i32) -> gdk::Rectangle {
@@ -1541,6 +1962,7 @@ fn context_menu_anchor_rect(icon_rect: Rect, dock_width: i32) -> gdk::Rectangle 
 fn context_menu_button(label: &str, checked: bool) -> Button {
     let button = Button::builder().has_frame(false).build();
     button.add_css_class("osdock-menu-item");
+    button.set_focusable(false);
 
     let row = GtkBox::new(Orientation::Horizontal, 0);
     row.add_css_class("osdock-menu-row");
@@ -1552,6 +1974,30 @@ fn context_menu_button(label: &str, checked: bool) -> Button {
     text.set_hexpand(true);
     text.set_halign(Align::Start);
     row.append(&check);
+    row.append(&text);
+    button.set_child(Some(&row));
+    button
+}
+
+fn context_menu_icon_button(label: &str, icon_name: &str, checked: bool) -> Button {
+    let button = Button::builder().has_frame(false).build();
+    button.add_css_class("osdock-menu-item");
+    button.set_focusable(false);
+
+    let row = GtkBox::new(Orientation::Horizontal, 0);
+    row.add_css_class("osdock-menu-row");
+    let check = Label::new(Some(if checked { "✓" } else { "" }));
+    check.add_css_class("osdock-menu-check");
+    check.set_halign(Align::Start);
+    let icon = Image::from_icon_name(icon_name);
+    icon.add_css_class("osdock-menu-icon");
+    icon.set_pixel_size(16);
+    let text = Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_hexpand(true);
+    text.set_halign(Align::Start);
+    row.append(&check);
+    row.append(&icon);
     row.append(&text);
     button.set_child(Some(&row));
     button
@@ -1573,10 +2019,14 @@ fn present_runtime_popover(
     gl_area: &GLArea,
     popover: &Popover,
 ) {
+    window.set_focusable(true);
+    window.set_can_focus(true);
+
     {
         let state = Rc::clone(state);
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
+        let window = window.clone();
         popover.connect_closed(move |popover| {
             if let Ok(mut runtime) = state.try_borrow_mut()
                 && runtime
@@ -1591,8 +2041,10 @@ fn present_runtime_popover(
             let state = Rc::clone(&state);
             let drawing = drawing.clone();
             let gl_area = gl_area.clone();
+            let window = window.clone();
             let popover_for_cleanup = popover.clone();
             glib::idle_add_local_once(move || {
+                let mut menu_still_open = false;
                 if let Ok(mut runtime) = state.try_borrow_mut()
                     && runtime
                         .context_menu
@@ -1602,9 +2054,16 @@ fn present_runtime_popover(
                     runtime.context_menu = None;
                     runtime.hover = None;
                 }
+                if let Ok(runtime) = state.try_borrow() {
+                    menu_still_open = runtime.context_menu.is_some();
+                }
 
                 if popover_for_cleanup.parent().is_some() {
                     popover_for_cleanup.unparent();
+                }
+                if !menu_still_open {
+                    window.set_can_focus(false);
+                    window.set_focusable(false);
                 }
                 queue_gl_render_if_enabled(&state, &gl_area);
                 drawing.queue_draw();
@@ -1799,6 +2258,16 @@ fn applet_fan_source(item: &DockItem) -> Option<AppletFanSource> {
         ));
     }
 
+    if item.is_folder_applet() {
+        let path = item.folder_applet_path()?;
+        return Some(directory_applet_fan_source(
+            &item.name,
+            "Folder is empty",
+            Some(&path),
+            AppletFanTarget::Path(path.clone()),
+        ));
+    }
+
     None
 }
 
@@ -1852,8 +2321,8 @@ fn applet_fan_reveal_progress(elapsed: Duration) -> f64 {
 
 fn applet_fan_row_reveal(progress: f64, index: usize, row_count: usize) -> f64 {
     let bottom_first_delay = row_count.saturating_sub(1 + index) as f64 * 0.026;
-    let local = ((progress - bottom_first_delay) / (1.0 - bottom_first_delay).max(0.20))
-        .clamp(0.0, 1.0);
+    let local =
+        ((progress - bottom_first_delay) / (1.0 - bottom_first_delay).max(0.20)).clamp(0.0, 1.0);
     ease_out_cubic(local)
 }
 
@@ -2420,8 +2889,7 @@ fn open_path_in_default_app(path: &Path) {
 }
 
 fn open_uri(uri: &str) {
-    if let Err(error) = gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>)
-    {
+    if let Err(error) = gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>) {
         tracing::warn!("could not open {uri}: {error:#}");
     }
 }
@@ -2444,6 +2912,98 @@ fn run_application_context_action(
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
+}
+
+fn run_dock_context_action(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    action: DockContextAction,
+) {
+    match action {
+        DockContextAction::AddApplication => {
+            show_add_application_menu(state, window, drawing, gl_area);
+        }
+        DockContextAction::AddFolderApplet => {
+            select_folder_applet(state, window, drawing, gl_area);
+        }
+        DockContextAction::LargerIcons => {
+            change_icon_size(state, window, drawing, gl_area, 8);
+        }
+        DockContextAction::SmallerIcons => {
+            change_icon_size(state, window, drawing, gl_area, -8);
+        }
+        DockContextAction::ToggleAutohide => {
+            update_dock_config(state, window, drawing, gl_area, |state| {
+                state.config.dock.autohide = !state.config.dock.autohide;
+                state.hidden = false;
+            });
+        }
+        DockContextAction::ToggleReserveSpace => {
+            update_dock_config(state, window, drawing, gl_area, |state| {
+                state.config.dock.reserve_space = !state.config.dock.reserve_space;
+            });
+        }
+        DockContextAction::ReloadTheme => {
+            {
+                let mut state = state.borrow_mut();
+                refresh_config_and_theme(&mut state);
+                state.refresh_model();
+                state.icons.clear();
+            }
+            sync_dock_window(state, window, drawing, gl_area, true);
+            queue_gl_render_if_enabled(state, gl_area);
+            drawing.queue_draw();
+        }
+        DockContextAction::OpenConfigFolder => {
+            let config_path = state.borrow().config_path.clone();
+            let path = config_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or(config_path);
+            open_path_in_default_app(&path);
+        }
+    }
+}
+
+fn update_dock_config(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    update: impl FnOnce(&mut Runtime),
+) {
+    {
+        let mut state = state.borrow_mut();
+        update(&mut state);
+        state.last_size = None;
+        state.last_geometry = None;
+        state.last_reserved_geometry = None;
+        state.last_shape_size = None;
+        save_runtime_config(&state);
+        state.refresh_model();
+    }
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn change_icon_size(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    delta: i32,
+) {
+    update_dock_config(state, window, drawing, gl_area, |state| {
+        let icon_size = (state.config.dock.icon_size as i32 + delta).clamp(
+            SEPARATOR_RESIZE_MIN_ICON_SIZE as i32,
+            SEPARATOR_RESIZE_MAX_ICON_SIZE as i32,
+        );
+        state.config.dock.icon_size = icon_size as u32;
+        state.hover = None;
+    });
 }
 
 fn toggle_keep_in_dock(
@@ -2499,6 +3059,495 @@ fn reset_custom_icon(
     drawing.queue_draw();
 }
 
+fn set_custom_icon_value(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item_key: &str,
+    value: String,
+) {
+    {
+        let mut state = state.borrow_mut();
+        state
+            .config
+            .custom_icons
+            .insert(item_key.to_string(), value);
+        save_runtime_config(&state);
+        state.icons.clear();
+    }
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn show_add_application_menu(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let (apps, dock_width) = {
+        let state = state.borrow();
+        let pinned = state
+            .config
+            .pinned
+            .iter()
+            .map(|id| id.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let apps = state
+            .desktop_index
+            .apps()
+            .into_iter()
+            .filter(|app| {
+                !pinned
+                    .iter()
+                    .any(|id| id == &app.desktop_id.to_ascii_lowercase())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let dock_width = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
+            .size
+            .0;
+        (apps, dock_width)
+    };
+
+    let menu = GtkBox::new(Orientation::Vertical, 0);
+    menu.add_css_class("osdock-context-menu");
+    menu.add_css_class("osdock-menu-box");
+    let visible_rows = apps.len().clamp(1, ADD_APPLICATION_MENU_VISIBLE_ROWS);
+    menu.set_size_request(
+        ADD_APPLICATION_MENU_WIDTH,
+        menu_height(visible_rows, 0) + 56,
+    );
+
+    let title = Label::new(Some("Add Application"));
+    title.add_css_class("osdock-menu-title");
+    title.set_xalign(0.0);
+    menu.append(&title);
+
+    let mut focus_search = None;
+    if apps.is_empty() {
+        let empty = Label::new(Some("No unpinned applications found"));
+        empty.add_css_class("osdock-menu-title");
+        empty.set_xalign(0.0);
+        menu.append(&empty);
+    } else {
+        let search = SearchEntry::new();
+        search.add_css_class("osdock-menu-search");
+        search.set_placeholder_text(Some("Search applications"));
+        search.set_hexpand(true);
+        menu.append(&search);
+        focus_search = Some(search.clone());
+
+        let list = GtkBox::new(Orientation::Vertical, 0);
+        let mut rows = Vec::new();
+        for app in apps {
+            let button = context_menu_icon_button(
+                &app.name,
+                app.icon_name
+                    .as_deref()
+                    .unwrap_or("application-x-executable"),
+                false,
+            );
+            {
+                let state = Rc::clone(state);
+                let window = window.clone();
+                let drawing = drawing.clone();
+                let gl_area = gl_area.clone();
+                let desktop_id = app.desktop_id.clone();
+                button.connect_clicked(move |_| {
+                    dismiss_context_menu(&state);
+                    pin_application(&state, &window, &drawing, &gl_area, &desktop_id);
+                });
+            }
+            rows.push((
+                format!("{} {}", app.name, app.desktop_id).to_ascii_lowercase(),
+                button.clone(),
+            ));
+            list.append(&button);
+        }
+        let scroll = ScrolledWindow::new();
+        scroll.set_policy(PolicyType::Never, PolicyType::Automatic);
+        scroll.set_size_request(
+            -1,
+            (visible_rows as i32 * CONTEXT_MENU_ITEM_HEIGHT).max(CONTEXT_MENU_ITEM_HEIGHT),
+        );
+        scroll.set_child(Some(&list));
+        menu.append(&scroll);
+
+        let rows = Rc::new(rows);
+        search.connect_search_changed(move |entry| {
+            let query = entry.text().trim().to_ascii_lowercase();
+            for (haystack, button) in rows.iter() {
+                button.set_visible(query.is_empty() || haystack.contains(&query));
+            }
+        });
+    }
+
+    let popover = Popover::new();
+    popover.add_css_class("osdock-context-popover");
+    popover.set_autohide(true);
+    popover.set_has_arrow(false);
+    popover.set_position(PositionType::Top);
+    popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
+    popover.set_pointing_to(Some(&context_menu_anchor_rect(
+        Rect {
+            x: dock_width as f64 / 2.0,
+            y: 1.0,
+            width: 1.0,
+            height: 1.0,
+        },
+        dock_width,
+    )));
+    popover.set_child(Some(&menu));
+    popover.set_parent(drawing);
+
+    present_runtime_popover(state, window, drawing, gl_area, &popover);
+    if let Some(search) = focus_search {
+        let _ = search.grab_focus();
+    }
+}
+
+fn show_theme_icon_menu(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item_key: String,
+) {
+    let (icon_names, dock_width) = {
+        let state = state.borrow();
+        let dock_width = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
+            .size
+            .0;
+        (theme_icon_names(), dock_width)
+    };
+    let visible_rows = if icon_names.is_empty() {
+        1
+    } else {
+        THEME_ICON_MENU_VISIBLE_ROWS
+    };
+
+    let menu = GtkBox::new(Orientation::Vertical, 0);
+    menu.add_css_class("osdock-context-menu");
+    menu.add_css_class("osdock-menu-box");
+    menu.set_size_request(THEME_ICON_MENU_WIDTH, menu_height(visible_rows, 0) + 56);
+
+    let title = Label::new(Some("Use Theme Icon"));
+    title.add_css_class("osdock-menu-title");
+    title.set_xalign(0.0);
+    menu.append(&title);
+
+    let mut focus_search = None;
+    if icon_names.is_empty() {
+        let empty = Label::new(Some("No theme icons found"));
+        empty.add_css_class("osdock-menu-title");
+        empty.set_xalign(0.0);
+        menu.append(&empty);
+    } else {
+        let search = SearchEntry::new();
+        search.add_css_class("osdock-menu-search");
+        search.set_placeholder_text(Some("Search icon theme"));
+        search.set_hexpand(true);
+        menu.append(&search);
+        focus_search = Some(search.clone());
+
+        let list = GtkBox::new(Orientation::Vertical, 0);
+        let scroll = ScrolledWindow::new();
+        scroll.set_policy(PolicyType::Never, PolicyType::Automatic);
+        scroll.set_size_request(
+            -1,
+            (visible_rows as i32 * CONTEXT_MENU_ITEM_HEIGHT).max(CONTEXT_MENU_ITEM_HEIGHT),
+        );
+        scroll.set_child(Some(&list));
+        menu.append(&scroll);
+
+        let icon_names = Rc::new(icon_names);
+        populate_theme_icon_list(
+            &list,
+            icon_names.as_ref(),
+            "",
+            state,
+            window,
+            drawing,
+            gl_area,
+            &item_key,
+        );
+
+        {
+            let list = list.clone();
+            let icon_names = Rc::clone(&icon_names);
+            let state = Rc::clone(state);
+            let window = window.clone();
+            let drawing = drawing.clone();
+            let gl_area = gl_area.clone();
+            search.connect_search_changed(move |entry| {
+                populate_theme_icon_list(
+                    &list,
+                    icon_names.as_ref(),
+                    entry.text().as_str(),
+                    &state,
+                    &window,
+                    &drawing,
+                    &gl_area,
+                    &item_key,
+                );
+            });
+        }
+    }
+
+    let popover = Popover::new();
+    popover.add_css_class("osdock-context-popover");
+    popover.set_autohide(true);
+    popover.set_has_arrow(false);
+    popover.set_position(PositionType::Top);
+    popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
+    popover.set_pointing_to(Some(&context_menu_anchor_rect(
+        Rect {
+            x: dock_width as f64 / 2.0,
+            y: 1.0,
+            width: 1.0,
+            height: 1.0,
+        },
+        dock_width,
+    )));
+    popover.set_child(Some(&menu));
+    popover.set_parent(drawing);
+
+    present_runtime_popover(state, window, drawing, gl_area, &popover);
+    if let Some(search) = focus_search {
+        let _ = search.grab_focus();
+    }
+}
+
+fn theme_icon_names() -> Vec<String> {
+    let Some(display) = gdk::Display::default() else {
+        return Vec::new();
+    };
+    let icon_theme = IconTheme::for_display(&display);
+    let mut names = icon_theme
+        .icon_names()
+        .into_iter()
+        .map(|name| name.to_string())
+        .filter(|name| !name.trim().is_empty())
+        .collect::<Vec<_>>();
+    names.sort_by_key(|name| name.to_ascii_lowercase());
+    names.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    names
+}
+
+fn populate_theme_icon_list(
+    list: &GtkBox,
+    icon_names: &[String],
+    query: &str,
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item_key: &str,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        let empty = Label::new(Some("Search for an icon name"));
+        empty.add_css_class("osdock-menu-title");
+        empty.set_xalign(0.0);
+        list.append(&empty);
+        return;
+    }
+
+    let icon_theme = gdk::Display::default().map(|display| IconTheme::for_display(&display));
+    let mut match_count = 0;
+    for icon_name in icon_names
+        .iter()
+        .filter(|name| name.to_ascii_lowercase().contains(&query))
+    {
+        let Some(icon_theme) = icon_theme.as_ref() else {
+            break;
+        };
+        if !theme_icon_is_loadable(icon_theme, icon_name) {
+            continue;
+        }
+
+        let button = context_menu_icon_button(icon_name, icon_name, false);
+        {
+            let state = Rc::clone(state);
+            let window = window.clone();
+            let drawing = drawing.clone();
+            let gl_area = gl_area.clone();
+            let item_key = item_key.to_string();
+            let icon_name = icon_name.clone();
+            button.connect_clicked(move |_| {
+                dismiss_context_menu(&state);
+                set_custom_icon_value(
+                    &state,
+                    &window,
+                    &drawing,
+                    &gl_area,
+                    &item_key,
+                    icon_name.clone(),
+                );
+            });
+        }
+        list.append(&button);
+        match_count += 1;
+        if match_count >= THEME_ICON_MENU_MAX_MATCHES {
+            break;
+        }
+    }
+
+    if match_count == 0 {
+        let empty = Label::new(Some("No matching icons"));
+        empty.add_css_class("osdock-menu-title");
+        empty.set_xalign(0.0);
+        list.append(&empty);
+    }
+}
+
+fn theme_icon_is_loadable(icon_theme: &IconTheme, icon_name: &str) -> bool {
+    if !icon_theme.has_icon(icon_name) {
+        return false;
+    }
+    let paintable = icon_theme.lookup_icon(
+        icon_name,
+        &[],
+        16,
+        1,
+        TextDirection::None,
+        IconLookupFlags::empty(),
+    );
+    paintable
+        .file()
+        .and_then(|file| file.path())
+        .is_some_and(|path| path.exists())
+}
+
+fn pin_application(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    desktop_id: &str,
+) {
+    {
+        let mut state = state.borrow_mut();
+        if !state
+            .config
+            .pinned
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(desktop_id))
+        {
+            state.config.pinned.push(desktop_id.to_string());
+        }
+        save_runtime_config(&state);
+        state.refresh_model();
+        state.icons.clear();
+    }
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn select_folder_applet(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let dialog = FileDialog::builder()
+        .title("Add Folder Applet")
+        .accept_label("Add")
+        .modal(true)
+        .build();
+
+    let state = Rc::clone(state);
+    let parent = window.clone();
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    dialog.select_folder(
+        Some(&parent),
+        None::<&gio::Cancellable>,
+        move |result| match result {
+            Ok(file) => {
+                let Some(path) = file.path() else {
+                    tracing::warn!("selected applet folder did not have a local path");
+                    return;
+                };
+                add_folder_applet(&state, &window, &drawing, &gl_area, path);
+            }
+            Err(error) => {
+                tracing::debug!("folder applet selection cancelled or failed: {error:#}");
+            }
+        },
+    );
+}
+
+fn add_folder_applet(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    path: PathBuf,
+) {
+    {
+        let mut state = state.borrow_mut();
+        let key = path.to_string_lossy().to_ascii_lowercase();
+        if !state.config.applets.iter().any(|applet| {
+            applet
+                .path
+                .as_ref()
+                .is_some_and(|path| path.to_string_lossy().to_ascii_lowercase() == key)
+        }) {
+            state.config.applets.push(AppletConfig::folder(path));
+        }
+        save_runtime_config(&state);
+        state.refresh_model();
+        state.icons.clear();
+    }
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn remove_folder_applet(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    item_key: &str,
+    path: &Path,
+) {
+    {
+        let mut state = state.borrow_mut();
+        let target = path.to_string_lossy().to_ascii_lowercase();
+        state.config.applets.retain(|applet| {
+            !applet
+                .path
+                .as_ref()
+                .is_some_and(|path| path.to_string_lossy().to_ascii_lowercase() == target)
+        });
+        state
+            .config
+            .item_order
+            .retain(|key| !key.eq_ignore_ascii_case(item_key));
+        state
+            .config
+            .custom_icons
+            .retain(|key, _| !key.eq_ignore_ascii_case(item_key));
+        save_runtime_config(&state);
+        state.refresh_model();
+        state.icons.clear();
+    }
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
 fn select_custom_icon(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
@@ -2531,18 +3580,14 @@ fn select_custom_icon(
                     tracing::warn!("selected icon file did not have a local path");
                     return;
                 };
-                {
-                    let mut state = state.borrow_mut();
-                    state
-                        .config
-                        .custom_icons
-                        .insert(item_key, path.to_string_lossy().to_string());
-                    save_runtime_config(&state);
-                    state.icons.clear();
-                }
-                sync_dock_window(&state, &window, &drawing, &gl_area, true);
-                queue_gl_render_if_enabled(&state, &gl_area);
-                drawing.queue_draw();
+                set_custom_icon_value(
+                    &state,
+                    &window,
+                    &drawing,
+                    &gl_area,
+                    &item_key,
+                    path.to_string_lossy().to_string(),
+                );
             }
             Err(error) => {
                 tracing::debug!("icon selection cancelled or failed: {error:#}");
@@ -2609,16 +3654,24 @@ fn wire_refresh(
     let drawing = drawing.clone();
     let gl_area = gl_area.clone();
     glib::timeout_add_local(Duration::from_millis(refresh as u64), move || {
-        {
+        let menu_open = {
             let mut state = state.borrow_mut();
             prune_finished_icon_slide(&mut state);
-            if state.drag.is_none()
+            if state.context_menu.is_some() {
+                true
+            } else if state.drag.is_none()
                 && state.separator_resize.is_none()
                 && state.icon_slide.is_none()
             {
                 refresh_config_and_theme(&mut state);
                 state.refresh_model();
+                false
+            } else {
+                false
             }
+        };
+        if menu_open {
+            return glib::ControlFlow::Continue;
         }
         sync_dock_window(&state, &window, &drawing, &gl_area, true);
         queue_gl_render_if_enabled(&state, &gl_area);
@@ -2723,7 +3776,7 @@ fn activate_applet(
         return;
     }
 
-    if item.is_downloads_applet() || item.is_trash_applet() {
+    if item.is_downloads_applet() || item.is_trash_applet() || item.is_folder_applet() {
         show_applet_fan_for_item(state, window, drawing, gl_area, item, index, x, y);
         return;
     }
@@ -2782,7 +3835,11 @@ fn close_item_application(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
         return;
     }
 
-    let windows = item.windows.iter().map(|window| window.xid).collect::<Vec<_>>();
+    let windows = item
+        .windows
+        .iter()
+        .map(|window| window.xid)
+        .collect::<Vec<_>>();
     let mut state = state.borrow_mut();
     let Some(backend) = state.backend.as_mut() else {
         return;
@@ -2895,6 +3952,11 @@ fn shape_dock(state: &mut Runtime) {
         Renderer::visual_regions(&state.model, &state.config.dock, &state.theme, state.hover);
     let mut input_regions =
         Renderer::input_regions(&state.model, &state.config.dock, &state.theme, state.hover);
+    if state.hidden {
+        let reveal_strip = hidden_reveal_input_region(size, state.config.dock.edge);
+        visual_regions.push(reveal_strip);
+        input_regions.push(reveal_strip);
+    }
     if let Some(icon_motion) = icon_motion_frame(state) {
         for motion_rect in icon_motion.rects {
             let rect = padded_rect(motion_rect.rect, 10.0);
@@ -2909,6 +3971,38 @@ fn shape_dock(state: &mut Runtime) {
         tracing::debug!("could not shape dock window: {error:#}");
     }
     log_slow("shape-dock", started.elapsed());
+}
+
+fn hidden_reveal_input_region(size: (i32, i32), edge: crate::config::DockEdge) -> Rect {
+    let width = size.0.max(1) as f64;
+    let height = size.1.max(1) as f64;
+    let strip = EDGE_VISIBLE_PIXELS.max(1) as f64;
+    match edge {
+        crate::config::DockEdge::Bottom => Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height: strip,
+        },
+        crate::config::DockEdge::Top => Rect {
+            x: 0.0,
+            y: (height - strip).max(0.0),
+            width,
+            height: strip,
+        },
+        crate::config::DockEdge::Left => Rect {
+            x: (width - strip).max(0.0),
+            y: 0.0,
+            width: strip,
+            height,
+        },
+        crate::config::DockEdge::Right => Rect {
+            x: 0.0,
+            y: 0.0,
+            width: strip,
+            height,
+        },
+    }
 }
 
 fn padded_rect(rect: Rect, amount: f64) -> Rect {
@@ -3038,7 +4132,7 @@ mod tests {
         assert_eq!(
             context_menu_height(3),
             CONTEXT_MENU_CHROME_HEIGHT
-                + (6 * CONTEXT_MENU_ITEM_HEIGHT)
+                + (7 * CONTEXT_MENU_ITEM_HEIGHT)
                 + CONTEXT_MENU_SEPARATOR_HEIGHT
         );
     }
@@ -3117,6 +4211,19 @@ mod tests {
     }
 
     #[test]
+    fn hidden_bottom_dock_keeps_top_input_strip() {
+        assert_eq!(
+            hidden_reveal_input_region((320, 96), crate::config::DockEdge::Bottom),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 320.0,
+                height: EDGE_VISIBLE_PIXELS as f64,
+            }
+        );
+    }
+
+    #[test]
     fn separator_hit_test_starts_resize_mode() {
         let layout = separator_test_layout();
         let separator = layout
@@ -3160,8 +4267,14 @@ mod tests {
 
     #[test]
     fn separator_resize_clamps_icon_size() {
-        assert_eq!(resize_icon_size_for_drag(64, -500.0), SEPARATOR_RESIZE_MAX_ICON_SIZE);
-        assert_eq!(resize_icon_size_for_drag(64, 500.0), SEPARATOR_RESIZE_MIN_ICON_SIZE);
+        assert_eq!(
+            resize_icon_size_for_drag(64, -500.0),
+            SEPARATOR_RESIZE_MAX_ICON_SIZE
+        );
+        assert_eq!(
+            resize_icon_size_for_drag(64, 500.0),
+            SEPARATOR_RESIZE_MIN_ICON_SIZE
+        );
     }
 
     #[test]

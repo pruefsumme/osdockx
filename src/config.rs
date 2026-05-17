@@ -10,6 +10,7 @@ pub struct Config {
     pub dock: DockConfig,
     pub theme: ThemeConfig,
     pub pinned: Vec<String>,
+    pub applets: Vec<AppletConfig>,
     pub item_order: Vec<String>,
     pub custom_icons: BTreeMap<String, String>,
 }
@@ -26,6 +27,22 @@ pub struct DockConfig {
     pub unhide_delay_ms: u32,
     pub reserve_space: bool,
     pub refresh_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AppletConfig {
+    pub kind: AppletKind,
+    pub label: String,
+    pub path: Option<PathBuf>,
+    pub icon_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AppletKind {
+    #[default]
+    Folder,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,6 +129,7 @@ impl Default for Config {
                 "firefox.desktop".to_string(),
                 "xfce-settings-manager.desktop".to_string(),
             ],
+            applets: Vec::new(),
             item_order: Vec::new(),
             custom_icons: BTreeMap::new(),
         }
@@ -173,6 +191,28 @@ impl Default for ThemeConfig {
     }
 }
 
+impl Default for AppletConfig {
+    fn default() -> Self {
+        Self {
+            kind: AppletKind::Folder,
+            label: String::new(),
+            path: None,
+            icon_name: None,
+        }
+    }
+}
+
+impl AppletConfig {
+    pub fn folder(path: PathBuf) -> Self {
+        Self {
+            kind: AppletKind::Folder,
+            label: folder_applet_label(&path),
+            path: Some(path),
+            icon_name: Some("folder".to_string()),
+        }
+    }
+}
+
 impl Config {
     pub fn load_or_create() -> anyhow::Result<(Self, PathBuf)> {
         let path = config_path()?;
@@ -202,6 +242,7 @@ impl Config {
     }
 
     pub fn normalized(mut self) -> Self {
+        self.dock.edge = DockEdge::Bottom;
         self.dock.icon_size = self.dock.icon_size.clamp(24, 160);
         self.dock.zoom_strength = self.dock.zoom_strength.clamp(0.0, 1.6);
         self.dock.refresh_ms = self.dock.refresh_ms.clamp(100, 5_000);
@@ -228,6 +269,22 @@ impl Config {
             *pinned = normalize_pinned_id(pinned);
         }
         self.pinned.retain(|id| !id.trim().is_empty());
+        for applet in &mut self.applets {
+            applet.label = applet.label.trim().to_string();
+            applet.icon_name = applet
+                .icon_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+        }
+        self.applets.retain(|applet| match applet.kind {
+            AppletKind::Folder => applet
+                .path
+                .as_ref()
+                .is_some_and(|path| !path.as_os_str().is_empty()),
+        });
+        dedupe_applets(&mut self.applets);
         for item in &mut self.item_order {
             *item = normalize_custom_icon_key(item);
         }
@@ -244,6 +301,19 @@ impl Config {
             .collect();
         self
     }
+}
+
+fn folder_applet_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            path.to_str()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "Folder".to_string())
 }
 
 pub fn config_dir() -> anyhow::Result<PathBuf> {
@@ -282,6 +352,24 @@ fn dedupe_case_insensitive(values: &mut Vec<String>) {
             return false;
         }
         seen.push(normalized);
+        true
+    });
+}
+
+fn dedupe_applets(applets: &mut Vec<AppletConfig>) {
+    let mut seen = Vec::<String>::new();
+    applets.retain(|applet| {
+        let key = match applet.kind {
+            AppletKind::Folder => applet
+                .path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default(),
+        };
+        if key.is_empty() || seen.iter().any(|seen| seen == &key) {
+            return false;
+        }
+        seen.push(key);
         true
     });
 }
@@ -437,6 +525,7 @@ mod tests {
     #[test]
     fn normalizes_risky_values() {
         let mut config = Config::default();
+        config.dock.edge = DockEdge::Left;
         config.dock.icon_size = 8;
         config.dock.zoom_strength = 9.0;
         config.dock.refresh_ms = 1;
@@ -448,6 +537,26 @@ mod tests {
         config.theme.reflection_band_ratio = 9.0;
         config.theme.tilt = 9.0;
         config.pinned = vec!["org.xfce.Terminal.desktop".to_string()];
+        config.applets = vec![
+            AppletConfig {
+                kind: AppletKind::Folder,
+                label: " Downloads ".to_string(),
+                path: Some(PathBuf::from("/tmp/Downloads")),
+                icon_name: Some(" folder ".to_string()),
+            },
+            AppletConfig {
+                kind: AppletKind::Folder,
+                label: "Duplicate".to_string(),
+                path: Some(PathBuf::from("/tmp/Downloads")),
+                icon_name: None,
+            },
+            AppletConfig {
+                kind: AppletKind::Folder,
+                label: "Broken".to_string(),
+                path: None,
+                icon_name: None,
+            },
+        ];
         config.item_order = vec![
             "org.xfce.Terminal.desktop".to_string(),
             "org.xfce.Terminal.desktop".to_string(),
@@ -463,6 +572,7 @@ mod tests {
 
         let config = config.normalized();
 
+        assert_eq!(config.dock.edge, DockEdge::Bottom);
         assert_eq!(config.dock.icon_size, 24);
         assert_eq!(config.dock.zoom_strength, 1.6);
         assert_eq!(config.dock.refresh_ms, 100);
@@ -474,6 +584,9 @@ mod tests {
         assert_eq!(config.theme.reflection_band_ratio, 0.8);
         assert_eq!(config.theme.tilt, 1.2);
         assert_eq!(config.pinned, vec!["xfce4-terminal.desktop"]);
+        assert_eq!(config.applets.len(), 1);
+        assert_eq!(config.applets[0].label, "Downloads");
+        assert_eq!(config.applets[0].icon_name.as_deref(), Some("folder"));
         assert_eq!(config.item_order, vec!["xfce4-terminal.desktop"]);
         assert_eq!(
             config.custom_icons.get("xfce4-terminal.desktop"),

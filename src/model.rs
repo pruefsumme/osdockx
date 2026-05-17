@@ -1,10 +1,13 @@
+use crate::config::{AppletConfig, AppletKind};
 use crate::desktop::{DesktopApp, DesktopIndex};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 pub type WindowId = u32;
 
 const DOWNLOADS_APPLET_ID: &str = "applet:downloads";
 const TRASH_APPLET_ID: &str = "applet:trash";
+const FOLDER_APPLET_PREFIX: &str = "applet:folder:";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowIcon {
@@ -52,6 +55,7 @@ pub enum DockItemKind {
     Application,
     DownloadsApplet,
     TrashApplet,
+    FolderApplet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +89,15 @@ impl DockModel {
         pinned_ids: &[String],
         desktop_index: &DesktopIndex,
         windows: Vec<WindowInfo>,
+    ) -> Self {
+        Self::from_sources_with_applets(pinned_ids, desktop_index, windows, &[])
+    }
+
+    pub fn from_sources_with_applets(
+        pinned_ids: &[String],
+        desktop_index: &DesktopIndex,
+        windows: Vec<WindowInfo>,
+        applets: &[AppletConfig],
     ) -> Self {
         let mut items = Vec::new();
         let mut seen_pins = HashSet::new();
@@ -123,72 +136,55 @@ impl DockModel {
         }
 
         items.extend([DockItem::downloads_applet(), DockItem::trash_applet()]);
+        items.extend(applets.iter().filter_map(DockItem::from_applet_config));
 
         Self { items }
     }
 
     pub fn apply_order(&mut self, ordered_keys: &[String]) {
-        let application_count = self.items.iter().filter(|item| item.is_application()).count();
-        if ordered_keys.is_empty() || application_count < 2 {
+        if ordered_keys.is_empty() || self.items.len() < 2 {
             return;
         }
 
-        let mut indexed_items = self
-            .items
-            .drain(..)
-            .enumerate()
-            .partition::<Vec<_>, _>(|(_, item)| item.is_application());
-        indexed_items.0.sort_by(|(left_index, left), (right_index, right)| {
-            let left_order = order_position(ordered_keys, &left.config_key());
-            let right_order = order_position(ordered_keys, &right.config_key());
-            match (left_order, right_order) {
-                (Some(left_order), Some(right_order)) => left_order.cmp(&right_order),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => left_index.cmp(right_index),
-            }
-            .then_with(|| left_index.cmp(right_index))
-        });
-        self.items = indexed_items
-            .0
-            .into_iter()
-            .chain(indexed_items.1)
-            .map(|(_, item)| item)
-            .collect();
+        let (mut applications, mut applets) =
+            split_items_by_section(std::mem::take(&mut self.items));
+        sort_items_by_order(&mut applications, ordered_keys);
+        sort_items_by_order(&mut applets, ordered_keys);
+        applications.extend(applets);
+        self.items = applications;
     }
 
     pub fn config_order(&self) -> Vec<String> {
-        self.items
-            .iter()
-            .filter(|item| item.is_application())
-            .map(DockItem::config_key)
-            .collect()
+        self.items.iter().map(DockItem::config_key).collect()
     }
 
     pub fn move_item_by_key_to_index(&mut self, item_key: &str, target_index: usize) -> bool {
-        let mut applications = self
-            .items
+        let (mut applications, mut applets) =
+            split_items_by_section(std::mem::take(&mut self.items));
+        let moving_applet = applets
             .iter()
-            .filter(|item| item.is_application())
-            .cloned()
-            .collect::<Vec<_>>();
-        let Some(current_index) = applications
+            .any(|item| item.config_key().eq_ignore_ascii_case(item_key));
+        let target_items = if moving_applet {
+            &mut applets
+        } else {
+            &mut applications
+        };
+        let Some(current_index) = target_items
             .iter()
             .position(|item| item.config_key().eq_ignore_ascii_case(item_key))
         else {
+            self.items = applications.into_iter().chain(applets).collect();
             return false;
         };
-        let target_index = target_index.min(applications.len().saturating_sub(1));
+        let target_index = target_index.min(target_items.len().saturating_sub(1));
         if current_index == target_index {
+            self.items = applications.into_iter().chain(applets).collect();
             return false;
         }
 
-        let item = applications.remove(current_index);
-        applications.insert(target_index, item);
-        self.items = applications
-            .into_iter()
-            .chain(self.items.iter().filter(|item| item.is_applet()).cloned())
-            .collect();
+        let item = target_items.remove(current_index);
+        target_items.insert(target_index, item);
+        self.items = applications.into_iter().chain(applets).collect();
         true
     }
 
@@ -237,6 +233,32 @@ impl DockItem {
 
     pub fn trash_applet() -> Self {
         Self::applet(TRASH_APPLET_ID, "Trash", "user-trash")
+    }
+
+    pub fn folder_applet(label: String, path: PathBuf, icon_name: Option<String>) -> Self {
+        let name = if label.trim().is_empty() {
+            folder_name(&path)
+        } else {
+            label.trim().to_string()
+        };
+        Self::applet(
+            &format!("{FOLDER_APPLET_PREFIX}{}", path.to_string_lossy()),
+            &name,
+            icon_name.as_deref().unwrap_or("folder"),
+        )
+    }
+
+    fn from_applet_config(applet: &AppletConfig) -> Option<Self> {
+        match applet.kind {
+            AppletKind::Folder => {
+                let path = applet.path.clone()?;
+                Some(Self::folder_applet(
+                    applet.label.clone(),
+                    path,
+                    applet.icon_name.clone(),
+                ))
+            }
+        }
     }
 
     pub fn from_app(app: &DesktopApp, pinned: bool) -> Self {
@@ -319,6 +341,7 @@ impl DockItem {
         match self.id.as_str() {
             DOWNLOADS_APPLET_ID => DockItemKind::DownloadsApplet,
             TRASH_APPLET_ID => DockItemKind::TrashApplet,
+            id if id.starts_with(FOLDER_APPLET_PREFIX) => DockItemKind::FolderApplet,
             _ => DockItemKind::Application,
         }
     }
@@ -339,6 +362,17 @@ impl DockItem {
         self.kind() == DockItemKind::TrashApplet
     }
 
+    pub fn is_folder_applet(&self) -> bool {
+        self.kind() == DockItemKind::FolderApplet
+    }
+
+    pub fn folder_applet_path(&self) -> Option<PathBuf> {
+        self.id
+            .strip_prefix(FOLDER_APPLET_PREFIX)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    }
+
     pub fn config_key(&self) -> String {
         self.desktop_id
             .clone()
@@ -347,10 +381,27 @@ impl DockItem {
     }
 }
 
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "Folder".to_string())
+}
+
 fn order_position(ordered_keys: &[String], item_key: &str) -> Option<usize> {
     ordered_keys
         .iter()
         .position(|ordered_key| ordered_key.eq_ignore_ascii_case(item_key))
+}
+
+fn split_items_by_section(items: Vec<DockItem>) -> (Vec<DockItem>, Vec<DockItem>) {
+    items.into_iter().partition(DockItem::is_application)
+}
+
+fn sort_items_by_order(items: &mut [DockItem], ordered_keys: &[String]) {
+    items
+        .sort_by_key(|item| order_position(ordered_keys, &item.config_key()).unwrap_or(usize::MAX));
 }
 
 fn find_matching_item(
@@ -449,16 +500,22 @@ mod tests {
         );
 
         model.apply_order(&[
+            "applet:trash".to_string(),
             "browser.desktop".to_string(),
             "terminal.desktop".to_string(),
         ]);
 
         assert_eq!(
             model.config_order(),
-            vec!["browser.desktop", "terminal.desktop"]
+            vec![
+                "browser.desktop",
+                "terminal.desktop",
+                "applet:trash",
+                "applet:downloads"
+            ]
         );
-        assert!(model.items[2].is_downloads_applet());
-        assert!(model.items[3].is_trash_applet());
+        assert!(model.items[2].is_trash_applet());
+        assert!(model.items[3].is_downloads_applet());
     }
 
     #[test]
@@ -499,10 +556,37 @@ mod tests {
         assert!(model.move_item_by_key_to_index("one.desktop", 2));
         assert_eq!(
             model.config_order(),
-            vec!["two.desktop", "three.desktop", "one.desktop"]
+            vec![
+                "two.desktop",
+                "three.desktop",
+                "one.desktop",
+                "applet:downloads",
+                "applet:trash"
+            ]
         );
         assert!(model.items[3].is_downloads_applet());
         assert!(model.items[4].is_trash_applet());
+    }
+
+    #[test]
+    fn moves_applet_by_config_key() {
+        let index = DesktopIndex::from_apps(vec![DesktopApp {
+            desktop_id: "one.desktop".to_string(),
+            name: "One".to_string(),
+            icon_name: None,
+            startup_wm_class: None,
+            exec: None,
+        }]);
+        let mut model = DockModel::from_sources(&["one.desktop".to_string()], &index, Vec::new());
+
+        assert!(model.move_item_by_key_to_index("applet:trash", 0));
+        assert_eq!(
+            model.config_order(),
+            vec!["one.desktop", "applet:trash", "applet:downloads"]
+        );
+        assert!(model.items[0].is_application());
+        assert!(model.items[1].is_trash_applet());
+        assert!(model.items[2].is_downloads_applet());
     }
 
     #[test]
@@ -544,8 +628,14 @@ mod tests {
 
         assert_eq!(sections.applications.item_indices, vec![0, 1]);
         assert_eq!(sections.applets.item_indices, vec![2, 3]);
-        assert_eq!(model.items[0].desktop_id.as_deref(), Some("browser.desktop"));
-        assert_eq!(model.items[1].desktop_id.as_deref(), Some("terminal.desktop"));
+        assert_eq!(
+            model.items[0].desktop_id.as_deref(),
+            Some("browser.desktop")
+        );
+        assert_eq!(
+            model.items[1].desktop_id.as_deref(),
+            Some("terminal.desktop")
+        );
         assert!(model.items[1].is_running());
         assert!(!model.items[1].pinned);
         assert!(model.items[2].is_downloads_applet());
@@ -627,5 +717,21 @@ mod tests {
         assert!(model.items[0].is_application());
         assert!(model.items[1].is_downloads_applet());
         assert!(model.items[2].is_trash_applet());
+    }
+
+    #[test]
+    fn from_sources_appends_configured_folder_applets() {
+        let index = DesktopIndex::default();
+        let applets = vec![AppletConfig::folder(PathBuf::from("/tmp/projects"))];
+
+        let model = DockModel::from_sources_with_applets(&[], &index, Vec::new(), &applets);
+
+        assert!(model.items[0].is_downloads_applet());
+        assert!(model.items[1].is_trash_applet());
+        assert!(model.items[2].is_folder_applet());
+        assert_eq!(
+            model.items[2].folder_applet_path(),
+            Some(PathBuf::from("/tmp/projects"))
+        );
     }
 }

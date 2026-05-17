@@ -42,6 +42,17 @@ impl DesktopIndex {
         self.apps.get(&desktop_id.to_ascii_lowercase())
     }
 
+    pub fn apps(&self) -> Vec<&DesktopApp> {
+        let mut apps = self.apps.values().collect::<Vec<_>>();
+        apps.sort_by(|left, right| {
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
+                .then_with(|| left.desktop_id.cmp(&right.desktop_id))
+        });
+        apps
+    }
+
     pub fn match_window(&self, window: &WindowInfo) -> Option<&DesktopApp> {
         self.apps.values().find(|app| app.matches_window(window))
     }
@@ -359,6 +370,35 @@ mod tests {
         assert_eq!(
             index.resolve_launch_id("org.xfce.Terminal.desktop"),
             Some("xfce4-terminal.desktop")
+        );
+    }
+
+    #[test]
+    fn apps_are_sorted_by_display_name() {
+        let index = DesktopIndex::from_apps(vec![
+            DesktopApp {
+                desktop_id: "z.desktop".to_string(),
+                name: "Zulu".to_string(),
+                icon_name: None,
+                startup_wm_class: None,
+                exec: None,
+            },
+            DesktopApp {
+                desktop_id: "a.desktop".to_string(),
+                name: "Alpha".to_string(),
+                icon_name: None,
+                startup_wm_class: None,
+                exec: None,
+            },
+        ]);
+
+        assert_eq!(
+            index
+                .apps()
+                .into_iter()
+                .map(|app| app.desktop_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.desktop", "z.desktop"]
         );
     }
 }
