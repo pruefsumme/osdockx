@@ -51,6 +51,7 @@ const APPLET_FAN_TOP_PADDING: f64 = 16.0;
 const APPLET_FAN_BOTTOM_PADDING: f64 = 14.0;
 const APPLET_FAN_ICON_SIZE: f64 = 48.0;
 const APPLET_FAN_LABEL_HEIGHT: f64 = 25.0;
+const APPLET_FAN_REVEAL_DURATION: Duration = Duration::from_millis(170);
 const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
@@ -1576,13 +1577,12 @@ fn present_runtime_popover(
         let state = Rc::clone(state);
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
-        let popover_for_close = popover.clone();
-        popover.connect_closed(move |_| {
+        popover.connect_closed(move |popover| {
             if let Ok(mut runtime) = state.try_borrow_mut()
                 && runtime
                     .context_menu
                     .as_ref()
-                    .is_some_and(|current| current == &popover_for_close)
+                    .is_some_and(|current| current == popover)
             {
                 runtime.context_menu = None;
                 runtime.hover = None;
@@ -1591,7 +1591,7 @@ fn present_runtime_popover(
             let state = Rc::clone(&state);
             let drawing = drawing.clone();
             let gl_area = gl_area.clone();
-            let popover_for_cleanup = popover_for_close.clone();
+            let popover_for_cleanup = popover.clone();
             glib::idle_add_local_once(move || {
                 if let Ok(mut runtime) = state.try_borrow_mut()
                     && runtime
@@ -1603,7 +1603,6 @@ fn present_runtime_popover(
                     runtime.hover = None;
                 }
 
-                popover_for_cleanup.set_child(None::<&gtk::Widget>);
                 if popover_for_cleanup.parent().is_some() {
                     popover_for_cleanup.unparent();
                 }
@@ -1623,12 +1622,28 @@ fn present_runtime_popover(
     drawing.queue_draw();
 }
 
-fn show_applet_fan(
+fn show_applet_fan_for_item(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
     drawing: &DrawingArea,
     gl_area: &GLArea,
     item: &DockItem,
+    index: usize,
+    x: f64,
+    y: f64,
+) {
+    let Some(source) = applet_fan_source(item) else {
+        return;
+    };
+    show_applet_fan(state, window, drawing, gl_area, source, index, x, y);
+}
+
+fn show_applet_fan(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    source: AppletFanSource,
     index: usize,
     x: f64,
     y: f64,
@@ -1649,9 +1664,6 @@ fn show_applet_fan(
         width: 1.0,
         height: 1.0,
     });
-    let Some(source) = applet_fan_source(item) else {
-        return;
-    };
 
     dismiss_context_menu(state);
     {
@@ -1670,12 +1682,14 @@ fn show_applet_fan(
     let hit_regions = Rc::new(RefCell::new(Vec::<AppletFanHitRegion>::new()));
     let hover_index = Rc::new(RefCell::new(None::<usize>));
     let icon_cache = Rc::new(RefCell::new(HashMap::<String, Option<Pixbuf>>::new()));
+    let reveal_started = Rc::new(Instant::now());
 
     {
         let source = Rc::clone(&source);
         let hit_regions = Rc::clone(&hit_regions);
         let hover_index = Rc::clone(&hover_index);
         let icon_cache = Rc::clone(&icon_cache);
+        let reveal_started = Rc::clone(&reveal_started);
         fan.set_draw_func(move |_, cr, width, height| {
             draw_applet_fan(
                 cr,
@@ -1683,6 +1697,7 @@ fn show_applet_fan(
                 height,
                 &source,
                 *hover_index.borrow(),
+                applet_fan_reveal_progress(reveal_started.elapsed()),
                 &mut hit_regions.borrow_mut(),
                 &mut icon_cache.borrow_mut(),
             );
@@ -1760,46 +1775,55 @@ fn show_applet_fan(
     popover.set_parent(drawing);
 
     present_runtime_popover(state, window, drawing, gl_area, &popover);
+    start_applet_fan_reveal_tick(&fan, reveal_started);
 }
 
 fn applet_fan_source(item: &DockItem) -> Option<AppletFanSource> {
     if item.is_downloads_applet() {
         let downloads_dir = downloads_directory()?;
-        let AppletFanDirectoryEntries {
-            entries,
-            total_entries,
-        } = recent_applet_entries_from_dir(&downloads_dir, APPLET_FAN_MAX_ITEMS);
-        return Some(AppletFanSource {
-            directory_label: "Downloads".to_string(),
-            empty_label: "No recent downloads".to_string(),
-            open_target: Some(AppletFanTarget::Path(downloads_dir)),
-            entries,
-            total_entries,
-        });
+        return Some(directory_applet_fan_source(
+            "Downloads",
+            "No recent downloads",
+            Some(&downloads_dir),
+            AppletFanTarget::Path(downloads_dir.clone()),
+        ));
     }
 
     if item.is_trash_applet() {
         let trash_dir = trash_files_directory();
-        let AppletFanDirectoryEntries {
-            entries,
-            total_entries,
-        } = trash_dir
-            .as_deref()
-            .map(|dir| recent_applet_entries_from_dir(dir, APPLET_FAN_MAX_ITEMS))
-            .unwrap_or_else(|| AppletFanDirectoryEntries {
-                entries: Vec::new(),
-                total_entries: 0,
-            });
-        return Some(AppletFanSource {
-            directory_label: "Trash".to_string(),
-            empty_label: "Trash is empty".to_string(),
-            open_target: Some(AppletFanTarget::Uri("trash:///".to_string())),
-            entries,
-            total_entries,
-        });
+        return Some(directory_applet_fan_source(
+            "Trash",
+            "Trash is empty",
+            trash_dir.as_deref(),
+            AppletFanTarget::Uri("trash:///".to_string()),
+        ));
     }
 
     None
+}
+
+fn directory_applet_fan_source(
+    directory_label: &str,
+    empty_label: &str,
+    entries_dir: Option<&Path>,
+    open_target: AppletFanTarget,
+) -> AppletFanSource {
+    let AppletFanDirectoryEntries {
+        entries,
+        total_entries,
+    } = entries_dir
+        .map(|dir| recent_applet_entries_from_dir(dir, APPLET_FAN_MAX_ITEMS))
+        .unwrap_or_else(|| AppletFanDirectoryEntries {
+            entries: Vec::new(),
+            total_entries: 0,
+        });
+    AppletFanSource {
+        directory_label: directory_label.to_string(),
+        empty_label: empty_label.to_string(),
+        open_target: Some(open_target),
+        entries,
+        total_entries,
+    }
 }
 
 fn applet_fan_size(source: &AppletFanSource) -> (i32, i32) {
@@ -1808,6 +1832,29 @@ fn applet_fan_size(source: &AppletFanSource) -> (i32, i32) {
         + APPLET_FAN_BOTTOM_PADDING
         + APPLET_FAN_ROW_HEIGHT * row_count as f64;
     (APPLET_FAN_WIDTH, height.ceil() as i32)
+}
+
+fn start_applet_fan_reveal_tick(fan: &DrawingArea, started: Rc<Instant>) {
+    let fan = fan.clone();
+    glib::timeout_add_local(ICON_ANIMATION_FRAME, move || {
+        fan.queue_draw();
+        if started.elapsed() < APPLET_FAN_REVEAL_DURATION {
+            glib::ControlFlow::Continue
+        } else {
+            glib::ControlFlow::Break
+        }
+    });
+}
+
+fn applet_fan_reveal_progress(elapsed: Duration) -> f64 {
+    (elapsed.as_secs_f64() / APPLET_FAN_REVEAL_DURATION.as_secs_f64()).clamp(0.0, 1.0)
+}
+
+fn applet_fan_row_reveal(progress: f64, index: usize, row_count: usize) -> f64 {
+    let bottom_first_delay = row_count.saturating_sub(1 + index) as f64 * 0.026;
+    let local = ((progress - bottom_first_delay) / (1.0 - bottom_first_delay).max(0.20))
+        .clamp(0.0, 1.0);
+    ease_out_cubic(local)
 }
 
 fn downloads_directory() -> Option<PathBuf> {
@@ -1895,6 +1942,7 @@ fn draw_applet_fan(
     height: i32,
     source: &AppletFanSource,
     hover_index: Option<usize>,
+    reveal_progress: f64,
     hit_regions: &mut Vec<AppletFanHitRegion>,
     icon_cache: &mut HashMap<String, Option<Pixbuf>>,
 ) {
@@ -1927,6 +1975,7 @@ fn draw_applet_fan(
         None,
         more_action,
         hover_index == Some(0),
+        applet_fan_row_reveal(reveal_progress, 0, row_count),
         hit_regions,
         icon_cache,
     );
@@ -1939,6 +1988,7 @@ fn draw_applet_fan(
             1,
             row_count,
             &source.empty_label,
+            applet_fan_row_reveal(reveal_progress, 1, row_count),
         );
         return;
     }
@@ -1955,6 +2005,7 @@ fn draw_applet_fan(
             Some(entry),
             Some(AppletFanHitAction::OpenPath(entry.path.clone())),
             hover_index == Some(index),
+            applet_fan_row_reveal(reveal_progress, index, row_count),
             hit_regions,
             icon_cache,
         );
@@ -1981,6 +2032,7 @@ fn draw_applet_fan_row(
     entry: Option<&AppletFanEntry>,
     action: Option<AppletFanHitAction>,
     hovered: bool,
+    reveal: f64,
     hit_regions: &mut Vec<AppletFanHitRegion>,
     icon_cache: &mut HashMap<String, Option<Pixbuf>>,
 ) {
@@ -1993,6 +2045,8 @@ fn draw_applet_fan_row(
     let label_right = icon_center_x - 47.0 - progress * 12.0;
     let max_label_width = label_right - 10.0;
     let rotation = -0.075 + progress * 0.045;
+    let center_y = center_y + (1.0 - reveal) * 18.0;
+    let alpha = (reveal * reveal).clamp(0.0, 1.0);
 
     cr.save().ok();
     cr.select_font_face("Sans", FontSlant::Normal, FontWeight::Bold);
@@ -2023,6 +2077,8 @@ fn draw_applet_fan_row(
         });
     }
 
+    cr.save().ok();
+    cr.push_group();
     draw_fan_label(
         cr,
         label_center_x,
@@ -2047,6 +2103,9 @@ fn draw_applet_fan_row(
     } else {
         draw_fan_more_icon(cr, icon_center_x, center_y, APPLET_FAN_ICON_SIZE, hovered);
     }
+    let _ = cr.pop_group_to_source();
+    let _ = cr.paint_with_alpha(alpha);
+    cr.restore().ok();
 }
 
 fn draw_applet_fan_empty(
@@ -2056,6 +2115,7 @@ fn draw_applet_fan_empty(
     index: usize,
     row_count: usize,
     label: &str,
+    reveal: f64,
 ) {
     let progress = if row_count > 1 {
         index as f64 / (row_count - 1) as f64
@@ -2065,6 +2125,8 @@ fn draw_applet_fan_empty(
     let icon_center_x = width * 0.54 + (1.0 - progress).powf(0.85) * 50.0;
     let label_right = icon_center_x - 47.0 - progress * 12.0;
     let max_label_width = label_right - 10.0;
+    let center_y = center_y + (1.0 - reveal) * 18.0;
+    let alpha = (reveal * reveal).clamp(0.0, 1.0);
     cr.save().ok();
     cr.select_font_face("Sans", FontSlant::Normal, FontWeight::Bold);
     cr.set_font_size(13.0);
@@ -2076,6 +2138,8 @@ fn draw_applet_fan_empty(
         .unwrap_or(92.0);
     let label_width = (text_width + 23.0).max(48.0).min(max_label_width);
     cr.restore().ok();
+    cr.save().ok();
+    cr.push_group();
     draw_fan_label(
         cr,
         label_right - label_width / 2.0,
@@ -2086,6 +2150,9 @@ fn draw_applet_fan_empty(
         false,
         -0.03,
     );
+    let _ = cr.pop_group_to_source();
+    let _ = cr.paint_with_alpha(alpha);
+    cr.restore().ok();
 }
 
 fn draw_fan_label(
@@ -2114,7 +2181,7 @@ fn draw_fan_label(
         let _ = cr.set_source(&gradient);
     }
     let _ = cr.fill_preserve();
-    cr.set_source_rgba(1.0, 1.0, 1.0, if hovered { 0.42 } else { 0.20 });
+    cr.set_source_rgba(1.0, 1.0, 1.0, if hovered { 0.20 } else { 0.07 });
     cr.set_line_width(1.0);
     let _ = cr.stroke();
 
@@ -2657,7 +2724,7 @@ fn activate_applet(
     }
 
     if item.is_downloads_applet() || item.is_trash_applet() {
-        show_applet_fan(state, window, drawing, gl_area, item, index, x, y);
+        show_applet_fan_for_item(state, window, drawing, gl_area, item, index, x, y);
         return;
     }
 }
@@ -3002,6 +3069,16 @@ mod tests {
 
         assert_eq!(applet_fan_more_label(&source, 7), "2 More in Downloads");
         assert_eq!(applet_fan_more_label(&source, 9), "Open Downloads");
+    }
+
+    #[test]
+    fn applet_fan_reveal_opens_from_bottom() {
+        let early_progress = 0.08;
+
+        assert!(
+            applet_fan_row_reveal(early_progress, 6, 7)
+                > applet_fan_row_reveal(early_progress, 0, 7)
+        );
     }
 
     #[test]
