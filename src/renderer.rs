@@ -27,12 +27,13 @@ use self::shelf::{
     leopard_glass_plane_path, leopard_wedge_body_geometry,
 };
 use crate::config::{DockConfig, ShelfStyle};
-use crate::layout::{DockLayout, IconLayout, LayoutParams, Point, Rect, compute_layout};
-use crate::model::DockModel;
+use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
+use crate::model::{DockItem, DockModel};
 use crate::theme::{Color, Theme};
 use gtk::cairo::{Context, FontSlant, FontWeight, ImageSurface, LinearGradient};
 use gtk::gdk::prelude::GdkCairoContextExt;
 use gtk::gdk_pixbuf::Pixbuf;
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 const SLOW_DRAW: Duration = Duration::from_millis(8);
@@ -78,8 +79,16 @@ impl Renderer {
         theme: &Theme,
         hover: Option<Point>,
     ) -> Vec<Rect> {
-        let params = layout_params(config, theme);
-        let layout = compute_layout(model, hover, params);
+        let layout = Self::layout_for(model, config, theme, hover);
+        Self::visual_regions_for_layout(model, &layout, config, theme)
+    }
+
+    pub fn visual_regions_for_layout(
+        model: &DockModel,
+        layout: &DockLayout,
+        config: &DockConfig,
+        theme: &Theme,
+    ) -> Vec<Rect> {
         let icon_expansion = config.icon_size as f64 * config.zoom_strength + 10.0;
         let mut regions = Vec::with_capacity(layout.icons.len() * 2 + 4);
         regions.push(expand(layout.shelf, 5.0));
@@ -112,8 +121,11 @@ impl Renderer {
         theme: &Theme,
         hover: Option<Point>,
     ) -> Vec<Rect> {
-        let params = layout_params(config, theme);
-        let layout = compute_layout(model, hover, params);
+        let layout = Self::layout_for(model, config, theme, hover);
+        Self::input_regions_for_layout(&layout)
+    }
+
+    pub fn input_regions_for_layout(layout: &DockLayout) -> Vec<Rect> {
         let mut regions = Vec::with_capacity(layout.icons.len() + 1);
         regions.push(expand(layout.shelf, 2.0));
         for icon in &layout.icons {
@@ -156,6 +168,21 @@ impl Renderer {
         compute_layout(model, hover, layout_params(config, theme))
     }
 
+    pub fn layout_for_container(
+        model: &DockModel,
+        config: &DockConfig,
+        theme: &Theme,
+        hover: Option<Point>,
+        container_size: Option<(i32, i32)>,
+    ) -> DockLayout {
+        let layout = Self::layout_for(model, config, theme, hover);
+        if let Some(size) = container_size {
+            align_layout_to_size(layout, size)
+        } else {
+            layout
+        }
+    }
+
     pub fn draw(
         &mut self,
         cr: &Context,
@@ -166,22 +193,44 @@ impl Renderer {
         icons: &mut IconCache,
     ) {
         let started = Instant::now();
-        let layout = Self::layout_for(model, config, theme, hover);
-        self.draw_layout(cr, model, &layout, theme, icons, ShelfLayer::Procedural);
+        let layout = Self::layout_for_container(model, config, theme, hover, None);
+        let resolved_icons = resolve_icons(model, &layout, None, None);
+        self.draw_layout(
+            cr,
+            model,
+            &layout,
+            &resolved_icons,
+            theme,
+            icons,
+            ShelfLayer::Procedural,
+        );
         self.last_layout = layout;
         self.log_draw_time(started.elapsed(), model.items.len());
     }
 
     pub fn draw_overlay(&mut self, cr: &Context, frame: RenderFrame<'_>, icons: &mut IconCache) {
         let started = Instant::now();
-        let mut layout = Self::layout_for(frame.model, frame.config, frame.theme, frame.hover);
-        if let Some(icon_motion) = frame.icon_motion {
-            apply_icon_motion(frame.model, &mut layout, icon_motion);
+        let mut layout = Self::layout_for_container(
+            frame.model,
+            frame.config,
+            frame.theme,
+            frame.hover,
+            frame.container_size,
+        );
+        if frame.icon_motion.is_some() || frame.icon_presence.is_some() {
+            layout.label = None;
         }
+        let resolved_icons = resolve_icons(
+            frame.model,
+            &layout,
+            frame.icon_motion,
+            frame.icon_presence,
+        );
         self.draw_layout(
             cr,
             frame.model,
             &layout,
+            &resolved_icons,
             frame.theme,
             icons,
             frame.shelf_layer,
@@ -195,6 +244,7 @@ impl Renderer {
         cr: &Context,
         model: &DockModel,
         layout: &DockLayout,
+        resolved_icons: &[ResolvedIcon<'_>],
         theme: &Theme,
         icons: &mut IconCache,
         shelf_layer: ShelfLayer,
@@ -204,13 +254,13 @@ impl Renderer {
             draw_shadow(cr, &layout.shelf, theme);
             draw_glass_shelf_base(cr, &layout.shelf, theme);
             if theme.reflection_opacity > 0.0 {
-                draw_icon_reflections_on_shelf(cr, model, layout, theme, icons);
+                draw_icon_reflections_on_shelf(cr, resolved_icons, layout, theme, icons);
             }
             draw_glass_highlight_overlay(cr, &layout.shelf, theme);
             draw_front_lip(cr, &layout.shelf, theme);
             draw_leopard_shelf_strokes(cr, &layout.shelf, theme);
             draw_separator(cr, layout, theme);
-            draw_icons(cr, model, layout, theme, icons);
+            draw_icons(cr, layout, resolved_icons, theme, icons);
             draw_hover_label(cr, model, layout);
             return;
         }
@@ -220,7 +270,7 @@ impl Renderer {
             && shelf_layer != ShelfLayer::None
             && theme.shelf_style != ShelfStyle::LeopardPlank
         {
-            render_icon_surface(model, layout, icons)
+            render_icon_surface(resolved_icons, layout, icons)
         } else {
             None
         };
@@ -234,14 +284,14 @@ impl Renderer {
             }
         }
         if theme.shelf_style == ShelfStyle::LeopardPlank && theme.reflection_opacity > 0.0 {
-            draw_icon_reflections_on_shelf(cr, model, layout, theme, icons);
+            draw_icon_reflections_on_shelf(cr, resolved_icons, layout, theme, icons);
         } else if let Some(icon_surface) = shelf_icon_surface.as_mut() {
             draw_shelf_plane_reflections(cr, layout, theme, icon_surface);
         } else {
-            draw_reflections(cr, model, layout, theme, icons);
+            draw_reflections(cr, resolved_icons, theme, icons);
         }
         draw_separator(cr, layout, theme);
-        draw_icons(cr, model, layout, theme, icons);
+        draw_icons(cr, layout, resolved_icons, theme, icons);
         draw_hover_label(cr, model, layout);
     }
 
@@ -290,6 +340,8 @@ pub struct RenderFrame<'a> {
     pub hover: Option<Point>,
     pub shelf_layer: ShelfLayer,
     pub icon_motion: Option<&'a IconMotionFrame>,
+    pub icon_presence: Option<&'a IconPresenceFrame>,
+    pub container_size: Option<(i32, i32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -302,6 +354,34 @@ pub struct IconMotionFrame {
 pub struct IconMotionRect {
     pub item_key: String,
     pub rect: Rect,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IconPresenceFrame {
+    pub current: Vec<IconPresenceRect>,
+    pub ghosts: Vec<GhostIcon>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IconPresenceRect {
+    pub item_key: String,
+    pub rect: Rect,
+    pub alpha: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GhostIcon {
+    pub item: DockItem,
+    pub rect: Rect,
+    pub alpha: f64,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedIcon<'a> {
+    item_key: String,
+    item: Cow<'a, DockItem>,
+    rect: Rect,
+    alpha: f64,
 }
 
 fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
@@ -319,12 +399,48 @@ fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
     }
 }
 
+fn align_layout_to_size(mut layout: DockLayout, container_size: (i32, i32)) -> DockLayout {
+    let width = container_size.0.max(layout.size.0);
+    let height = container_size.1.max(layout.size.1);
+    let dx = ((width - layout.size.0) as f64 / 2.0).max(0.0);
+    let dy = ((height - layout.size.1) as f64 / 2.0).max(0.0);
+    if dx == 0.0 && dy == 0.0 {
+        layout.size = (width, height);
+        return layout;
+    }
+
+    for icon in &mut layout.icons {
+        icon.rect = translate_rect(icon.rect, dx, dy);
+    }
+    if let Some(label) = layout.label.as_mut() {
+        label.rect = translate_rect(label.rect, dx, dy);
+    }
+    layout.shelf = translate_rect(layout.shelf, dx, dy);
+    for section in &mut layout.sections {
+        section.rect = translate_rect(section.rect, dx, dy);
+    }
+    if let Some(separator) = layout.separator.as_mut() {
+        separator.rect = translate_rect(separator.rect, dx, dy);
+    }
+    layout.size = (width, height);
+    layout
+}
+
 fn expand(rect: Rect, amount: f64) -> Rect {
     Rect {
         x: rect.x - amount,
         y: rect.y - amount,
         width: rect.width + amount * 2.0,
         height: rect.height + amount * 2.0,
+    }
+}
+
+fn translate_rect(rect: Rect, dx: f64, dy: f64) -> Rect {
+    Rect {
+        x: rect.x + dx,
+        y: rect.y + dy,
+        width: rect.width,
+        height: rect.height,
     }
 }
 
@@ -357,40 +473,64 @@ fn icon_hit_test_with_ratio(
         .map(|icon| icon.item_index)
 }
 
-fn apply_icon_motion(model: &DockModel, layout: &mut DockLayout, motion: &IconMotionFrame) {
-    layout.label = None;
-    for icon in &mut layout.icons {
-        let Some(item) = model.items.get(icon.item_index) else {
-            continue;
-        };
-        let key = item.config_key();
-        let Some(rect) = motion
-            .rects
-            .iter()
-            .find(|motion_rect| motion_rect.item_key.eq_ignore_ascii_case(&key))
-            .map(|motion_rect| motion_rect.rect)
-        else {
-            continue;
-        };
-        icon.rect = rect;
-    }
-    if let Some(item_key) = motion.floating_item_key.as_deref() {
-        raise_icon_layout(model, &mut layout.icons, item_key);
-    }
-}
+fn resolve_icons<'a>(
+    model: &'a DockModel,
+    layout: &DockLayout,
+    motion: Option<&IconMotionFrame>,
+    presence: Option<&'a IconPresenceFrame>,
+) -> Vec<ResolvedIcon<'a>> {
+    let mut resolved = layout
+        .icons
+        .iter()
+        .filter_map(|icon| {
+            let item = model.items.get(icon.item_index)?;
+            let item_key = item.config_key();
+            let mut rect = icon.rect;
+            let mut alpha = 1.0;
+            if let Some(presence_rect) = presence.and_then(|frame| {
+                frame
+                    .current
+                    .iter()
+                    .find(|current| current.item_key.eq_ignore_ascii_case(&item_key))
+            }) {
+                rect = presence_rect.rect;
+                alpha = presence_rect.alpha;
+            } else if let Some(motion_rect) = motion.and_then(|frame| {
+                frame
+                    .rects
+                    .iter()
+                    .find(|motion_rect| motion_rect.item_key.eq_ignore_ascii_case(&item_key))
+            }) {
+                rect = motion_rect.rect;
+            }
+            Some(ResolvedIcon {
+                item_key,
+                item: Cow::Borrowed(item),
+                rect,
+                alpha,
+            })
+        })
+        .collect::<Vec<_>>();
 
-fn raise_icon_layout(model: &DockModel, icons: &mut Vec<IconLayout>, item_key: &str) {
-    let Some(index) = icons.iter().position(|icon| {
-        model
-            .items
-            .get(icon.item_index)
-            .map(|item| item.config_key().eq_ignore_ascii_case(item_key))
-            .unwrap_or(false)
-    }) else {
-        return;
-    };
-    let icon = icons.remove(index);
-    icons.push(icon);
+    if let Some(presence) = presence {
+        resolved.extend(presence.ghosts.iter().map(|ghost| ResolvedIcon {
+            item_key: ghost.item.config_key(),
+            item: Cow::Borrowed(&ghost.item),
+            rect: ghost.rect,
+            alpha: ghost.alpha,
+        }));
+    }
+
+    if let Some(item_key) = motion.and_then(|frame| frame.floating_item_key.as_deref())
+        && let Some(index) = resolved
+            .iter()
+            .position(|icon| icon.item_key.eq_ignore_ascii_case(item_key))
+    {
+        let icon = resolved.remove(index);
+        resolved.push(icon);
+    }
+
+    resolved
 }
 
 fn hover_label_region(
@@ -465,46 +605,51 @@ fn draw_separator(cr: &Context, layout: &DockLayout, theme: &Theme) {
 
 fn draw_icons(
     cr: &Context,
-    model: &DockModel,
     layout: &DockLayout,
+    resolved_icons: &[ResolvedIcon<'_>],
     theme: &Theme,
     icons: &mut IconCache,
 ) {
-    draw_icon_art(cr, model, layout, icons, 1.0);
-    for icon in &layout.icons {
-        let item = &model.items[icon.item_index];
+    draw_icon_art(cr, resolved_icons, icons);
+    for icon in resolved_icons {
+        let item = icon.item.as_ref();
         if !item.is_application() {
             continue;
         }
         if theme.shelf_style == ShelfStyle::LeopardPlank {
             if item.is_running() {
-                draw_leopard_running_indicator(cr, icon.rect, layout, theme, item.active);
+                draw_leopard_running_indicator(
+                    cr,
+                    icon.rect,
+                    layout,
+                    theme,
+                    item.active,
+                    icon.alpha,
+                );
             }
             if item.active {
-                draw_leopard_active_indicator(cr, icon.rect, layout, theme);
+                draw_leopard_active_indicator(cr, icon.rect, layout, theme, icon.alpha);
             }
         } else if item.is_running() {
-            draw_indicator(cr, icon.rect, theme.indicator, item.active);
+            draw_indicator(cr, icon.rect, theme.indicator, item.active, icon.alpha);
         }
         if let Some(badge) = item.badge {
-            draw_badge(cr, icon.rect, badge, theme.badge);
+            draw_badge(cr, icon.rect, badge, theme.badge, icon.alpha);
         }
     }
 }
 
 fn draw_icon_art(
     cr: &Context,
-    model: &DockModel,
-    layout: &DockLayout,
+    resolved_icons: &[ResolvedIcon<'_>],
     icons: &mut IconCache,
-    alpha: f64,
 ) {
-    for icon in &layout.icons {
-        let item = &model.items[icon.item_index];
+    for icon in resolved_icons {
+        let item = icon.item.as_ref();
         cr.save().ok();
         cr.translate(icon.rect.x, icon.rect.y);
         cr.scale(icon.rect.width / icon.rect.height, 1.0);
-        draw_icon_source(cr, item, icon.rect.height as i32, icons, alpha);
+        draw_icon_source(cr, item, icon.rect.height as i32, icons, icon.alpha);
         cr.restore().ok();
     }
 }
@@ -622,7 +767,11 @@ fn hover_label_path(
     cr.close_path();
 }
 
-fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool) {
+fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool, alpha: f64) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
     let y = rect.y + rect.height + 7.0;
     let radius_x = if active { 7.0 } else { 4.5 };
     let radius_y = if active { 2.8 } else { 2.2 };
@@ -634,7 +783,7 @@ fn draw_indicator(cr: &Context, rect: Rect, color: Color, active: bool) {
         color.red,
         color.green,
         color.blue,
-        if active { 0.95 } else { 0.55 },
+        (if active { 0.95 } else { 0.55 }) * alpha,
     );
     let _ = cr.fill();
     cr.restore().ok();

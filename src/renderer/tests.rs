@@ -135,6 +135,31 @@ fn hover_retains_when_pointer_stays_on_live_magnified_icon() {
 }
 
 #[test]
+fn layout_for_container_centers_smaller_dock() {
+    let config = Config::default().normalized();
+    let theme = Theme::from_config(&config.theme);
+    let model = DockModel {
+        items: vec![
+            preview_item("a.desktop", "A", None),
+            preview_item("b.desktop", "B", None),
+        ],
+    };
+    let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+    let container = (layout.size.0 + 64, layout.size.1 + 10);
+    let centered = Renderer::layout_for_container(
+        &model,
+        &config.dock,
+        &theme,
+        None,
+        Some(container),
+    );
+
+    assert_eq!(centered.size, container);
+    assert!((centered.shelf.x - layout.shelf.x - 32.0).abs() < 0.01);
+    assert!((centered.icons[0].rect.x - layout.icons[0].rect.x - 32.0).abs() < 0.01);
+}
+
+#[test]
 fn leopard_plank_has_transparent_top_corner_and_visible_front_body() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);
@@ -183,7 +208,9 @@ fn leopard_icon_reflections_stay_above_lip() {
     let mut surface = ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
     let cr = Context::new(&surface).unwrap();
 
-    draw_icon_reflections_on_shelf(&cr, &model, &layout, &theme, &mut icons);
+    let resolved_icons = resolve_icons(&model, &layout, None, None);
+
+    draw_icon_reflections_on_shelf(&cr, &resolved_icons, &layout, &theme, &mut icons);
     drop(cr);
 
     assert!(rect_has_alpha(
@@ -232,7 +259,9 @@ fn leopard_reflections_are_visible_at_icon_bottom() {
     let cr = Context::new(&surface).unwrap();
     let icon = layout.icons[0].rect;
 
-    draw_icon_reflections_on_shelf(&cr, &model, &layout, &theme, &mut icons);
+    let resolved_icons = resolve_icons(&model, &layout, None, None);
+
+    draw_icon_reflections_on_shelf(&cr, &resolved_icons, &layout, &theme, &mut icons);
     drop(cr);
 
     assert!(rect_has_alpha(
@@ -421,7 +450,8 @@ fn leopard_reflection_is_clipped_to_reflection_band() {
     };
     let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
     let mut icons = IconCache::disabled();
-    let mut icon_surface = render_icon_surface(&model, &layout, &mut icons).unwrap();
+    let resolved_icons = resolve_icons(&model, &layout, None, None);
+    let mut icon_surface = render_icon_surface(&resolved_icons, &layout, &mut icons).unwrap();
     let mut surface = ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
     let cr = Context::new(&surface).unwrap();
     let reflection = shelf_plane_reflection_rect(&layout, &theme);
@@ -470,7 +500,7 @@ fn leopard_running_indicator_lands_inside_front_body() {
     let y = leopard_running_indicator_center_y(&shelf, &theme);
     let geom = compute_perspective_shelf_geometry(&shelf, &theme);
 
-    draw_leopard_running_indicator(&cr, icon, &layout, &theme, true);
+    draw_leopard_running_indicator(&cr, icon, &layout, &theme, true, 1.0);
     drop(cr);
 
     assert!(y > geom.lip_y);
@@ -507,7 +537,7 @@ fn leopard_active_indicator_lands_below_shelf() {
     let y = leopard_active_indicator_center_y(icon, &shelf, &theme);
     let running_y = leopard_running_indicator_center_y(&shelf, &theme);
 
-    draw_leopard_active_indicator(&cr, icon, &layout, &theme);
+    draw_leopard_active_indicator(&cr, icon, &layout, &theme, 1.0);
     drop(cr);
 
     assert!(y > shelf.y + shelf.height);

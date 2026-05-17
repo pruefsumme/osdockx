@@ -1,11 +1,12 @@
 use crate::backend::x11::X11Backend;
 use crate::backend::{DockGeometry, PlatformBackend};
-use crate::config::{AppletConfig, Config, RenderMode};
+use crate::config::{AppletConfig, Config, DockConfig, RenderMode};
 use crate::desktop::DesktopIndex;
-use crate::layout::{Point, Rect};
+use crate::layout::{DockLayout, Point, Rect};
 use crate::model::{DockItem, DockModel, DockSectionKind};
 use crate::renderer::{
-    IconCache, IconMotionFrame, IconMotionRect, RenderFrame, Renderer, ShelfLayer,
+    GhostIcon, IconCache, IconMotionFrame, IconMotionRect, IconPresenceFrame,
+    IconPresenceRect, RenderFrame, Renderer, ShelfLayer,
 };
 use crate::scene3d::Scene3dRenderer;
 use crate::shelf::ShelfRenderer;
@@ -61,6 +62,7 @@ const APPLET_FAN_LABEL_HEIGHT: f64 = 25.0;
 const APPLET_FAN_REVEAL_DURATION: Duration = Duration::from_millis(170);
 const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
+const ICON_PRESENCE_DURATION: Duration = Duration::from_millis(360);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
 const STARTUP_REVEAL_DURATION: Duration = Duration::from_millis(480);
 const SEPARATOR_RESIZE_CURSOR: &str = "ns-resize";
@@ -102,6 +104,7 @@ struct Runtime {
     drag: Option<IconDrag>,
     separator_resize: Option<SeparatorResize>,
     icon_slide: Option<IconSlide>,
+    icon_presence: Option<IconPresenceTransition>,
     startup_reveal: Option<StartupReveal>,
     animation_tick_running: bool,
     startup_reveal_tick_running: bool,
@@ -130,6 +133,23 @@ struct SeparatorResize {
 struct IconSlide {
     from: Vec<IconMotionRect>,
     started: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct IconPresenceTransition {
+    from: Vec<IconMotionRect>,
+    ghosts: Vec<IconPresenceGhost>,
+    from_layout: DockLayout,
+    to_layout: DockLayout,
+    has_insertions: bool,
+    has_removals: bool,
+    started: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct IconPresenceGhost {
+    item: DockItem,
+    rect: Rect,
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +221,9 @@ enum DockContextAction {
 
 impl Runtime {
     fn refresh_model(&mut self) {
+        let previous_model = self.model.clone();
+        let previous_layout = dock_layout_for_state(self, None);
+        let previous_rects = current_visible_icon_rects(self);
         let windows = self
             .backend
             .as_mut()
@@ -212,17 +235,36 @@ impl Runtime {
                 }
             })
             .unwrap_or_default();
-        self.model = DockModel::from_sources_with_applets(
+        let mut next_model = DockModel::from_sources_with_applets(
             &self.config.pinned,
             &self.desktop_index,
             windows,
             &self.config.applets,
         );
-        self.model.apply_order(&self.config.item_order);
+        next_model.apply_order(&self.config.item_order);
+
+        let icon_presence = build_icon_presence_transition(
+            &previous_model,
+            &next_model,
+            previous_layout,
+            &previous_rects,
+            &self.config.dock,
+            &self.theme,
+        );
+
+        self.model = next_model;
+        if icon_presence.is_some() {
+            self.hover = None;
+        }
+        self.icon_presence = icon_presence;
     }
 
     fn desired_size(&self) -> (i32, i32) {
-        Renderer::desired_size(&self.model, &self.config.dock, &self.theme, self.hover)
+        icon_presence_layout(self)
+            .map(|layout| layout.size)
+            .unwrap_or_else(|| {
+                Renderer::desired_size(&self.model, &self.config.dock, &self.theme, self.hover)
+            })
     }
 
     fn reserved_thickness(&self) -> u32 {
@@ -271,6 +313,205 @@ impl StartupReveal {
     }
 }
 
+fn dock_layout_for_state(state: &Runtime, hover: Option<Point>) -> DockLayout {
+    icon_presence_layout(state).unwrap_or_else(|| {
+        Renderer::layout_for(&state.model, &state.config.dock, &state.theme, hover)
+    })
+}
+
+fn build_icon_presence_transition(
+    previous_model: &DockModel,
+    next_model: &DockModel,
+    previous_layout: DockLayout,
+    previous_rects: &[IconMotionRect],
+    config: &DockConfig,
+    theme: &Theme,
+) -> Option<IconPresenceTransition> {
+    if previous_model.items.is_empty() {
+        return None;
+    }
+
+    let previous_keys = previous_model
+        .items
+        .iter()
+        .map(|item| item.config_key().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let next_keys = next_model
+        .items
+        .iter()
+        .map(|item| item.config_key().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let changed = previous_keys.len() != next_keys.len()
+        || previous_keys
+            .iter()
+            .any(|key| !next_keys.iter().any(|next| next == key))
+        || next_keys
+            .iter()
+            .any(|key| !previous_keys.iter().any(|previous| previous == key));
+    if !changed {
+        return None;
+    }
+
+    let next_layout = Renderer::layout_for(next_model, config, theme, None);
+    let has_insertions = next_keys
+        .iter()
+        .any(|key| !previous_keys.iter().any(|previous| previous == key));
+    let has_removals = previous_keys
+        .iter()
+        .any(|key| !next_keys.iter().any(|next| next == key));
+
+    let from = previous_rects
+        .iter()
+        .filter(|rect| contains_item_key(&next_keys, &rect.item_key))
+        .cloned()
+        .collect::<Vec<_>>();
+    let ghosts = previous_model
+        .items
+        .iter()
+        .filter_map(|item| {
+            let item_key = item.config_key();
+            (!contains_item_key(&next_keys, &item_key)).then_some(item).and_then(|item| {
+                previous_rects
+                    .iter()
+                    .find(|rect| rect.item_key.eq_ignore_ascii_case(&item_key))
+                    .map(|rect| IconPresenceGhost {
+                        item: item.clone(),
+                        rect: rect.rect,
+                    })
+            })
+        })
+        .collect::<Vec<_>>();
+    if from.is_empty() && ghosts.is_empty() {
+        return None;
+    }
+
+    Some(IconPresenceTransition {
+        from,
+        ghosts,
+        from_layout: previous_layout,
+        to_layout: next_layout,
+        has_insertions,
+        has_removals,
+        started: Instant::now(),
+    })
+}
+
+fn contains_item_key(keys: &[String], item_key: &str) -> bool {
+    keys.iter().any(|key| key.eq_ignore_ascii_case(item_key))
+}
+
+fn translate_rect(rect: Rect, dx: f64, dy: f64) -> Rect {
+    Rect {
+        x: rect.x + dx,
+        y: rect.y + dy,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn current_visible_icon_rects(state: &Runtime) -> Vec<IconMotionRect> {
+    icon_presence_frame(state)
+        .map(|frame| {
+            frame
+                .current
+                .into_iter()
+                .map(|icon| IconMotionRect {
+                    item_key: icon.item_key,
+                    rect: icon.rect,
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| current_icon_motion_rects(state))
+}
+
+fn icon_presence_layout(state: &Runtime) -> Option<DockLayout> {
+    let transition = state
+        .icon_presence
+        .as_ref()
+        .filter(|transition| transition.started.elapsed() < ICON_PRESENCE_DURATION)?;
+    Some(interpolate_presence_layout(
+        transition,
+        icon_presence_chrome_progress(transition),
+    ))
+}
+
+fn interpolate_presence_layout(
+    transition: &IconPresenceTransition,
+    progress: f64,
+) -> DockLayout {
+    let mut layout = transition.to_layout.clone();
+    layout.label = None;
+    layout.size = (
+        interpolate(
+            transition.from_layout.size.0 as f64,
+            transition.to_layout.size.0 as f64,
+            progress,
+        )
+        .round() as i32,
+        interpolate(
+            transition.from_layout.size.1 as f64,
+            transition.to_layout.size.1 as f64,
+            progress,
+        )
+        .round() as i32,
+    );
+    layout.shelf = interpolate_rect(transition.from_layout.shelf, transition.to_layout.shelf, progress);
+
+    for (section, from_section) in layout.sections.iter_mut().zip(&transition.from_layout.sections) {
+        section.rect = interpolate_rect(from_section.rect, section.rect, progress);
+    }
+
+    if let (Some(separator), Some(from_separator)) = (
+        layout.separator.as_mut(),
+        transition.from_layout.separator.as_ref(),
+    ) {
+        separator.rect = interpolate_rect(from_separator.rect, separator.rect, progress);
+    }
+
+    layout
+}
+
+fn icon_presence_raw_progress(transition: &IconPresenceTransition) -> f64 {
+    (transition.started.elapsed().as_secs_f64() / ICON_PRESENCE_DURATION.as_secs_f64())
+        .clamp(0.0, 1.0)
+}
+
+fn icon_presence_chrome_progress(transition: &IconPresenceTransition) -> f64 {
+    let raw = icon_presence_raw_progress(transition);
+    if transition.has_insertions && !transition.has_removals {
+        ease_out_cubic(remap_progress(raw, 0.0, 0.78))
+    } else if transition.has_removals && !transition.has_insertions {
+        ease_out_cubic(remap_progress(raw, 0.20, 1.0))
+    } else {
+        ease_out_cubic(raw)
+    }
+}
+
+fn icon_presence_enter_progress(transition: &IconPresenceTransition) -> f64 {
+    let raw = icon_presence_raw_progress(transition);
+    if transition.has_insertions && !transition.has_removals {
+        ease_out_cubic(remap_progress(raw, 0.24, 1.0))
+    } else {
+        ease_out_cubic(raw)
+    }
+}
+
+fn icon_presence_exit_progress(transition: &IconPresenceTransition) -> f64 {
+    let raw = icon_presence_raw_progress(transition);
+    if transition.has_removals && !transition.has_insertions {
+        ease_out_cubic(remap_progress(raw, 0.0, 0.72))
+    } else {
+        ease_out_cubic(raw)
+    }
+}
+
+fn remap_progress(progress: f64, start: f64, end: f64) -> f64 {
+    if end <= start {
+        return 1.0;
+    }
+    ((progress - start) / (end - start)).clamp(0.0, 1.0)
+}
+
 fn apply_edge_offset(geometry: &mut DockGeometry, edge: crate::config::DockEdge, distance: i32) {
     match edge {
         crate::config::DockEdge::Bottom => {
@@ -316,7 +557,7 @@ fn separator_hit_test_in_layout(layout: &crate::layout::DockLayout, point: Point
 }
 
 fn separator_hit_test(state: &Runtime, point: Point) -> bool {
-    let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+    let layout = dock_layout_for_state(state, None);
     separator_hit_test_in_layout(&layout, point)
 }
 
@@ -401,6 +642,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         drag: None,
         separator_resize: None,
         icon_slide: None,
+        icon_presence: None,
         startup_reveal: None,
         animation_tick_running: false,
         startup_reveal_tick_running: false,
@@ -452,6 +694,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
             let custom_icons = state.config.custom_icons.clone();
             let theme = state.theme.clone();
             let icon_motion = icon_motion_frame(&state);
+            let icon_presence = icon_presence_frame(&state);
             let mut icons = std::mem::take(&mut state.icons);
             icons.set_custom_icons(&custom_icons);
             let shelf_layer = shelf_layer_for(&state);
@@ -464,6 +707,8 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
                     hover,
                     shelf_layer,
                     icon_motion: icon_motion.as_ref(),
+                    icon_presence: icon_presence.as_ref(),
+                    container_size: None,
                 },
                 &mut icons,
             );
@@ -707,9 +952,8 @@ fn wire_gl_area(state: &Rc<RefCell<Runtime>>, gl_area: &GLArea, drawing: &Drawin
         let mut state = state.borrow_mut();
         let hover = state.hover;
         let model = state.model.clone();
-        let config = state.config.dock.clone();
         let theme = state.theme.clone();
-        let layout = Renderer::layout_for(&model, &config, &theme, hover);
+        let layout = dock_layout_for_state(&state, hover);
         let rendered = theme.renderer == RenderMode::Scene3d
             && state
                 .scene3d
@@ -751,6 +995,7 @@ fn wire_motion(
                     separator_hover = separator_hit_test(&state, point);
                     let next_hover = if state.context_menu.is_some()
                         || state.drag.is_some()
+                        || state.icon_presence.is_some()
                         || separator_hover
                     {
                         None
@@ -869,12 +1114,7 @@ fn wire_clicks(
             }
             let hit = {
                 let state = state.borrow();
-                Renderer::icon_hit_test(
-                    &state.model,
-                    &state.config.dock,
-                    &state.theme,
-                    Point { x, y },
-                )
+                dock_layout_for_state(&state, None).hit_test(Point { x, y })
             };
             if let Some(index) = hit {
                 let item = {
@@ -916,7 +1156,7 @@ fn wire_clicks(
 
 fn dock_surface_hit_test(state: &Rc<RefCell<Runtime>>, point: Point) -> bool {
     let state = state.borrow();
-    let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+    let layout = dock_layout_for_state(&state, None);
     layout.shelf.contains(point)
         || layout
             .sections
@@ -941,18 +1181,12 @@ fn wire_icon_drag(
             let point = Point { x, y };
             let drag_item = {
                 let state = state.borrow();
-                Renderer::icon_hit_test(&state.model, &state.config.dock, &state.theme, point)
-                    .and_then(|index| {
+                dock_layout_for_state(&state, None).hit_test(point).and_then(|index| {
                         let item = state.model.items.get(index)?;
                         if !item.is_application() && !item.is_applet() {
                             return None;
                         }
-                        let rect = Renderer::layout_for(
-                            &state.model,
-                            &state.config.dock,
-                            &state.theme,
-                            None,
-                        )
+                        let rect = dock_layout_for_state(&state, None)
                         .icons
                         .iter()
                         .find(|icon| icon.item_index == index)
@@ -981,6 +1215,7 @@ fn wire_icon_drag(
                     changed: false,
                 });
                 state.icon_slide = None;
+                state.icon_presence = None;
                 state.suppress_next_left_click = false;
                 menu
             };
@@ -1049,8 +1284,7 @@ fn wire_separator_resize_drag(
                 if state.separator_resize.is_some() {
                     return;
                 }
-                let layout =
-                    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+                let layout = dock_layout_for_state(&state, None);
                 let start_window_y = state
                     .last_geometry
                     .or_else(|| state.desired_geometry())
@@ -1231,7 +1465,7 @@ fn drag_target_index(state: &Runtime, point: Point) -> Option<usize> {
         .iter()
         .find(|item| item.config_key().eq_ignore_ascii_case(dragged_key))?
         .is_applet();
-    let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+    let layout = dock_layout_for_state(state, None);
     let mut section_index = 0;
     layout
         .icons
@@ -1267,7 +1501,7 @@ fn icon_motion_frame(state: &Runtime) -> Option<IconMotionFrame> {
         return None;
     }
 
-    let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+    let layout = dock_layout_for_state(state, None);
     let progress = slide.map(icon_slide_progress).unwrap_or(1.0);
     let rects = layout
         .icons
@@ -1310,7 +1544,7 @@ fn current_icon_motion_rects(state: &Runtime) -> Vec<IconMotionRect> {
 }
 
 fn layout_icon_motion_rects(state: &Runtime) -> Vec<IconMotionRect> {
-    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
+    dock_layout_for_state(state, None)
         .icons
         .iter()
         .filter_map(|icon| {
@@ -1327,6 +1561,60 @@ fn icon_slide_progress(slide: &IconSlide) -> f64 {
     ease_out_cubic(
         (slide.started.elapsed().as_secs_f64() / ICON_SLIDE_DURATION.as_secs_f64()).clamp(0.0, 1.0),
     )
+}
+
+fn icon_presence_frame(state: &Runtime) -> Option<IconPresenceFrame> {
+    let transition = state
+        .icon_presence
+        .as_ref()
+        .filter(|transition| transition.started.elapsed() < ICON_PRESENCE_DURATION)?;
+    let chrome_progress = icon_presence_chrome_progress(transition);
+    let enter_progress = icon_presence_enter_progress(transition);
+    let exit_progress = icon_presence_exit_progress(transition);
+    let layout = dock_layout_for_state(state, None);
+    let current = layout
+        .icons
+        .iter()
+        .filter_map(|icon| {
+            let item_key = state.model.items.get(icon.item_index)?.config_key();
+            let (rect, alpha) = transition
+                .from
+                .iter()
+                .find(|from| from.item_key.eq_ignore_ascii_case(&item_key))
+                .map(|from| (interpolate_rect(from.rect, icon.rect, chrome_progress), 1.0))
+                .unwrap_or_else(|| {
+                    let travel = icon.rect.height * 0.92;
+                    (
+                        translate_rect(
+                            icon.rect,
+                            0.0,
+                            interpolate(travel, 0.0, enter_progress),
+                        ),
+                        enter_progress,
+                    )
+                });
+            Some(IconPresenceRect {
+                item_key,
+                rect,
+                alpha,
+            })
+        })
+        .collect::<Vec<_>>();
+    let ghosts = transition
+        .ghosts
+        .iter()
+        .map(|ghost| GhostIcon {
+            item: ghost.item.clone(),
+            rect: translate_rect(
+                ghost.rect,
+                0.0,
+                interpolate(0.0, ghost.rect.height * 0.92, exit_progress),
+            ),
+            alpha: (1.0 - exit_progress).clamp(0.0, 1.0),
+        })
+        .collect::<Vec<_>>();
+
+    Some(IconPresenceFrame { current, ghosts })
 }
 
 fn ease_out_cubic(t: f64) -> f64 {
@@ -1368,7 +1656,8 @@ fn ensure_icon_animation_tick(
         let keep_running = {
             let mut state = state.borrow_mut();
             prune_finished_icon_slide(&mut state);
-            state.drag.is_some() || state.icon_slide.is_some()
+            prune_finished_icon_presence(&mut state);
+            state.drag.is_some() || state.icon_slide.is_some() || state.icon_presence.is_some()
         };
         sync_dock_window(&state, &window, &drawing, &gl_area, false);
         queue_gl_render_if_enabled(&state, &gl_area);
@@ -1430,6 +1719,17 @@ fn prune_finished_startup_reveal(state: &mut Runtime) {
     }
 }
 
+fn prune_finished_icon_presence(state: &mut Runtime) {
+    if state
+        .icon_presence
+        .as_ref()
+        .map(|transition| transition.started.elapsed() >= ICON_PRESENCE_DURATION)
+        .unwrap_or(false)
+    {
+        state.icon_presence = None;
+    }
+}
+
 fn prune_finished_icon_slide(state: &mut Runtime) {
     if state
         .icon_slide
@@ -1452,7 +1752,7 @@ fn show_context_menu(
 ) {
     let (item, icon_rect, dock_width) = {
         let state = state.borrow();
-        let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+        let layout = dock_layout_for_state(&state, None);
         let item = state.model.items.get(index).cloned();
         let icon_rect = layout
             .icons
@@ -1727,9 +2027,7 @@ fn show_dock_context_menu(
 ) {
     let dock_width = {
         let state = state.borrow();
-        Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
-            .size
-            .0
+        dock_layout_for_state(&state, None).size.0
     };
     dismiss_context_menu(state);
     {
@@ -2109,7 +2407,7 @@ fn show_applet_fan(
 ) {
     let (icon_rect, dock_width) = {
         let state = state.borrow();
-        let layout = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None);
+        let layout = dock_layout_for_state(&state, None);
         let icon_rect = layout
             .icons
             .iter()
@@ -2952,6 +3250,7 @@ fn run_dock_context_action(
                 state.refresh_model();
                 state.icons.clear();
             }
+            ensure_icon_animation_if_needed(state, window, drawing, gl_area);
             sync_dock_window(state, window, drawing, gl_area, true);
             queue_gl_render_if_enabled(state, gl_area);
             drawing.queue_draw();
@@ -2984,6 +3283,7 @@ fn update_dock_config(
         save_runtime_config(&state);
         state.refresh_model();
     }
+    ensure_icon_animation_if_needed(state, window, drawing, gl_area);
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
@@ -3033,6 +3333,7 @@ fn toggle_keep_in_dock(
         state.refresh_model();
         state.icons.clear();
     }
+    ensure_icon_animation_if_needed(state, window, drawing, gl_area);
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
@@ -3106,9 +3407,7 @@ fn show_add_application_menu(
             })
             .cloned()
             .collect::<Vec<_>>();
-        let dock_width = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
-            .size
-            .0;
+        let dock_width = dock_layout_for_state(&state, None).size.0;
         (apps, dock_width)
     };
 
@@ -3218,9 +3517,7 @@ fn show_theme_icon_menu(
 ) {
     let (icon_names, dock_width) = {
         let state = state.borrow();
-        let dock_width = Renderer::layout_for(&state.model, &state.config.dock, &state.theme, None)
-            .size
-            .0;
+        let dock_width = dock_layout_for_state(&state, None).size.0;
         (theme_icon_names(), dock_width)
     };
     let visible_rows = if icon_names.is_empty() {
@@ -3447,6 +3744,7 @@ fn pin_application(
         state.refresh_model();
         state.icons.clear();
     }
+    ensure_icon_animation_if_needed(state, window, drawing, gl_area);
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
@@ -3509,6 +3807,7 @@ fn add_folder_applet(
         state.refresh_model();
         state.icons.clear();
     }
+    ensure_icon_animation_if_needed(state, window, drawing, gl_area);
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
@@ -3543,6 +3842,7 @@ fn remove_folder_applet(
         state.refresh_model();
         state.icons.clear();
     }
+    ensure_icon_animation_if_needed(state, window, drawing, gl_area);
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
@@ -3657,11 +3957,13 @@ fn wire_refresh(
         let menu_open = {
             let mut state = state.borrow_mut();
             prune_finished_icon_slide(&mut state);
+            prune_finished_icon_presence(&mut state);
             if state.context_menu.is_some() {
                 true
             } else if state.drag.is_none()
                 && state.separator_resize.is_none()
                 && state.icon_slide.is_none()
+                && state.icon_presence.is_none()
             {
                 refresh_config_and_theme(&mut state);
                 state.refresh_model();
@@ -3673,11 +3975,23 @@ fn wire_refresh(
         if menu_open {
             return glib::ControlFlow::Continue;
         }
+        ensure_icon_animation_if_needed(&state, &window, &drawing, &gl_area);
         sync_dock_window(&state, &window, &drawing, &gl_area, true);
         queue_gl_render_if_enabled(&state, &gl_area);
         drawing.queue_draw();
         glib::ControlFlow::Continue
     });
+}
+
+fn ensure_icon_animation_if_needed(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    if state.borrow().icon_presence.is_some() {
+        ensure_icon_animation_tick(state, window, drawing, gl_area);
+    }
 }
 
 fn wire_icon_theme_changes(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea, gl_area: &GLArea) {
@@ -3879,12 +4193,13 @@ fn sync_dock_window(
     }
 
     let mut state = state.borrow_mut();
-    let update_reserved_space = state.separator_resize.is_none();
+    let update_reserved_space = state.separator_resize.is_none() && state.icon_presence.is_none();
     gl_area.set_visible(state.theme.renderer == RenderMode::Scene3d);
     move_dock(&mut state, update_reserved_space);
     let shape_label = current_label_index(&state);
     if force_shape
         || size_changed
+        || state.icon_presence.is_some()
         || state.last_shape_size != Some(size)
         || state.last_shape_label != shape_label
     {
@@ -3896,7 +4211,7 @@ fn sync_dock_window(
 }
 
 fn current_label_index(state: &Runtime) -> Option<usize> {
-    Renderer::layout_for(&state.model, &state.config.dock, &state.theme, state.hover)
+    dock_layout_for_state(state, state.hover)
         .label
         .map(|label| label.item_index)
 }
@@ -3948,10 +4263,14 @@ fn shape_dock(state: &mut Runtime) {
     }
 
     let size = state.desired_size();
-    let mut visual_regions =
-        Renderer::visual_regions(&state.model, &state.config.dock, &state.theme, state.hover);
-    let mut input_regions =
-        Renderer::input_regions(&state.model, &state.config.dock, &state.theme, state.hover);
+    let layout = dock_layout_for_state(state, state.hover);
+    let mut visual_regions = Renderer::visual_regions_for_layout(
+        &state.model,
+        &layout,
+        &state.config.dock,
+        &state.theme,
+    );
+    let mut input_regions = Renderer::input_regions_for_layout(&layout);
     if state.hidden {
         let reveal_strip = hidden_reveal_input_region(size, state.config.dock.edge);
         visual_regions.push(reveal_strip);
@@ -3960,6 +4279,18 @@ fn shape_dock(state: &mut Runtime) {
     if let Some(icon_motion) = icon_motion_frame(state) {
         for motion_rect in icon_motion.rects {
             let rect = padded_rect(motion_rect.rect, 10.0);
+            visual_regions.push(rect);
+            input_regions.push(rect);
+        }
+    }
+    if let Some(icon_presence) = icon_presence_frame(state) {
+        for icon in icon_presence.current {
+            let rect = padded_rect(icon.rect, 10.0);
+            visual_regions.push(rect);
+            input_regions.push(rect);
+        }
+        for ghost in icon_presence.ghosts {
+            let rect = padded_rect(ghost.rect, 10.0);
             visual_regions.push(rect);
             input_regions.push(rect);
         }
