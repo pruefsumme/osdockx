@@ -50,8 +50,53 @@ pub struct ThemeAssets {
 }
 
 impl Theme {
-    pub fn from_config(_config: &ThemeConfig) -> Self {
-        Self::default()
+    pub fn from_config(config: &ThemeConfig) -> Self {
+        let defaults = Self::default();
+
+        let parse_color = |field: &str, value: &str, fallback: Color| {
+            Color::parse(value).unwrap_or_else(|| {
+                tracing::warn!(
+                    "invalid theme color for {}: '{}'; using fallback",
+                    field,
+                    value
+                );
+                fallback
+            })
+        };
+
+        Self {
+            id: config.preset.clone(),
+            renderer: config.renderer.unwrap_or(defaults.renderer),
+            shelf_top: parse_color("shelf_top", &config.shelf_top, defaults.shelf_top),
+            shelf_bottom: parse_color("shelf_bottom", &config.shelf_bottom, defaults.shelf_bottom),
+            shelf_stroke: parse_color("shelf_stroke", &config.shelf_stroke, defaults.shelf_stroke),
+            shelf_highlight: parse_color(
+                "shelf_highlight",
+                &config.shelf_highlight,
+                defaults.shelf_highlight,
+            ),
+            indicator: parse_color("indicator", &config.indicator, defaults.indicator),
+            badge: parse_color("badge", &config.badge, defaults.badge),
+            reflection_opacity: config.reflection_opacity,
+            reflection_height: config.reflection_height,
+            shelf_height_ratio: config.shelf_height_ratio,
+            shelf_slant_ratio: config.shelf_slant_ratio,
+            icon_gap_ratio: config.icon_gap_ratio,
+            side_margin_ratio: config.side_margin_ratio,
+            shelf_horizon_ratio: config.shelf_horizon_ratio,
+            front_lip_ratio: config.front_lip_ratio,
+            reflection_band_ratio: config.reflection_band_ratio,
+            tilt: config.tilt,
+            depth: config.depth,
+            bevel: config.bevel,
+            floor_opacity: config.floor_opacity,
+            shadow_strength: config.shadow_strength,
+            highlight_strength: config.highlight_strength,
+            reflection_blur: config.reflection_blur,
+            material_roughness: config.material_roughness,
+            icon_floor_offset: config.icon_floor_offset,
+            assets: ThemeAssets::default(),
+        }
     }
 
     pub fn opaque_fallback(mut self) -> Self {
@@ -120,7 +165,12 @@ impl Color {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
+        let value = value.trim();
+        if let Some(rgb) = parse_rgb_function(value) {
+            return Some(rgb);
+        }
+
+        let hex = value.strip_prefix('#').unwrap_or(value);
         if hex.len() != 6 && hex.len() != 8 {
             return None;
         }
@@ -157,6 +207,57 @@ impl Color {
     }
 }
 
+fn parse_rgb_function(value: &str) -> Option<Color> {
+    let open = value.find('(')?;
+    let close = value.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+
+    let name = value[..open].trim().to_ascii_lowercase();
+    if name != "rgb" && name != "rgba" {
+        return None;
+    }
+
+    let args = value[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if name == "rgb" && args.len() != 3 {
+        return None;
+    }
+    if name == "rgba" && args.len() != 4 {
+        return None;
+    }
+
+    let red = parse_rgb_channel(args[0])?;
+    let green = parse_rgb_channel(args[1])?;
+    let blue = parse_rgb_channel(args[2])?;
+    let alpha = if name == "rgba" {
+        parse_alpha_channel(args[3])?
+    } else {
+        1.0
+    };
+    Some(Color::rgba(red, green, blue, alpha))
+}
+
+fn parse_rgb_channel(value: &str) -> Option<f64> {
+    if let Some(percent) = value.strip_suffix('%') {
+        let parsed = percent.trim().parse::<f64>().ok()?;
+        return Some((parsed / 100.0).clamp(0.0, 1.0));
+    }
+    let parsed = value.parse::<f64>().ok()?;
+    Some((parsed / 255.0).clamp(0.0, 1.0))
+}
+
+fn parse_alpha_channel(value: &str) -> Option<f64> {
+    if let Some(percent) = value.strip_suffix('%') {
+        let parsed = percent.trim().parse::<f64>().ok()?;
+        return Some((parsed / 100.0).clamp(0.0, 1.0));
+    }
+    Some(value.parse::<f64>().ok()?.clamp(0.0, 1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +269,18 @@ mod tests {
             Color::rgba(1.0, 128.0 / 255.0, 0.0, 1.0)
         );
         assert_eq!(Color::parse("#00000080").unwrap().alpha, 128.0 / 255.0);
+    }
+
+    #[test]
+    fn parses_rgb_and_rgba_functions() {
+        assert_eq!(
+            Color::parse("rgb(0, 128, 255)").unwrap(),
+            Color::rgba(0.0, 128.0 / 255.0, 1.0, 1.0)
+        );
+        assert_eq!(
+            Color::parse("rgba(255, 0, 0, 0.5)").unwrap(),
+            Color::rgba(1.0, 0.0, 0.0, 0.5)
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::renderer::{
 use crate::scene3d::Scene3dRenderer;
 use crate::shelf::ShelfRenderer;
 use crate::theme::Theme;
+use crate::theme_pack::ThemePack;
 use directories::UserDirs;
 use gdk_x11::X11Surface;
 use gtk::cairo::{Context, FontSlant, FontWeight, LineCap, LinearGradient};
@@ -24,7 +25,7 @@ use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, DrawingArea,
     EventControllerMotion, FileDialog, FileFilter, GLArea, GestureClick, GestureDrag,
     IconLookupFlags, IconTheme, Image, Label, Orientation, Overlay, PolicyType, Popover,
-    PositionType, ScrolledWindow, SearchEntry, TextDirection, gdk,
+    PositionType, Scale, ScrolledWindow, SearchEntry, TextDirection, gdk,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -44,7 +45,8 @@ const CONTEXT_MENU_SEPARATOR_HEIGHT: i32 = 12;
 const CONTEXT_MENU_CHROME_HEIGHT: i32 = 12;
 const CONTEXT_MENU_GAP: f64 = 18.0;
 const DOCK_CONTEXT_MENU_WIDTH: i32 = 228;
-const DOCK_CONTEXT_MENU_ACTIONS: usize = 8;
+const DOCK_CONTEXT_MENU_ACTIONS: usize = 11;
+const HOVER_SETTINGS_MENU_WIDTH: i32 = 272;
 const ADD_APPLICATION_MENU_WIDTH: i32 = 292;
 const ADD_APPLICATION_MENU_VISIBLE_ROWS: usize = 12;
 const THEME_ICON_MENU_WIDTH: i32 = 292;
@@ -212,9 +214,12 @@ enum DockContextAction {
     AddFolderApplet,
     LargerIcons,
     SmallerIcons,
+    HoverEffect,
     ToggleAutohide,
     ToggleReserveSpace,
     ReloadTheme,
+    ResetDefaults,
+    ResetCustomIcons,
     OpenConfigFolder,
 }
 
@@ -595,12 +600,15 @@ fn set_separator_resize_cursor(drawing: &DrawingArea, enabled: bool) {
 }
 
 fn build_ui(app: &Application) -> anyhow::Result<()> {
+    if let Err(error) = ThemePack::export_builtin_theme_packs() {
+        tracing::warn!("could not export built-in theme packs: {error:#}");
+    }
     let (config, config_path) = Config::load_or_create()?;
     tracing::info!("using config {}", config_path.display());
     install_css();
 
     let composited = gdk::Display::default().is_some_and(|display| display.is_composited());
-    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(composited);
+    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(composited, &config.theme);
     tracing::info!("using theme {} ({:?})", theme_id, theme_renderer);
     if !composited {
         tracing::warn!("display is not composited; using opaque shelf fallback");
@@ -725,10 +733,14 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn resolve_runtime_theme(composited: bool) -> (String, RenderMode, Theme) {
-    let theme = Theme::default();
-    let id = theme.id.clone();
-    let renderer = theme.renderer;
+fn resolve_runtime_theme(
+    composited: bool,
+    config: &crate::config::ThemeConfig,
+) -> (String, RenderMode, Theme) {
+    let pack = ThemePack::load(config);
+    let theme = pack.theme;
+    let id = pack.id;
+    let renderer = pack.renderer;
     if composited {
         (id, renderer, theme)
     } else {
@@ -2082,6 +2094,14 @@ fn show_dock_context_menu(
         window,
         drawing,
         gl_area,
+        DockContextAction::HoverEffect,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
         DockContextAction::ToggleAutohide,
     );
     append_dock_context_button(
@@ -2101,6 +2121,22 @@ fn show_dock_context_menu(
         drawing,
         gl_area,
         DockContextAction::ReloadTheme,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::ResetDefaults,
+    );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::ResetCustomIcons,
     );
     append_dock_context_button(
         &menu,
@@ -2174,9 +2210,12 @@ fn dock_context_action_label(action: DockContextAction) -> &'static str {
         DockContextAction::AddFolderApplet => "Add Folder Applet...",
         DockContextAction::LargerIcons => "Larger Icons",
         DockContextAction::SmallerIcons => "Smaller Icons",
+        DockContextAction::HoverEffect => "Hover Effect...",
         DockContextAction::ToggleAutohide => "Auto Hide",
         DockContextAction::ToggleReserveSpace => "Reserve Screen Space",
         DockContextAction::ReloadTheme => "Reload Theme",
+        DockContextAction::ResetDefaults => "Reset to Dock Defaults",
+        DockContextAction::ResetCustomIcons => "Reset Custom Icons",
         DockContextAction::OpenConfigFolder => "Open Config Folder",
     }
 }
@@ -2187,9 +2226,12 @@ fn dock_context_action_icon(action: DockContextAction) -> &'static str {
         DockContextAction::AddFolderApplet => "folder-new",
         DockContextAction::LargerIcons => "zoom-in",
         DockContextAction::SmallerIcons => "zoom-out",
+        DockContextAction::HoverEffect => "media-playback-start",
         DockContextAction::ToggleAutohide => "view-fullscreen",
         DockContextAction::ToggleReserveSpace => "view-restore",
         DockContextAction::ReloadTheme => "view-refresh",
+        DockContextAction::ResetDefaults => "edit-clear-all",
+        DockContextAction::ResetCustomIcons => "edit-delete",
         DockContextAction::OpenConfigFolder => "preferences-system",
     }
 }
@@ -3227,6 +3269,9 @@ fn run_dock_context_action(
         DockContextAction::SmallerIcons => {
             change_icon_size(state, window, drawing, gl_area, -8);
         }
+        DockContextAction::HoverEffect => {
+            show_hover_settings_menu(state, window, drawing, gl_area);
+        }
         DockContextAction::ToggleAutohide => {
             update_dock_config(state, window, drawing, gl_area, |state| {
                 state.config.dock.autohide = !state.config.dock.autohide;
@@ -3250,6 +3295,12 @@ fn run_dock_context_action(
             queue_gl_render_if_enabled(state, gl_area);
             drawing.queue_draw();
         }
+        DockContextAction::ResetDefaults => {
+            reset_runtime_defaults(state, window, drawing, gl_area);
+        }
+        DockContextAction::ResetCustomIcons => {
+            reset_runtime_custom_icons(state, window, drawing, gl_area);
+        }
         DockContextAction::OpenConfigFolder => {
             let config_path = state.borrow().config_path.clone();
             let path = config_path
@@ -3259,6 +3310,61 @@ fn run_dock_context_action(
             open_path_in_default_app(&path);
         }
     }
+}
+
+fn reset_runtime_defaults(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    {
+        let mut state = state.borrow_mut();
+        let custom_icons = state.config.custom_icons.clone();
+        state.config = Config::default().normalized();
+        state.config.custom_icons = custom_icons;
+        if let Err(error) = ThemePack::restore_builtin_theme_pack(&state.config.theme.preset) {
+            tracing::warn!(
+                "could not restore built-in theme pack {}: {error:#}",
+                state.config.theme.preset
+            );
+        }
+        state.hidden = false;
+        state.hover = None;
+        state.icons.clear();
+        state.last_size = None;
+        state.last_geometry = None;
+        state.last_reserved_geometry = None;
+        state.last_shape_size = None;
+        state.last_shape_label = None;
+        let (_, _, theme) = resolve_runtime_theme(state.composited, &state.config.theme);
+        state.theme = theme;
+        save_runtime_config(&state);
+        state.refresh_model();
+    }
+
+    ensure_icon_animation_if_needed(state, window, drawing, gl_area);
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
+}
+
+fn reset_runtime_custom_icons(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    {
+        let mut state = state.borrow_mut();
+        state.config.custom_icons.clear();
+        state.icons.clear();
+        save_runtime_config(&state);
+    }
+
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
 }
 
 fn update_dock_config(
@@ -3299,6 +3405,90 @@ fn change_icon_size(
         state.config.dock.icon_size = icon_size as u32;
         state.hover = None;
     });
+}
+
+fn show_hover_settings_menu(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let (dock_width, current_zoom) = {
+        let state = state.borrow();
+        (dock_layout_for_state(&state, None).size.0, state.config.dock.zoom_strength)
+    };
+
+    let menu = GtkBox::new(Orientation::Vertical, 8);
+    menu.add_css_class("osdock-context-menu");
+    menu.add_css_class("osdock-menu-box");
+    menu.set_size_request(HOVER_SETTINGS_MENU_WIDTH, 122);
+
+    let title = Label::new(Some("Hover Effect Strength"));
+    title.add_css_class("osdock-menu-title");
+    title.set_xalign(0.0);
+    menu.append(&title);
+
+    let slider = Scale::with_range(Orientation::Horizontal, 0.0, 1.6, 0.02);
+    slider.set_draw_value(true);
+    slider.set_digits(2);
+    slider.set_hexpand(true);
+    slider.set_margin_start(10);
+    slider.set_margin_end(10);
+    slider.set_margin_bottom(8);
+    slider.set_value(current_zoom);
+
+    {
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        slider.connect_value_changed(move |slider| {
+            set_hover_strength(&state, &window, &drawing, &gl_area, slider.value());
+        });
+    }
+    menu.append(&slider);
+
+    let popover = Popover::new();
+    popover.add_css_class("osdock-context-popover");
+    popover.set_autohide(true);
+    popover.set_has_arrow(false);
+    popover.set_position(PositionType::Top);
+    popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
+    popover.set_pointing_to(Some(&context_menu_anchor_rect(
+        Rect {
+            x: dock_width as f64 / 2.0,
+            y: 1.0,
+            width: 1.0,
+            height: 1.0,
+        },
+        dock_width,
+    )));
+    popover.set_child(Some(&menu));
+    popover.set_parent(drawing);
+
+    present_runtime_popover(state, window, drawing, gl_area, &popover);
+}
+
+fn set_hover_strength(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    value: f64,
+) {
+    {
+        let mut state = state.borrow_mut();
+        state.config.dock.zoom_strength = value.clamp(0.0, 1.6);
+        state.last_size = None;
+        state.last_geometry = None;
+        state.last_reserved_geometry = None;
+        state.last_shape_size = None;
+        save_runtime_config(&state);
+    }
+
+    sync_dock_window(state, window, drawing, gl_area, true);
+    queue_gl_render_if_enabled(state, gl_area);
+    drawing.queue_draw();
 }
 
 fn toggle_keep_in_dock(
@@ -4031,7 +4221,7 @@ fn refresh_config_and_theme(state: &mut Runtime) {
         }
     }
 
-    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(state.composited);
+    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(state.composited, &state.config.theme);
     if theme != state.theme {
         tracing::info!("reloaded theme {} ({:?})", theme_id, theme_renderer);
         state.theme = theme;

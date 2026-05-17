@@ -29,9 +29,46 @@ pub struct DockConfig {
     pub refresh_ms: u32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct ThemeConfig {}
+pub struct ThemeConfig {
+    pub preset: String,
+    pub renderer: Option<RenderMode>,
+    pub shelf_style: ShelfStyle,
+    pub shelf_top: String,
+    pub shelf_bottom: String,
+    pub shelf_stroke: String,
+    pub shelf_highlight: String,
+    pub indicator: String,
+    pub badge: String,
+    pub reflection_opacity: f64,
+    pub reflection_height: f64,
+    pub shelf_height_ratio: f64,
+    pub shelf_slant_ratio: f64,
+    pub icon_gap_ratio: f64,
+    pub side_margin_ratio: f64,
+    pub shelf_horizon_ratio: f64,
+    pub front_lip_ratio: f64,
+    pub reflection_band_ratio: f64,
+    pub tilt: f64,
+    pub depth: f64,
+    pub bevel: f64,
+    pub floor_opacity: f64,
+    pub shadow_strength: f64,
+    pub highlight_strength: f64,
+    pub reflection_blur: f64,
+    pub material_roughness: f64,
+    pub icon_floor_offset: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShelfStyle {
+    CrystalGlass,
+    #[default]
+    LeopardPlank,
+    Legacy,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -104,6 +141,40 @@ impl Default for DockConfig {
     }
 }
 
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            preset: "leopard".to_string(),
+            renderer: None,
+            shelf_style: ShelfStyle::LeopardPlank,
+            shelf_top: "#cfd5dbff".to_string(),
+            shelf_bottom: "#97a4b0ff".to_string(),
+            shelf_stroke: "#5b6a79ff".to_string(),
+            shelf_highlight: "#dbe2e8ff".to_string(),
+            indicator: "#6fd3ffff".to_string(),
+            badge: "#e4202dff".to_string(),
+            reflection_opacity: 0.26,
+            reflection_height: 0.46,
+            shelf_height_ratio: 0.62,
+            shelf_slant_ratio: 0.42,
+            icon_gap_ratio: 0.04,
+            side_margin_ratio: 0.82,
+            shelf_horizon_ratio: 0.62,
+            front_lip_ratio: 0.18,
+            reflection_band_ratio: 0.16,
+            tilt: 0.58,
+            depth: 0.58,
+            bevel: 0.10,
+            floor_opacity: 0.72,
+            shadow_strength: 0.28,
+            highlight_strength: 0.60,
+            reflection_blur: 0.44,
+            material_roughness: 0.12,
+            icon_floor_offset: 0.02,
+        }
+    }
+}
+
 impl Default for AppletConfig {
     fn default() -> Self {
         Self {
@@ -159,6 +230,29 @@ impl Config {
         self.dock.icon_size = self.dock.icon_size.clamp(24, 160);
         self.dock.zoom_strength = self.dock.zoom_strength.clamp(0.0, 1.6);
         self.dock.refresh_ms = self.dock.refresh_ms.clamp(100, 5_000);
+
+        self.theme.preset = self.theme.preset.trim().to_string();
+        if self.theme.preset.is_empty() {
+            self.theme.preset = ThemeConfig::default().preset;
+        }
+        self.theme.reflection_opacity = self.theme.reflection_opacity.clamp(0.0, 1.0);
+        self.theme.reflection_height = self.theme.reflection_height.clamp(0.0, 1.0);
+        self.theme.shelf_height_ratio = self.theme.shelf_height_ratio.clamp(0.18, 1.30);
+        self.theme.shelf_slant_ratio = self.theme.shelf_slant_ratio.clamp(0.0, 1.0);
+        self.theme.icon_gap_ratio = self.theme.icon_gap_ratio.clamp(0.0, 0.50);
+        self.theme.side_margin_ratio = self.theme.side_margin_ratio.clamp(0.0, 2.0);
+        self.theme.shelf_horizon_ratio = self.theme.shelf_horizon_ratio.clamp(0.0, 1.0);
+        self.theme.front_lip_ratio = self.theme.front_lip_ratio.clamp(0.0, 1.0);
+        self.theme.reflection_band_ratio = self.theme.reflection_band_ratio.clamp(0.0, 1.0);
+        self.theme.tilt = self.theme.tilt.clamp(0.0, 1.0);
+        self.theme.depth = self.theme.depth.clamp(0.0, 1.0);
+        self.theme.bevel = self.theme.bevel.clamp(0.0, 1.0);
+        self.theme.floor_opacity = self.theme.floor_opacity.clamp(0.0, 1.0);
+        self.theme.shadow_strength = self.theme.shadow_strength.clamp(0.0, 1.6);
+        self.theme.highlight_strength = self.theme.highlight_strength.clamp(0.0, 1.6);
+        self.theme.reflection_blur = self.theme.reflection_blur.clamp(0.0, 1.0);
+        self.theme.material_roughness = self.theme.material_roughness.clamp(0.0, 1.0);
+        self.theme.icon_floor_offset = self.theme.icon_floor_offset.clamp(-0.4, 0.4);
 
         for pinned in &mut self.pinned {
             *pinned = normalize_pinned_id(pinned);

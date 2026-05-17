@@ -19,6 +19,12 @@ const REPO_THEME_PACKS: &[(&str, &str)] = &[
     ),
 ];
 
+fn builtin_theme_contents(id: &str) -> Option<&'static str> {
+    REPO_THEME_PACKS
+        .iter()
+        .find_map(|(builtin_id, contents)| (*builtin_id == id).then_some(*contents))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThemePack {
     pub id: String,
@@ -65,6 +71,20 @@ impl ThemePack {
             }
         }
         Self::builtin(&id, config)
+    }
+
+    pub fn restore_builtin_theme_pack(id: &str) -> anyhow::Result<()> {
+        let id = normalized_theme_id(id);
+        let Some(contents) = builtin_theme_contents(&id) else {
+            anyhow::bail!("unknown built-in theme id: {id}");
+        };
+
+        let path = config_dir()?.join("themes").join(&id).join("theme.toml");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, contents)?;
+        Ok(())
     }
 
     pub fn builtin(id: &str, config: &ThemeConfig) -> Self {
