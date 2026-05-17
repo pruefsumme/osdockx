@@ -35,7 +35,6 @@ pub struct DockConfig {
 pub struct ThemeConfig {
     pub preset: String,
     pub renderer: Option<RenderMode>,
-    pub shelf_style: ShelfStyle,
     pub shelf_top: String,
     pub shelf_bottom: String,
     pub shelf_stroke: String,
@@ -60,15 +59,6 @@ pub struct ThemeConfig {
     pub reflection_blur: f64,
     pub material_roughness: f64,
     pub icon_floor_offset: f64,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ShelfStyle {
-    CrystalGlass,
-    #[default]
-    LeopardPlank,
-    Legacy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -148,7 +138,6 @@ impl Default for ThemeConfig {
         Self {
             preset: "leopard".to_string(),
             renderer: None,
-            shelf_style: ShelfStyle::LeopardPlank,
             shelf_top: "#cfd5dbff".to_string(),
             shelf_bottom: "#97a4b0ff".to_string(),
             shelf_stroke: "#5b6a79ff".to_string(),

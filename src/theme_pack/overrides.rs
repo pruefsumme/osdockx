@@ -21,7 +21,6 @@ pub(crate) fn apply_user_theme_overrides(theme: &mut ThemeConfig, overrides: &Th
     override_string!(shelf_bottom);
     override_string!(shelf_stroke);
     override_string!(shelf_highlight);
-    override_copy!(shelf_style);
     override_string!(indicator);
     override_string!(badge);
     override_copy!(reflection_opacity);

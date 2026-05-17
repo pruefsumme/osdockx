@@ -3,9 +3,6 @@ name = "Leopard"
 renderer = "procedural-2d"
 
 [theme]
-preset = "leopard"
-renderer = "procedural-2d"
-shelf_style = "leopard-plank"
 shelf_top = "#cfd5dbff"
 shelf_bottom = "#97a4b0ff"
 shelf_stroke = "#5b6a79ff"
