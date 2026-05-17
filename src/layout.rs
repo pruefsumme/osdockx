@@ -411,7 +411,8 @@ mod tests {
         let first_icon = &layout.icons[0].rect;
         let last_icon = &layout.icons[2].rect;
         let left_overhang = first_icon.x - layout.shelf.x;
-        let right_overhang = (layout.shelf.x + layout.shelf.width) - (last_icon.x + last_icon.width);
+        let right_overhang =
+            (layout.shelf.x + layout.shelf.width) - (last_icon.x + last_icon.width);
         let icon_spacing = layout.icons[1].rect.center_x() - layout.icons[0].rect.center_x();
         let applets = layout
             .section(DockSectionKind::Applets)
@@ -486,7 +487,9 @@ mod tests {
 
         assert!(separator.rect.x > last_icon.rect.x + last_icon.rect.width);
         assert_eq!(
-            layout.section(DockSectionKind::Separator).map(|section| section.kind),
+            layout
+                .section(DockSectionKind::Separator)
+                .map(|section| section.kind),
             Some(DockSectionKind::Separator)
         );
     }
@@ -533,8 +536,8 @@ mod tests {
         let applet_gap = first_applet.rect.x - (separator.rect.x + separator.rect.width);
         let first_icon = layout.icons.first().expect("first icon");
         let left_overhang = first_icon.rect.x - layout.shelf.x;
-        let right_overhang =
-            (layout.shelf.x + layout.shelf.width) - (second_applet.rect.x + second_applet.rect.width);
+        let right_overhang = (layout.shelf.x + layout.shelf.width)
+            - (second_applet.rect.x + second_applet.rect.width);
 
         assert!(applets.rect.width > 0.0);
         assert!(first_applet.rect.x > separator.rect.x + separator.rect.width);
@@ -570,7 +573,11 @@ mod tests {
             .expect("applets section");
 
         assert_eq!(
-            layout.sections.iter().map(|section| section.kind).collect::<Vec<_>>(),
+            layout
+                .sections
+                .iter()
+                .map(|section| section.kind)
+                .collect::<Vec<_>>(),
             vec![
                 DockSectionKind::Applications,
                 DockSectionKind::Separator,
@@ -612,6 +619,8 @@ mod tests {
         assert!(separator.rect.x > last_icon.rect.x + last_icon.rect.width);
         assert_eq!(applets.rect.width, 0.0);
         assert!(separator.rect.x < applets.rect.x + 8.0);
-        assert!((right_overhang - left_overhang - separator_slot_width(params, false)).abs() < 0.001);
+        assert!(
+            (right_overhang - left_overhang - separator_slot_width(params, false)).abs() < 0.001
+        );
     }
 }

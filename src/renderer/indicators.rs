@@ -4,11 +4,7 @@ use crate::theme::Theme;
 use gtk::cairo::{Context, LinearGradient};
 
 pub(super) fn leopard_running_indicator_size(active: bool) -> (f64, f64) {
-    if active {
-        (12.3, 3.45)
-    } else {
-        (8.9, 2.7)
-    }
+    if active { (12.3, 3.45) } else { (8.9, 2.7) }
 }
 
 pub(super) fn draw_leopard_running_indicator(
@@ -31,13 +27,27 @@ pub(super) fn draw_leopard_running_indicator(
         .mix(theme.indicator, if active { 0.08 } else { 0.05 });
 
     cr.save().ok();
-    rounded_rect(cr, x - 2.1, y - height * 0.80, width + 4.2, height * 1.60, height * 0.92);
+    rounded_rect(
+        cr,
+        x - 2.1,
+        y - height * 0.80,
+        width + 4.2,
+        height * 1.60,
+        height * 0.92,
+    );
     cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.20 } else { 0.11 }) * alpha);
     let _ = cr.fill();
     cr.restore().ok();
 
     cr.save().ok();
-    rounded_rect(cr, x - 0.9, y - height * 0.56, width + 1.8, height * 1.12, height * 0.64);
+    rounded_rect(
+        cr,
+        x - 0.9,
+        y - height * 0.56,
+        width + 1.8,
+        height * 1.12,
+        height * 0.64,
+    );
     cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.14 } else { 0.07 }) * alpha);
     let _ = cr.fill();
     cr.restore().ok();

@@ -146,13 +146,8 @@ fn layout_for_container_centers_smaller_dock() {
     };
     let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
     let container = (layout.size.0 + 64, layout.size.1 + 10);
-    let centered = Renderer::layout_for_container(
-        &model,
-        &config.dock,
-        &theme,
-        None,
-        Some(container),
-    );
+    let centered =
+        Renderer::layout_for_container(&model, &config.dock, &theme, None, Some(container));
 
     assert_eq!(centered.size, container);
     assert!((centered.shelf.x - layout.shelf.x - 32.0).abs() < 0.01);
@@ -179,7 +174,7 @@ fn leopard_plank_has_transparent_top_corner_and_visible_front_body() {
     assert!(alpha_at(&mut surface, 120, 22) > 0);
     assert!(alpha_at(&mut surface, 120, 34) > 40);
     assert!(alpha_at(&mut surface, 120, 66) > 120);
-    assert!(brightness_at(&mut surface, 120, 37) > brightness_at(&mut surface, 120, 25));
+    assert!(brightness_at(&mut surface, 120, 25) > brightness_at(&mut surface, 120, 37));
     assert!(alpha_at(&mut surface, 120, 66) > alpha_at(&mut surface, 120, 40));
 }
 
@@ -505,7 +500,13 @@ fn leopard_running_indicator_lands_inside_front_body() {
 
     assert!(y > geom.lip_y);
     assert!(y < shelf.y + shelf.height);
-    assert!(alpha_at(&mut surface, icon.center_x().round() as i32, y.round() as i32) > 0);
+    assert!(
+        alpha_at(
+            &mut surface,
+            icon.center_x().round() as i32,
+            y.round() as i32
+        ) > 0
+    );
 }
 
 #[test]
@@ -543,7 +544,13 @@ fn leopard_active_indicator_lands_below_shelf() {
     assert!(y > shelf.y + shelf.height);
     assert!(y > icon.y + icon.height + 6.5);
     assert!(y > running_y + 7.0);
-    assert!(alpha_at(&mut surface, icon.center_x().round() as i32, y.round() as i32) > 0);
+    assert!(
+        alpha_at(
+            &mut surface,
+            icon.center_x().round() as i32,
+            y.round() as i32
+        ) > 0
+    );
 }
 
 fn alpha_at(surface: &mut ImageSurface, x: i32, y: i32) -> u8 {

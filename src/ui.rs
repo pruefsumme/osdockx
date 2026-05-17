@@ -5,8 +5,8 @@ use crate::desktop::DesktopIndex;
 use crate::layout::{DockLayout, Point, Rect};
 use crate::model::{DockItem, DockModel, DockSectionKind};
 use crate::renderer::{
-    GhostIcon, IconCache, IconMotionFrame, IconMotionRect, IconPresenceFrame,
-    IconPresenceRect, RenderFrame, Renderer, ShelfLayer,
+    GhostIcon, IconCache, IconMotionFrame, IconMotionRect, IconPresenceFrame, IconPresenceRect,
+    RenderFrame, Renderer, ShelfLayer,
 };
 use crate::scene3d::Scene3dRenderer;
 use crate::shelf::ShelfRenderer;
@@ -63,7 +63,8 @@ const APPLET_FAN_LABEL_HEIGHT: f64 = 25.0;
 const APPLET_FAN_REVEAL_DURATION: Duration = Duration::from_millis(170);
 const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
-const ICON_PRESENCE_DURATION: Duration = Duration::from_millis(360);
+const ICON_PRESENCE_DURATION: Duration = Duration::from_millis(460);
+const DOCK_SIZE_TRANSITION_DURATION: Duration = Duration::from_millis(260);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
 const STARTUP_REVEAL_DURATION: Duration = Duration::from_millis(480);
 const SEPARATOR_RESIZE_CURSOR: &str = "ns-resize";
@@ -104,6 +105,7 @@ struct Runtime {
     context_menu: Option<Popover>,
     drag: Option<IconDrag>,
     separator_resize: Option<SeparatorResize>,
+    dock_size_transition: Option<DockSizeTransition>,
     icon_slide: Option<IconSlide>,
     icon_presence: Option<IconPresenceTransition>,
     startup_reveal: Option<StartupReveal>,
@@ -127,7 +129,17 @@ struct SeparatorResize {
     start_mouse_y: f64,
     start_window_y: i32,
     start_icon_size: u32,
+    target_icon_size: u32,
+    render_icon_size: f64,
     current_icon_size: u32,
+}
+
+#[derive(Debug, Clone)]
+struct DockSizeTransition {
+    from_icon_size: f64,
+    to_icon_size: f64,
+    started: Instant,
+    duration: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -268,12 +280,14 @@ impl Runtime {
         icon_presence_layout(self)
             .map(|layout| layout.size)
             .unwrap_or_else(|| {
-                Renderer::desired_size(&self.model, &self.config.dock, &self.theme, self.hover)
+                let config = rendered_dock_config(self);
+                Renderer::desired_size(&self.model, &config, &self.theme, self.hover)
             })
     }
 
     fn reserved_thickness(&self) -> u32 {
-        Renderer::reserved_thickness(&self.model, &self.config.dock, &self.theme)
+        let config = rendered_dock_config(self);
+        Renderer::reserved_thickness(&self.model, &config, &self.theme)
     }
 
     fn desired_geometry(&self) -> Option<DockGeometry> {
@@ -320,8 +334,37 @@ impl StartupReveal {
 
 fn dock_layout_for_state(state: &Runtime, hover: Option<Point>) -> DockLayout {
     icon_presence_layout(state).unwrap_or_else(|| {
-        Renderer::layout_for(&state.model, &state.config.dock, &state.theme, hover)
+        let config = rendered_dock_config(state);
+        Renderer::layout_for(&state.model, &config, &state.theme, hover)
     })
+}
+
+fn rendered_dock_config(state: &Runtime) -> DockConfig {
+    let mut config = state.config.dock.clone();
+    if let Some(resize) = state.separator_resize.as_ref() {
+        config.icon_size = resize.render_icon_size.round() as u32;
+    } else if let Some(transition) = active_dock_size_transition(state) {
+        config.icon_size = transition_icon_size(transition).round() as u32;
+    }
+    config
+}
+
+fn active_dock_size_transition(state: &Runtime) -> Option<&DockSizeTransition> {
+    state
+        .dock_size_transition
+        .as_ref()
+        .filter(|transition| transition.started.elapsed() < transition.duration)
+}
+
+fn transition_icon_size(transition: &DockSizeTransition) -> f64 {
+    interpolate(
+        transition.from_icon_size,
+        transition.to_icon_size,
+        ease_in_out_cubic(
+            (transition.started.elapsed().as_secs_f64() / transition.duration.as_secs_f64())
+                .clamp(0.0, 1.0),
+        ),
+    )
 }
 
 fn build_icon_presence_transition(
@@ -375,15 +418,17 @@ fn build_icon_presence_transition(
         .iter()
         .filter_map(|item| {
             let item_key = item.config_key();
-            (!contains_item_key(&next_keys, &item_key)).then_some(item).and_then(|item| {
-                previous_rects
-                    .iter()
-                    .find(|rect| rect.item_key.eq_ignore_ascii_case(&item_key))
-                    .map(|rect| IconPresenceGhost {
-                        item: item.clone(),
-                        rect: rect.rect,
-                    })
-            })
+            (!contains_item_key(&next_keys, &item_key))
+                .then_some(item)
+                .and_then(|item| {
+                    previous_rects
+                        .iter()
+                        .find(|rect| rect.item_key.eq_ignore_ascii_case(&item_key))
+                        .map(|rect| IconPresenceGhost {
+                            item: item.clone(),
+                            rect: rect.rect,
+                        })
+                })
         })
         .collect::<Vec<_>>();
     if from.is_empty() && ghosts.is_empty() {
@@ -440,10 +485,7 @@ fn icon_presence_layout(state: &Runtime) -> Option<DockLayout> {
     ))
 }
 
-fn interpolate_presence_layout(
-    transition: &IconPresenceTransition,
-    progress: f64,
-) -> DockLayout {
+fn interpolate_presence_layout(transition: &IconPresenceTransition, progress: f64) -> DockLayout {
     let mut layout = transition.to_layout.clone();
     layout.label = None;
     layout.size = (
@@ -460,9 +502,17 @@ fn interpolate_presence_layout(
         )
         .round() as i32,
     );
-    layout.shelf = interpolate_rect(transition.from_layout.shelf, transition.to_layout.shelf, progress);
+    layout.shelf = interpolate_rect(
+        transition.from_layout.shelf,
+        transition.to_layout.shelf,
+        progress,
+    );
 
-    for (section, from_section) in layout.sections.iter_mut().zip(&transition.from_layout.sections) {
+    for (section, from_section) in layout
+        .sections
+        .iter_mut()
+        .zip(&transition.from_layout.sections)
+    {
         section.rect = interpolate_rect(from_section.rect, section.rect, progress);
     }
 
@@ -576,6 +626,8 @@ fn begin_separator_resize(
         start_mouse_y: point.y,
         start_window_y,
         start_icon_size,
+        target_icon_size: start_icon_size,
+        render_icon_size: start_icon_size as f64,
         current_icon_size: start_icon_size,
     })
 }
@@ -645,6 +697,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         context_menu: None,
         drag: None,
         separator_resize: None,
+        dock_size_transition: None,
         icon_slide: None,
         icon_presence: None,
         startup_reveal: None,
@@ -694,9 +747,10 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
             let mut state = state.borrow_mut();
             let hover = state.hover;
             let model = state.model.clone();
-            let config = state.config.dock.clone();
+            let config = rendered_dock_config(&state);
             let custom_icons = state.config.custom_icons.clone();
             let theme = state.theme.clone();
+            let layout = dock_layout_for_state(&state, hover);
             let icon_motion = icon_motion_frame(&state);
             let icon_presence = icon_presence_frame(&state);
             let mut icons = std::mem::take(&mut state.icons);
@@ -709,6 +763,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
                     config: &config,
                     theme: &theme,
                     hover,
+                    layout: Some(&layout),
                     shelf_layer,
                     icon_motion: icon_motion.as_ref(),
                     icon_presence: icon_presence.as_ref(),
@@ -1189,16 +1244,18 @@ fn wire_icon_drag(
             let point = Point { x, y };
             let drag_item = {
                 let state = state.borrow();
-                dock_layout_for_state(&state, None).hit_test(point).and_then(|index| {
+                dock_layout_for_state(&state, None)
+                    .hit_test(point)
+                    .and_then(|index| {
                         let item = state.model.items.get(index)?;
                         if !item.is_application() && !item.is_applet() {
                             return None;
                         }
                         let rect = dock_layout_for_state(&state, None)
-                        .icons
-                        .iter()
-                        .find(|icon| icon.item_index == index)
-                        .map(|icon| icon.rect)?;
+                            .icons
+                            .iter()
+                            .find(|icon| icon.item_index == index)
+                            .map(|icon| icon.rect)?;
                         let item_key = item.config_key();
                         Some((item_key, rect))
                     })
@@ -1327,6 +1384,7 @@ fn wire_separator_resize_drag(
                 update_separator_resize(&mut state, offset_y)
             };
             if changed {
+                ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
                 sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 queue_gl_render_if_enabled(&state, &gl_area);
                 drawing.queue_draw();
@@ -1347,6 +1405,7 @@ fn wire_separator_resize_drag(
                 let state = state.borrow();
                 save_runtime_config(&state);
             }
+            ensure_icon_animation_if_needed(&state, &window, &drawing, &gl_area);
             set_separator_resize_cursor(&drawing, false);
             sync_dock_window(&state, &window, &drawing, &gl_area, true);
             queue_gl_render_if_enabled(&state, &gl_area);
@@ -1376,16 +1435,13 @@ fn update_separator_resize(state: &mut Runtime, offset_y: f64) -> bool {
         resize.start_icon_size,
         separator_resize_drag_delta(resize, current_window_y, offset_y),
     );
-    resize.current_icon_size = new_size;
-    if state.config.dock.icon_size == new_size {
+    if resize.target_icon_size == new_size {
         return false;
     }
 
-    state.config.dock.icon_size = new_size;
+    resize.target_icon_size = new_size;
+    resize.current_icon_size = new_size;
     state.hover = None;
-    state.last_size = None;
-    state.last_geometry = None;
-    state.last_shape_size = None;
     true
 }
 
@@ -1396,6 +1452,20 @@ fn finish_separator_resize(state: &mut Runtime) -> bool {
 
     state.hover = None;
     state.suppress_next_left_click = true;
+    state.config.dock.icon_size = resize.target_icon_size;
+    if (resize.render_icon_size - resize.target_icon_size as f64).abs() >= 0.5 {
+        state.dock_size_transition = Some(DockSizeTransition {
+            from_icon_size: resize.render_icon_size,
+            to_icon_size: resize.target_icon_size as f64,
+            started: Instant::now(),
+            duration: DOCK_SIZE_TRANSITION_DURATION,
+        });
+    } else {
+        state.dock_size_transition = None;
+    }
+    state.last_size = None;
+    state.last_geometry = None;
+    state.last_shape_size = None;
     resize.current_icon_size != resize.start_icon_size
 }
 
@@ -1593,11 +1663,7 @@ fn icon_presence_frame(state: &Runtime) -> Option<IconPresenceFrame> {
                 .unwrap_or_else(|| {
                     let travel = icon.rect.height * 0.92;
                     (
-                        translate_rect(
-                            icon.rect,
-                            0.0,
-                            interpolate(travel, 0.0, enter_progress),
-                        ),
+                        translate_rect(icon.rect, 0.0, interpolate(travel, 0.0, enter_progress)),
                         enter_progress,
                     )
                 });
@@ -1627,6 +1693,14 @@ fn icon_presence_frame(state: &Runtime) -> Option<IconPresenceFrame> {
 
 fn ease_out_cubic(t: f64) -> f64 {
     1.0 - (1.0 - t).powi(3)
+}
+
+fn ease_in_out_cubic(t: f64) -> f64 {
+    if t < 0.5 {
+        4.0 * t.powi(3)
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
 }
 
 fn interpolate_rect(from: Rect, to: Rect, progress: f64) -> Rect {
@@ -1663,9 +1737,15 @@ fn ensure_icon_animation_tick(
     glib::timeout_add_local(ICON_ANIMATION_FRAME, move || {
         let keep_running = {
             let mut state = state.borrow_mut();
+            update_separator_resize_animation(&mut state);
             prune_finished_icon_slide(&mut state);
             prune_finished_icon_presence(&mut state);
-            state.drag.is_some() || state.icon_slide.is_some() || state.icon_presence.is_some()
+            prune_finished_dock_size_transition(&mut state);
+            state.drag.is_some()
+                || state.separator_resize.is_some()
+                || state.icon_slide.is_some()
+                || state.icon_presence.is_some()
+                || state.dock_size_transition.is_some()
         };
         sync_dock_window(&state, &window, &drawing, &gl_area, false);
         queue_gl_render_if_enabled(&state, &gl_area);
@@ -1735,6 +1815,34 @@ fn prune_finished_icon_presence(state: &mut Runtime) {
         .unwrap_or(false)
     {
         state.icon_presence = None;
+    }
+}
+
+fn prune_finished_dock_size_transition(state: &mut Runtime) {
+    if state
+        .dock_size_transition
+        .as_ref()
+        .map(|transition| transition.started.elapsed() >= transition.duration)
+        .unwrap_or(false)
+    {
+        state.dock_size_transition = None;
+    }
+}
+
+fn update_separator_resize_animation(state: &mut Runtime) {
+    let Some(resize) = state.separator_resize.as_mut() else {
+        return;
+    };
+    resize.render_icon_size =
+        approach_icon_size(resize.render_icon_size, resize.target_icon_size as f64);
+}
+
+fn approach_icon_size(current: f64, target: f64) -> f64 {
+    let delta = target - current;
+    if delta.abs() < 0.05 {
+        target
+    } else {
+        current + delta * 0.34
     }
 }
 
@@ -3390,7 +3498,17 @@ fn update_dock_config(
 ) {
     {
         let mut state = state.borrow_mut();
+        let previous_render_icon_size = rendered_dock_config(&state).icon_size as f64;
         update(&mut state);
+        let next_icon_size = state.config.dock.icon_size as f64;
+        if (previous_render_icon_size - next_icon_size).abs() >= 1.0 {
+            state.dock_size_transition = Some(DockSizeTransition {
+                from_icon_size: previous_render_icon_size,
+                to_icon_size: next_icon_size,
+                started: Instant::now(),
+                duration: DOCK_SIZE_TRANSITION_DURATION,
+            });
+        }
         state.last_size = None;
         state.last_geometry = None;
         state.last_reserved_geometry = None;
@@ -3429,7 +3547,10 @@ fn show_hover_settings_menu(
 ) {
     let (dock_width, current_zoom) = {
         let state = state.borrow();
-        (dock_layout_for_state(&state, None).size.0, state.config.dock.zoom_strength)
+        (
+            dock_layout_for_state(&state, None).size.0,
+            state.config.dock.zoom_strength,
+        )
     };
 
     let menu = GtkBox::new(Orientation::Vertical, 8);
@@ -4229,6 +4350,8 @@ fn ensure_icon_animation_if_needed(
 ) {
     if state.borrow().icon_presence.is_some() {
         ensure_icon_animation_tick(state, window, drawing, gl_area);
+    } else if state.borrow().dock_size_transition.is_some() {
+        ensure_icon_animation_tick(state, window, drawing, gl_area);
     }
 }
 
@@ -4258,7 +4381,17 @@ fn refresh_config_and_theme(state: &mut Runtime) {
         Ok(config) => {
             if config != state.config {
                 tracing::info!("reloaded config {}", state.config_path.display());
+                let previous_render_icon_size = rendered_dock_config(state).icon_size as f64;
+                let next_icon_size = config.dock.icon_size as f64;
                 state.config = config;
+                if (previous_render_icon_size - next_icon_size).abs() >= 1.0 {
+                    state.dock_size_transition = Some(DockSizeTransition {
+                        from_icon_size: previous_render_icon_size,
+                        to_icon_size: next_icon_size,
+                        started: Instant::now(),
+                        duration: DOCK_SIZE_TRANSITION_DURATION,
+                    });
+                }
                 state.hidden = false;
                 state.last_size = None;
                 state.last_geometry = None;
@@ -4274,7 +4407,8 @@ fn refresh_config_and_theme(state: &mut Runtime) {
         }
     }
 
-    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(state.composited, &state.config.theme);
+    let (theme_id, theme_renderer, theme) =
+        resolve_runtime_theme(state.composited, &state.config.theme);
     if theme != state.theme {
         tracing::info!("reloaded theme {} ({:?})", theme_id, theme_renderer);
         state.theme = theme;
@@ -4502,10 +4636,11 @@ fn shape_dock(state: &mut Runtime) {
 
     let size = state.desired_size();
     let layout = dock_layout_for_state(state, state.hover);
+    let config = rendered_dock_config(state);
     let mut visual_regions = Renderer::visual_regions_for_layout(
         &state.model,
         &layout,
-        &state.config.dock,
+        &config,
         &state.theme,
     );
     let mut input_regions = Renderer::input_regions_for_layout(&layout);
@@ -4808,6 +4943,8 @@ mod tests {
         assert_eq!(resize.start_mouse_y, point.y);
         assert_eq!(resize.start_window_y, 480);
         assert_eq!(resize.start_icon_size, 64);
+        assert_eq!(resize.target_icon_size, 64);
+        assert_eq!(resize.render_icon_size, 64.0);
         assert_eq!(resize.current_icon_size, 64);
     }
 
@@ -4817,6 +4954,8 @@ mod tests {
             start_mouse_y: 40.0,
             start_window_y: 900,
             start_icon_size: 64,
+            target_icon_size: 64,
+            render_icon_size: 64.0,
             current_icon_size: 64,
         };
 
@@ -4850,6 +4989,24 @@ mod tests {
     fn small_drag_deltas_keep_same_effective_icon_size() {
         assert_eq!(resize_icon_size_for_drag(64, 0.8), 64);
         assert_eq!(resize_icon_size_for_drag(64, -0.8), 64);
+    }
+
+    #[test]
+    fn separator_resize_animation_moves_toward_target_without_snapping() {
+        let next = approach_icon_size(64.0, 96.0);
+
+        assert!(next > 64.0);
+        assert!(next < 96.0);
+        assert_eq!(approach_icon_size(95.98, 96.0), 96.0);
+    }
+
+    #[test]
+    fn dock_size_transition_easing_is_symmetric() {
+        assert_eq!(ease_in_out_cubic(0.0), 0.0);
+        assert_eq!(ease_in_out_cubic(1.0), 1.0);
+        assert!((ease_in_out_cubic(0.5) - 0.5).abs() < 0.001);
+        assert!(ease_in_out_cubic(0.25) < 0.25);
+        assert!(ease_in_out_cubic(0.75) > 0.75);
     }
 
     #[test]

@@ -14,14 +14,7 @@ pub(super) fn elapsed_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-pub(super) fn rounded_rect(
-    cr: &Context,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    radius: f64,
-) {
+pub(super) fn rounded_rect(cr: &Context, x: f64, y: f64, width: f64, height: f64, radius: f64) {
     let radius = radius.min(width / 2.0).min(height / 2.0);
     cr.new_sub_path();
     cr.arc(

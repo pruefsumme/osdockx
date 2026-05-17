@@ -9,8 +9,7 @@ pub(super) use self::geometry::{
     crystal_shelf_geometry, leopard_wedge_body_geometry,
 };
 pub(super) use self::leopard::{
-    draw_front_lip, draw_glass_highlight_overlay, draw_glass_shelf_base,
-    draw_leopard_shelf_strokes,
+    draw_front_lip, draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes,
 };
 pub(super) use self::material::{draw_shadow, fill_crystal_material};
 pub(super) use self::paths::{

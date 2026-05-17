@@ -21,9 +21,8 @@ use self::reflections::{
 };
 use self::shelf::{
     compute_perspective_shelf_geometry, crystal_shelf_geometry, draw_front_lip,
-    draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes,
-    draw_shadow, draw_shelf_section_separator, leopard_glass_plane_path,
-    leopard_wedge_body_geometry,
+    draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes, draw_shadow,
+    draw_shelf_section_separator, leopard_glass_plane_path, leopard_wedge_body_geometry,
 };
 use crate::config::DockConfig;
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
@@ -88,7 +87,7 @@ impl Renderer {
     ) -> Vec<Rect> {
         let icon_expansion = config.icon_size as f64 * config.zoom_strength + 10.0;
         let mut regions = Vec::with_capacity(layout.icons.len() * 2 + 4);
-        regions.push(expand(layout.shelf, 5.0));
+        regions.push(expand(layout.shelf, 8.0));
         if uses_shelf_plane_reflections(theme) && theme.reflection_opacity > 0.0 {
             regions.push(expand(shelf_plane_reflection_rect(&layout, theme), 3.0));
         }
@@ -207,22 +206,20 @@ impl Renderer {
 
     pub fn draw_overlay(&mut self, cr: &Context, frame: RenderFrame<'_>, icons: &mut IconCache) {
         let started = Instant::now();
-        let mut layout = Self::layout_for_container(
-            frame.model,
-            frame.config,
-            frame.theme,
-            frame.hover,
-            frame.container_size,
-        );
+        let mut layout = frame.layout.cloned().unwrap_or_else(|| {
+            Self::layout_for_container(
+                frame.model,
+                frame.config,
+                frame.theme,
+                frame.hover,
+                frame.container_size,
+            )
+        });
         if frame.icon_motion.is_some() || frame.icon_presence.is_some() {
             layout.label = None;
         }
-        let resolved_icons = resolve_icons(
-            frame.model,
-            &layout,
-            frame.icon_motion,
-            frame.icon_presence,
-        );
+        let resolved_icons =
+            resolve_icons(frame.model, &layout, frame.icon_motion, frame.icon_presence);
         self.draw_layout(
             cr,
             frame.model,
@@ -311,6 +308,7 @@ pub struct RenderFrame<'a> {
     pub config: &'a DockConfig,
     pub theme: &'a Theme,
     pub hover: Option<Point>,
+    pub layout: Option<&'a DockLayout>,
     pub shelf_layer: ShelfLayer,
     pub icon_motion: Option<&'a IconMotionFrame>,
     pub icon_presence: Option<&'a IconPresenceFrame>,
@@ -565,14 +563,7 @@ fn draw_icons(
             continue;
         }
         if item.is_running() {
-            draw_leopard_running_indicator(
-                cr,
-                icon.rect,
-                layout,
-                theme,
-                item.active,
-                icon.alpha,
-            );
+            draw_leopard_running_indicator(cr, icon.rect, layout, theme, item.active, icon.alpha);
         }
         if item.active {
             draw_leopard_active_indicator(cr, icon.rect, layout, theme, icon.alpha);
@@ -583,11 +574,7 @@ fn draw_icons(
     }
 }
 
-fn draw_icon_art(
-    cr: &Context,
-    resolved_icons: &[ResolvedIcon<'_>],
-    icons: &mut IconCache,
-) {
+fn draw_icon_art(cr: &Context, resolved_icons: &[ResolvedIcon<'_>], icons: &mut IconCache) {
     for icon in resolved_icons {
         let item = icon.item.as_ref();
         cr.save().ok();

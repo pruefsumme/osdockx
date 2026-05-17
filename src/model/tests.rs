@@ -192,8 +192,14 @@ fn sections_keep_pinned_and_unpinned_running_apps_in_applications() {
 
     assert_eq!(sections.applications.item_indices, vec![0, 1]);
     assert_eq!(sections.applets.item_indices, vec![2, 3]);
-    assert_eq!(model.items[0].desktop_id.as_deref(), Some("browser.desktop"));
-    assert_eq!(model.items[1].desktop_id.as_deref(), Some("terminal.desktop"));
+    assert_eq!(
+        model.items[0].desktop_id.as_deref(),
+        Some("browser.desktop")
+    );
+    assert_eq!(
+        model.items[1].desktop_id.as_deref(),
+        Some("terminal.desktop")
+    );
     assert!(model.items[1].is_running());
     assert!(!model.items[1].pinned);
     assert!(model.items[2].is_downloads_applet());

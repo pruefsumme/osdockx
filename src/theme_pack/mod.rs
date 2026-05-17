@@ -11,9 +11,8 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const REPO_THEME_PACKS: &[(&str, &str)] = &[
-    ("leopard", include_str!("../../themes/leopard/theme.toml")),
-];
+const REPO_THEME_PACKS: &[(&str, &str)] =
+    &[("leopard", include_str!("../../themes/leopard/theme.toml"))];
 
 fn builtin_theme_contents(id: &str) -> Option<&'static str> {
     REPO_THEME_PACKS

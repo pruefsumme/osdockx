@@ -1,6 +1,6 @@
 use super::{
-    IconCache, ResolvedIcon, crystal_shelf_geometry, draw_icon_art,
-    draw_icon_source, leopard_glass_plane_path, rounded_rect,
+    IconCache, ResolvedIcon, crystal_shelf_geometry, draw_icon_art, draw_icon_source,
+    leopard_glass_plane_path, rounded_rect,
 };
 use crate::layout::{DockLayout, Point, Rect};
 use crate::model::DockItem;
@@ -135,8 +135,9 @@ pub(super) fn draw_icon_reflections_on_shelf(
 
     for icon in resolved_icons {
         let item = icon.item.as_ref();
-        let max_height = (geom.lip_y - (icon.rect.y + icon.rect.height) - layout.shelf.height * 0.055)
-            .max(icon.rect.height * 0.07);
+        let max_height =
+            (geom.lip_y - (icon.rect.y + icon.rect.height) - layout.shelf.height * 0.055)
+                .max(icon.rect.height * 0.07);
         draw_icon_reflection(cr, item, icon.rect, max_height, theme, icons, icon.alpha);
     }
 

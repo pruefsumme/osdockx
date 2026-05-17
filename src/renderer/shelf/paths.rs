@@ -10,8 +10,13 @@ pub(crate) fn leopard_glass_plane_path(cr: &Context, shelf: &Rect, theme: &Theme
     let geom = compute_perspective_shelf_geometry(shelf, theme);
     rounded_polygon_path(
         cr,
-        &[geom.back_left, geom.back_right, geom.lip_right, geom.lip_left],
-        (shelf.height * 0.18).clamp(3.2, 7.0),
+        &[
+            geom.back_left,
+            geom.back_right,
+            geom.lip_right,
+            geom.lip_left,
+        ],
+        (shelf.height * 0.26).clamp(4.8, 11.0),
     );
 }
 
@@ -31,7 +36,7 @@ pub(crate) fn leopard_wedge_body_path(
             body.face_left_bottom,
             geom.lip_left,
         ],
-        (face_height * 0.66).clamp(2.8, 7.6),
+        (face_height * 1.05).clamp(4.0, 12.0),
     );
 }
 
@@ -57,7 +62,7 @@ pub(crate) fn leopard_front_face_path(
             body.face_right_bottom,
             body.face_left_bottom,
         ],
-        (face_height * 0.96).clamp(3.4, 8.8),
+        (face_height * 1.20).clamp(4.6, 13.5),
     );
 }
 
@@ -80,9 +85,18 @@ fn rounded_polygon_path(cr: &Context, points: &[Point], radius: f64) {
         let corner_radius = corner_radius(prev, corner, next, radius);
         let entry = move_toward(corner, prev, corner_radius);
         let exit = move_toward(corner, next, corner_radius);
+        let control_in = move_toward(corner, prev, corner_radius * 0.36);
+        let control_out = move_toward(corner, next, corner_radius * 0.36);
 
         cr.line_to(entry.x, entry.y);
-        cr.curve_to(corner.x, corner.y, corner.x, corner.y, exit.x, exit.y);
+        cr.curve_to(
+            control_in.x,
+            control_in.y,
+            control_out.x,
+            control_out.y,
+            exit.x,
+            exit.y,
+        );
     }
 
     cr.close_path();
