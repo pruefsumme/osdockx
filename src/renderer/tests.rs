@@ -230,7 +230,7 @@ fn leopard_icon_reflections_stay_above_lip() {
     let mut surface = ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
     let cr = Context::new(&surface).unwrap();
 
-    let resolved_icons = resolve_icons(&model, &layout, None, None);
+    let resolved_icons = resolve_icons(&model, &layout, None, None, None);
 
     draw_icon_reflections_on_shelf(&cr, &resolved_icons, &layout, &theme, &mut icons);
     drop(cr);
@@ -281,7 +281,7 @@ fn leopard_reflections_are_visible_at_icon_bottom() {
     let cr = Context::new(&surface).unwrap();
     let icon = layout.icons[0].rect;
 
-    let resolved_icons = resolve_icons(&model, &layout, None, None);
+    let resolved_icons = resolve_icons(&model, &layout, None, None, None);
 
     draw_icon_reflections_on_shelf(&cr, &resolved_icons, &layout, &theme, &mut icons);
     drop(cr);
@@ -649,7 +649,7 @@ fn leopard_reflection_is_clipped_to_reflection_band() {
     };
     let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
     let mut icons = IconCache::disabled();
-    let resolved_icons = resolve_icons(&model, &layout, None, None);
+    let resolved_icons = resolve_icons(&model, &layout, None, None, None);
     let mut icon_surface = render_icon_surface(&resolved_icons, &layout, &mut icons).unwrap();
     let mut surface = ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
     let cr = Context::new(&surface).unwrap();

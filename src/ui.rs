@@ -2,11 +2,11 @@ use crate::backend::x11::X11Backend;
 use crate::backend::{DockGeometry, PlatformBackend};
 use crate::config::{AppletConfig, Config, DockConfig, RenderMode};
 use crate::desktop::DesktopIndex;
-use crate::layout::{DockLayout, Point, Rect};
-use crate::model::{DockItem, DockModel, DockSectionKind};
+use crate::layout::{DockLayout, Point, Rect, separator_hover_rect};
+use crate::model::{DockItem, DockModel};
 use crate::renderer::{
     GhostIcon, IconCache, IconMotionFrame, IconMotionRect, IconPresenceFrame, IconPresenceRect,
-    RenderFrame, Renderer, ShelfLayer,
+    IndicatorAnimationFrame, IndicatorAnimationState, RenderFrame, Renderer, ShelfLayer,
 };
 use crate::scene3d::Scene3dRenderer;
 use crate::shelf::ShelfRenderer;
@@ -68,6 +68,7 @@ const ICON_DRAG_THRESHOLD: f64 = 6.0;
 const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_PRESENCE_DURATION: Duration = Duration::from_millis(460);
 const DOCK_SIZE_TRANSITION_DURATION: Duration = Duration::from_millis(260);
+const INDICATOR_ANIMATION_DURATION: Duration = Duration::from_millis(180);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
 const STARTUP_REVEAL_DURATION: Duration = Duration::from_millis(480);
 const SEPARATOR_RESIZE_CURSOR: &str = "ns-resize";
@@ -112,6 +113,7 @@ struct Runtime {
     dock_size_transition: Option<DockSizeTransition>,
     icon_slide: Option<IconSlide>,
     icon_presence: Option<IconPresenceTransition>,
+    indicator_animations: HashMap<String, IndicatorAnimation>,
     startup_reveal: Option<StartupReveal>,
     animation_tick_running: bool,
     startup_reveal_tick_running: bool,
@@ -160,6 +162,19 @@ struct IconPresenceTransition {
     to_layout: DockLayout,
     has_insertions: bool,
     has_removals: bool,
+    started: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct IndicatorVisual {
+    visibility: f64,
+    emphasis: f64,
+}
+
+#[derive(Debug, Clone)]
+struct IndicatorAnimation {
+    from: IndicatorVisual,
+    to: IndicatorVisual,
     started: Instant,
 }
 
@@ -273,12 +288,18 @@ impl Runtime {
             &self.config.dock,
             &self.theme,
         );
+        let indicator_animations = build_indicator_animations(
+            &previous_model,
+            &next_model,
+            &self.indicator_animations,
+        );
 
         self.model = next_model;
         if icon_presence.is_some() {
             self.hover = None;
         }
         self.icon_presence = icon_presence;
+        self.indicator_animations = indicator_animations;
     }
 
     fn desired_size(&self) -> (i32, i32) {
@@ -612,8 +633,9 @@ fn startup_reveal_offset(
 
 fn separator_hit_test_in_layout(layout: &crate::layout::DockLayout, point: Point) -> bool {
     layout
-        .section(DockSectionKind::Separator)
-        .is_some_and(|section| section.rect.contains(point))
+        .separator
+        .map(|separator| separator_hover_rect(separator.rect).contains(point))
+        .unwrap_or(false)
 }
 
 fn separator_hit_test(state: &Runtime, point: Point) -> bool {
@@ -706,6 +728,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         dock_size_transition: None,
         icon_slide: None,
         icon_presence: None,
+        indicator_animations: HashMap::new(),
         startup_reveal: None,
         animation_tick_running: false,
         startup_reveal_tick_running: false,
@@ -759,6 +782,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
             let layout = dock_layout_for_state(&state, hover);
             let icon_motion = icon_motion_frame(&state);
             let icon_presence = icon_presence_frame(&state);
+            let indicator_animation = indicator_animation_frame(&state);
             let mut icons = std::mem::take(&mut state.icons);
             icons.set_custom_icons(&custom_icons);
             let shelf_layer = shelf_layer_for(&state);
@@ -773,6 +797,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
                     shelf_layer,
                     icon_motion: icon_motion.as_ref(),
                     icon_presence: icon_presence.as_ref(),
+                    indicator_animation: indicator_animation.as_ref(),
                     container_size: None,
                 },
                 &mut icons,
@@ -1697,6 +1722,132 @@ fn icon_presence_frame(state: &Runtime) -> Option<IconPresenceFrame> {
     Some(IconPresenceFrame { current, ghosts })
 }
 
+fn indicator_visual_for_item(item: &DockItem) -> IndicatorVisual {
+    if item.active {
+        IndicatorVisual {
+            visibility: 1.0,
+            emphasis: 1.0,
+        }
+    } else if item.is_running() {
+        IndicatorVisual {
+            visibility: 1.0,
+            emphasis: 0.0,
+        }
+    } else {
+        IndicatorVisual {
+            visibility: 0.0,
+            emphasis: 0.0,
+        }
+    }
+}
+
+fn build_indicator_animations(
+    previous_model: &DockModel,
+    next_model: &DockModel,
+    existing: &HashMap<String, IndicatorAnimation>,
+) -> HashMap<String, IndicatorAnimation> {
+    let previous = previous_model
+        .items
+        .iter()
+        .map(|item| (item.config_key().to_ascii_lowercase(), indicator_visual_for_item(item)))
+        .collect::<HashMap<_, _>>();
+    let next = next_model
+        .items
+        .iter()
+        .map(|item| (item.config_key().to_ascii_lowercase(), indicator_visual_for_item(item)))
+        .collect::<HashMap<_, _>>();
+    let mut animations = HashMap::new();
+
+    for key in previous.keys().chain(next.keys()) {
+        let Some(key) = next
+            .get_key_value(key)
+            .map(|(key, _)| key)
+            .or_else(|| previous.get_key_value(key).map(|(key, _)| key))
+        else {
+            continue;
+        };
+        if animations.contains_key(key) {
+            continue;
+        }
+
+        let from = previous.get(key).copied().unwrap_or(IndicatorVisual {
+            visibility: 0.0,
+            emphasis: 0.0,
+        });
+        let to = next.get(key).copied().unwrap_or(IndicatorVisual {
+            visibility: 0.0,
+            emphasis: 0.0,
+        });
+
+        if let Some(animation) = existing.get(key)
+            && animation.started.elapsed() < INDICATOR_ANIMATION_DURATION
+            && animation.to == to
+        {
+            animations.insert(key.clone(), animation.clone());
+            continue;
+        }
+
+        if from == to {
+            continue;
+        }
+
+        let from = existing
+            .get(key)
+            .filter(|animation| animation.started.elapsed() < INDICATOR_ANIMATION_DURATION)
+            .map(current_indicator_visual)
+            .unwrap_or(from);
+
+        animations.insert(
+            key.clone(),
+            IndicatorAnimation {
+                from,
+                to,
+                started: Instant::now(),
+            },
+        );
+    }
+
+    animations
+}
+
+fn indicator_animation_frame(state: &Runtime) -> Option<IndicatorAnimationFrame> {
+    let states = state
+        .indicator_animations
+        .iter()
+        .filter(|(_, animation)| animation.started.elapsed() < INDICATOR_ANIMATION_DURATION)
+        .map(|(item_key, animation)| {
+            let visual = current_indicator_visual(animation);
+            IndicatorAnimationState {
+                item_key: item_key.clone(),
+                visibility: visual.visibility,
+                emphasis: visual.emphasis,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    (!states.is_empty()).then_some(IndicatorAnimationFrame { states })
+}
+
+fn current_indicator_visual(animation: &IndicatorAnimation) -> IndicatorVisual {
+    let raw = (animation.started.elapsed().as_secs_f64()
+        / INDICATOR_ANIMATION_DURATION.as_secs_f64())
+        .clamp(0.0, 1.0);
+    let visibility_progress = ease_out_cubic(raw);
+    let emphasis_progress = ease_in_out_cubic(raw);
+    IndicatorVisual {
+        visibility: interpolate(
+            animation.from.visibility,
+            animation.to.visibility,
+            visibility_progress,
+        ),
+        emphasis: interpolate(
+            animation.from.emphasis,
+            animation.to.emphasis,
+            emphasis_progress,
+        ),
+    }
+}
+
 fn ease_out_cubic(t: f64) -> f64 {
     1.0 - (1.0 - t).powi(3)
 }
@@ -1746,11 +1897,13 @@ fn ensure_icon_animation_tick(
             update_separator_resize_animation(&mut state);
             prune_finished_icon_slide(&mut state);
             prune_finished_icon_presence(&mut state);
+            prune_finished_indicator_animations(&mut state);
             prune_finished_dock_size_transition(&mut state);
             state.drag.is_some()
                 || state.separator_resize.is_some()
                 || state.icon_slide.is_some()
                 || state.icon_presence.is_some()
+                || !state.indicator_animations.is_empty()
                 || state.dock_size_transition.is_some()
         };
         sync_dock_window(&state, &window, &drawing, &gl_area, false);
@@ -1822,6 +1975,12 @@ fn prune_finished_icon_presence(state: &mut Runtime) {
     {
         state.icon_presence = None;
     }
+}
+
+fn prune_finished_indicator_animations(state: &mut Runtime) {
+    state
+        .indicator_animations
+        .retain(|_, animation| animation.started.elapsed() < INDICATOR_ANIMATION_DURATION);
 }
 
 fn prune_finished_dock_size_transition(state: &mut Runtime) {
@@ -4924,6 +5083,8 @@ fn ensure_icon_animation_if_needed(
 ) {
     if state.borrow().icon_presence.is_some() {
         ensure_icon_animation_tick(state, window, drawing, gl_area);
+    } else if !state.borrow().indicator_animations.is_empty() {
+        ensure_icon_animation_tick(state, window, drawing, gl_area);
     } else if state.borrow().dock_size_transition.is_some() {
         ensure_icon_animation_tick(state, window, drawing, gl_area);
     }
@@ -5500,12 +5661,11 @@ mod tests {
     #[test]
     fn separator_hit_test_starts_resize_mode() {
         let layout = separator_test_layout();
-        let separator = layout
-            .section(DockSectionKind::Separator)
-            .expect("separator section");
+        let separator = layout.separator.expect("separator layout");
+        let hover = separator_hover_rect(separator.rect);
         let point = Point {
-            x: separator.rect.center_x(),
-            y: separator.rect.y + separator.rect.height * 0.5,
+            x: hover.center_x(),
+            y: hover.y + hover.height * 0.18,
         };
 
         let resize = begin_separator_resize(&layout, point, 480, 64).expect("resize mode");
@@ -5580,6 +5740,46 @@ mod tests {
     }
 
     #[test]
+    fn indicator_animation_builds_for_running_transition() {
+        let previous = DockModel {
+            items: vec![item_with_state(Some("xfce4-terminal.desktop"), false, false)],
+        };
+        let next = DockModel {
+            items: vec![item_with_state(Some("xfce4-terminal.desktop"), false, true)],
+        };
+
+        let animations = build_indicator_animations(&previous, &next, &HashMap::new());
+        let animation = animations
+            .get("xfce4-terminal.desktop")
+            .expect("running indicator animation");
+
+        assert_eq!(animation.from.visibility, 0.0);
+        assert_eq!(animation.from.emphasis, 0.0);
+        assert_eq!(animation.to.visibility, 1.0);
+        assert_eq!(animation.to.emphasis, 0.0);
+    }
+
+    #[test]
+    fn indicator_animation_builds_for_active_growth() {
+        let previous = DockModel {
+            items: vec![item_with_state(Some("xfce4-terminal.desktop"), false, true)],
+        };
+        let next = DockModel {
+            items: vec![item_with_state(Some("xfce4-terminal.desktop"), true, true)],
+        };
+
+        let animations = build_indicator_animations(&previous, &next, &HashMap::new());
+        let animation = animations
+            .get("xfce4-terminal.desktop")
+            .expect("active indicator animation");
+
+        assert_eq!(animation.from.visibility, 1.0);
+        assert_eq!(animation.from.emphasis, 0.0);
+        assert_eq!(animation.to.visibility, 1.0);
+        assert_eq!(animation.to.emphasis, 1.0);
+    }
+
+    #[test]
     fn customizer_color_serialization_uses_hex_rgba() {
         let rgba = gdk::RGBA::new(90.0 / 255.0, 131.0 / 255.0, 170.0 / 255.0, 1.0);
 
@@ -5617,16 +5817,25 @@ mod tests {
     #[test]
     fn separator_does_not_hit_icon_magnify_path() {
         let layout = separator_test_layout();
-        let separator = layout
-            .section(DockSectionKind::Separator)
-            .expect("separator section");
+        let separator = layout.separator.expect("separator layout");
+        let hover = separator_hover_rect(separator.rect);
         let point = Point {
-            x: separator.rect.center_x(),
-            y: separator.rect.y + separator.rect.height * 0.5,
+            x: hover.center_x(),
+            y: hover.y + hover.height * 0.18,
         };
 
         assert!(separator_hit_test_in_layout(&layout, point));
         assert!(layout.hit_test(point).is_none());
+    }
+
+    #[test]
+    fn separator_hover_rect_extends_above_visual_separator() {
+        let layout = separator_test_layout();
+        let separator = layout.separator.expect("separator layout");
+        let hover = separator_hover_rect(separator.rect);
+
+        assert!(hover.y < separator.rect.y);
+        assert!(hover.height > separator.rect.height);
     }
 }
 

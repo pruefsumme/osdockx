@@ -98,7 +98,9 @@ pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> Leopar
     let side_span = (geom.lip_left.x - (shelf.x + bottom_inset)).max(0.0);
     let join_drop = (face_height * 0.42).clamp(1.8, face_height * 0.62);
     let join_outset = side_span * 0.22;
-    let nose_width = (face_height * 1.35).clamp(4.8, shelf.height * 0.16);
+    let nose_width_max = (shelf.height * 0.16).max(0.0);
+    let nose_width_min = 4.8_f64.min(nose_width_max);
+    let nose_width = (face_height * 1.35).clamp(nose_width_min, nose_width_max.max(nose_width_min));
     let front_corner_radius = leopard_glass_plane_front_corner_radius(shelf, &geom);
     LeopardWedgeBodyGeometry {
         face_left_bottom: Point {
@@ -143,4 +145,26 @@ fn distance(a: Point, b: Point) -> f64 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     (dx * dx + dy * dy).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leopard_wedge_body_geometry_handles_short_shelves() {
+        let shelf = Rect {
+            x: 0.0,
+            y: 48.0,
+            width: 320.0,
+            height: 29.76,
+        };
+
+        let body = leopard_wedge_body_geometry(&shelf, &Theme::default());
+
+        assert!(body.face_left_inner_bottom.x.is_finite());
+        assert!(body.face_right_inner_bottom.x.is_finite());
+        assert!(body.face_left_inner_bottom.x > body.face_left_bottom.x);
+        assert!(body.face_right_inner_bottom.x < body.face_right_bottom.x);
+    }
 }

@@ -10,7 +10,7 @@ pub use self::icons::IconCache;
 use self::badges::draw_badge;
 use self::icons::draw_icon_source;
 use self::indicators::{
-    draw_leopard_active_indicator, draw_leopard_running_indicator,
+    draw_leopard_active_indicator, draw_leopard_indicator, draw_leopard_running_indicator,
     leopard_active_indicator_center_y, leopard_running_indicator_center_y,
     leopard_running_indicator_size,
 };
@@ -26,7 +26,7 @@ use self::shelf::{
     leopard_wedge_body_geometry,
 };
 use crate::config::DockConfig;
-use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout};
+use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout, separator_hover_rect};
 use crate::model::{DockItem, DockModel};
 use crate::theme::{Color, Theme};
 use gtk::cairo::{Context, FontSlant, FontWeight, ImageSurface, LinearGradient};
@@ -123,8 +123,11 @@ impl Renderer {
     }
 
     pub fn input_regions_for_layout(layout: &DockLayout) -> Vec<Rect> {
-        let mut regions = Vec::with_capacity(layout.icons.len() + 1);
+        let mut regions = Vec::with_capacity(layout.icons.len() + 2);
         regions.push(expand(layout.shelf, 2.0));
+        if let Some(separator) = layout.separator.as_ref() {
+            regions.push(separator_hover_rect(separator.rect));
+        }
         for icon in &layout.icons {
             regions.push(center_ratio_rect(icon.rect, ICON_HOVER_RETAIN_RATIO));
         }
@@ -191,7 +194,7 @@ impl Renderer {
     ) {
         let started = Instant::now();
         let layout = Self::layout_for_container(model, config, theme, hover, None);
-        let resolved_icons = resolve_icons(model, &layout, None, None);
+        let resolved_icons = resolve_icons(model, &layout, None, None, None);
         self.draw_layout(
             cr,
             model,
@@ -219,8 +222,13 @@ impl Renderer {
         if frame.icon_motion.is_some() || frame.icon_presence.is_some() {
             layout.label = None;
         }
-        let resolved_icons =
-            resolve_icons(frame.model, &layout, frame.icon_motion, frame.icon_presence);
+        let resolved_icons = resolve_icons(
+            frame.model,
+            &layout,
+            frame.icon_motion,
+            frame.icon_presence,
+            frame.indicator_animation,
+        );
         self.draw_layout(
             cr,
             frame.model,
@@ -313,6 +321,7 @@ pub struct RenderFrame<'a> {
     pub shelf_layer: ShelfLayer,
     pub icon_motion: Option<&'a IconMotionFrame>,
     pub icon_presence: Option<&'a IconPresenceFrame>,
+    pub indicator_animation: Option<&'a IndicatorAnimationFrame>,
     pub container_size: Option<(i32, i32)>,
 }
 
@@ -342,6 +351,18 @@ pub struct IconPresenceRect {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct IndicatorAnimationFrame {
+    pub states: Vec<IndicatorAnimationState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndicatorAnimationState {
+    pub item_key: String,
+    pub visibility: f64,
+    pub emphasis: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct GhostIcon {
     pub item: DockItem,
     pub rect: Rect,
@@ -354,6 +375,8 @@ struct ResolvedIcon<'a> {
     item: Cow<'a, DockItem>,
     rect: Rect,
     alpha: f64,
+    indicator_visibility: f64,
+    indicator_emphasis: f64,
 }
 
 fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
@@ -450,6 +473,7 @@ fn resolve_icons<'a>(
     layout: &DockLayout,
     motion: Option<&IconMotionFrame>,
     presence: Option<&'a IconPresenceFrame>,
+    indicator_animation: Option<&IndicatorAnimationFrame>,
 ) -> Vec<ResolvedIcon<'a>> {
     let mut resolved = layout
         .icons
@@ -459,6 +483,12 @@ fn resolve_icons<'a>(
             let item_key = item.config_key();
             let mut rect = icon.rect;
             let mut alpha = 1.0;
+            let mut indicator_visibility = if item.active || item.is_running() {
+                1.0
+            } else {
+                0.0
+            };
+            let mut indicator_emphasis = if item.active { 1.0 } else { 0.0 };
             if let Some(presence_rect) = presence.and_then(|frame| {
                 frame
                     .current
@@ -475,11 +505,22 @@ fn resolve_icons<'a>(
             }) {
                 rect = motion_rect.rect;
             }
+            if let Some(indicator_state) = indicator_animation.and_then(|frame| {
+                frame
+                    .states
+                    .iter()
+                    .find(|state| state.item_key.eq_ignore_ascii_case(&item_key))
+            }) {
+                indicator_visibility = indicator_state.visibility;
+                indicator_emphasis = indicator_state.emphasis;
+            }
             Some(ResolvedIcon {
                 item_key,
                 item: Cow::Borrowed(item),
                 rect,
                 alpha,
+                indicator_visibility,
+                indicator_emphasis,
             })
         })
         .collect::<Vec<_>>();
@@ -490,6 +531,12 @@ fn resolve_icons<'a>(
             item: Cow::Borrowed(&ghost.item),
             rect: ghost.rect,
             alpha: ghost.alpha,
+            indicator_visibility: if ghost.item.active || ghost.item.is_running() {
+                1.0
+            } else {
+                0.0
+            },
+            indicator_emphasis: if ghost.item.active { 1.0 } else { 0.0 },
         }));
     }
 
@@ -563,10 +610,16 @@ fn draw_icons(
         if !item.is_application() {
             continue;
         }
-        if item.active {
-            draw_leopard_active_indicator(cr, icon.rect, layout, theme, icon.alpha);
-        } else if item.is_running() {
-            draw_leopard_running_indicator(cr, icon.rect, layout, theme, false, icon.alpha);
+        if icon.indicator_visibility > 0.0 {
+            draw_leopard_indicator(
+                cr,
+                icon.rect,
+                layout,
+                theme,
+                icon.indicator_emphasis,
+                icon.indicator_visibility,
+                icon.alpha,
+            );
         }
         if let Some(badge) = item.badge {
             draw_badge(cr, icon.rect, badge, theme.badge, icon.alpha);
