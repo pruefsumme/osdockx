@@ -17,6 +17,10 @@ pub(crate) struct PerspectiveShelfGeometry {
 pub(crate) struct LeopardWedgeBodyGeometry {
     pub(crate) face_left_bottom: Point,
     pub(crate) face_right_bottom: Point,
+    pub(crate) face_left_join: Point,
+    pub(crate) face_right_join: Point,
+    pub(crate) face_left_inner_bottom: Point,
+    pub(crate) face_right_inner_bottom: Point,
     pub(crate) front_corner_radius: f64,
 }
 
@@ -89,7 +93,12 @@ pub(crate) fn compute_perspective_shelf_geometry(
 
 pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> LeopardWedgeBodyGeometry {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let face_height = (geom.bottom_y - geom.lip_y).max(1.0);
     let bottom_inset = (shelf.height * 0.012).clamp(0.7, 1.3);
+    let side_span = (geom.lip_left.x - (shelf.x + bottom_inset)).max(0.0);
+    let join_drop = (face_height * 0.42).clamp(1.8, face_height * 0.62);
+    let join_outset = side_span * 0.22;
+    let nose_width = (face_height * 1.35).clamp(4.8, shelf.height * 0.16);
     let front_corner_radius = leopard_glass_plane_front_corner_radius(shelf, &geom);
     LeopardWedgeBodyGeometry {
         face_left_bottom: Point {
@@ -98,6 +107,22 @@ pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> Leopar
         },
         face_right_bottom: Point {
             x: shelf.x + shelf.width - bottom_inset,
+            y: geom.bottom_y,
+        },
+        face_left_join: Point {
+            x: geom.lip_left.x - join_outset,
+            y: geom.lip_y + join_drop,
+        },
+        face_right_join: Point {
+            x: geom.lip_right.x + join_outset,
+            y: geom.lip_y + join_drop,
+        },
+        face_left_inner_bottom: Point {
+            x: shelf.x + bottom_inset + nose_width,
+            y: geom.bottom_y,
+        },
+        face_right_inner_bottom: Point {
+            x: shelf.x + shelf.width - bottom_inset - nose_width,
             y: geom.bottom_y,
         },
         front_corner_radius,

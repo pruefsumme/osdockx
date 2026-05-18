@@ -82,6 +82,30 @@ fn export_leopard_preview_png() {
 }
 
 #[test]
+#[ignore = "writes a local PNG shelf-only preview for renderer tuning"]
+fn export_leopard_shelf_only_preview_png() {
+    let config = Config::default().normalized();
+    let theme = Theme::from_config(&config.theme);
+    let surface = ImageSurface::create(Format::ARgb32, 1295, 192).unwrap();
+    let cr = Context::new(&surface).unwrap();
+    let shelf = Rect {
+        x: 2.0,
+        y: 96.0,
+        width: 1291.0,
+        height: 56.0,
+    };
+
+    draw_procedural_shelf_layer(&cr, &shelf, &theme);
+    drop(cr);
+
+    let output = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("most-recent-shelf-only.png");
+    let mut file = File::create(output).unwrap();
+    surface.write_to_png(&mut file).unwrap();
+}
+
+#[test]
 fn reserved_thickness_stays_compact_for_leopard_theme() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);
@@ -467,8 +491,24 @@ fn leopard_front_lip_stays_inside_trapezoid_bounds() {
             y
         ) > 0
     );
-    assert!(alpha_at(&mut surface, body.face_left_bottom.x.round() as i32, y) > 0);
-    assert!(alpha_at(&mut surface, body.face_right_bottom.x.round() as i32, y) > 0);
+    assert!(
+        alpha_at(
+            &mut surface,
+            (body.face_left_join.x
+                + (body.face_left_inner_bottom.x - body.face_left_join.x) * 0.35)
+                .round() as i32,
+            y
+        ) > 0
+    );
+    assert!(
+        alpha_at(
+            &mut surface,
+            (body.face_right_join.x
+                - (body.face_right_join.x - body.face_right_inner_bottom.x) * 0.35)
+                .round() as i32,
+            y
+        ) > 0
+    );
 }
 
 #[test]
@@ -831,13 +871,17 @@ fn leopard_separator_paints_deeper_theme_aware_trench() {
     draw_shelf_section_separator(&cr, &shelf, &separator, &theme);
     drop(cr);
 
-    let sample_y = (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.72).round() as i32;
+    let sample_y = (geom.back_left.y + (geom.lip_y - geom.back_left.y) * 0.54).round() as i32;
+    let lip_y = (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.56).round() as i32;
     let center_x = separator.rect.center_x().round() as i32;
     let trench = color_at(&mut surface, center_x, sample_y);
     let panel = color_at(&mut surface, center_x + 8, sample_y);
+    let lip = color_at(&mut surface, center_x, lip_y);
+    let lip_panel = color_at(&mut surface, center_x + 8, lip_y);
 
     assert!(alpha_at(&mut surface, center_x, sample_y) > 0);
-    assert!(brightness(trench) + 10 < brightness(panel));
+    assert!(brightness(trench) + 4 < brightness(panel));
+    assert!((i32::from(brightness(lip)) - i32::from(brightness(lip_panel))).abs() <= 4);
 }
 
 fn alpha_at(surface: &mut ImageSurface, x: i32, y: i32) -> u8 {

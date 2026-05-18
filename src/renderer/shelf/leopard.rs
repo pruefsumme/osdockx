@@ -335,17 +335,17 @@ pub(crate) fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
 
     leopard_front_lip_top_path(cr, &geom, &body);
     cr.set_line_width(1.20);
-    cr.set_line_cap(gtk::cairo::LineCap::Butt);
-    let lip_highlight = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
-    add_stop(&lip_highlight, 0.00, theme.shelf_highlight.with_alpha(0.0));
-    add_stop(&lip_highlight, 0.10, theme.shelf_highlight.with_alpha(0.34));
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    let lip_highlight = LinearGradient::new(body.face_left_join.x, 0.0, body.face_right_join.x, 0.0);
+    add_stop(&lip_highlight, 0.00, theme.shelf_highlight.with_alpha(0.12));
+    add_stop(&lip_highlight, 0.04, theme.shelf_highlight.with_alpha(0.34));
     add_stop(
         &lip_highlight,
         0.50,
         Color::rgba(0.93, 0.98, 1.0, 0.58 * theme.highlight_strength + 0.47),
     );
-    add_stop(&lip_highlight, 0.90, theme.shelf_highlight.with_alpha(0.34));
-    add_stop(&lip_highlight, 1.00, theme.shelf_highlight.with_alpha(0.0));
+    add_stop(&lip_highlight, 0.96, theme.shelf_highlight.with_alpha(0.34));
+    add_stop(&lip_highlight, 1.00, theme.shelf_highlight.with_alpha(0.12));
     let _ = cr.set_source(&lip_highlight);
     let _ = cr.stroke();
 

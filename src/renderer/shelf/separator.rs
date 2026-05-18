@@ -1,7 +1,6 @@
 use super::super::add_stop;
 use super::{
-    compute_perspective_shelf_geometry, leopard_front_face_path, leopard_glass_plane_path,
-    leopard_wedge_body_geometry,
+    compute_perspective_shelf_geometry, leopard_glass_plane_path,
 };
 use crate::layout::{DockSeparatorLayout, Rect};
 use crate::theme::{Color, Theme};
@@ -23,11 +22,10 @@ fn draw_leopard_separator(
     theme: &Theme,
 ) {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
-    let body = leopard_wedge_body_geometry(shelf, theme);
     let center_x = separator.rect.x + separator.rect.width * 0.5;
 
-    let top = geom.back_left.y + (geom.lip_y - geom.back_left.y) * 0.10;
-    let bottom = body.face_left_bottom.y - shelf.height * 0.03;
+    let top = geom.back_left.y + (geom.lip_y - geom.back_left.y) * 0.12;
+    let bottom = geom.lip_y - shelf.height * 0.08;
     if bottom <= top {
         return;
     }
@@ -42,31 +40,31 @@ fn draw_leopard_separator(
         0.00,
         theme
             .shelf_top
-            .mix(theme.shelf_stroke, 0.32)
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.18)
-            .with_alpha(0.28),
+            .mix(theme.shelf_stroke, 0.22)
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.12)
+            .with_alpha(0.22),
     );
     add_stop(
         &trench,
         0.54,
         theme
             .shelf_bottom
-            .mix(theme.shelf_stroke, 0.42)
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.38)
-            .with_alpha(0.44),
+            .mix(theme.shelf_stroke, 0.36)
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.28)
+            .with_alpha(0.38),
     );
     add_stop(
         &trench,
         1.00,
         theme
             .shelf_bottom
-            .mix(theme.shelf_stroke, 0.34)
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.30)
-            .with_alpha(0.34),
+            .mix(theme.shelf_stroke, 0.28)
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.18)
+            .with_alpha(0.26),
     );
-    cr.move_to(center_x, top + 0.6);
-    cr.line_to(center_x, geom.lip_y + 1.8);
-    cr.set_line_width((separator.rect.width * 0.86).max(4.8));
+    cr.move_to(center_x, top + 0.3);
+    cr.line_to(center_x, bottom);
+    cr.set_line_width((separator.rect.width * 0.50).max(2.6));
     cr.set_line_cap(gtk::cairo::LineCap::Round);
     let _ = cr.set_source(&trench);
     let _ = cr.stroke();
@@ -78,7 +76,7 @@ fn draw_leopard_separator(
         theme
             .shelf_stroke
             .mix(Color::rgba(0.02, 0.03, 0.05, 1.0), 0.54)
-            .with_alpha(0.40),
+            .with_alpha(0.20),
     );
     add_stop(
         &shadow,
@@ -86,11 +84,11 @@ fn draw_leopard_separator(
         theme
             .shelf_stroke
             .mix(Color::rgba(0.02, 0.03, 0.05, 1.0), 0.48)
-            .with_alpha(0.48),
+            .with_alpha(0.24),
     );
-    cr.move_to(center_x - separator.rect.width * 0.22, top + 1.1);
-    cr.line_to(center_x - separator.rect.width * 0.22, geom.lip_y + 0.8);
-    cr.set_line_width(1.45);
+    cr.move_to(center_x - separator.rect.width * 0.10, top + 0.8);
+    cr.line_to(center_x - separator.rect.width * 0.10, bottom - 0.2);
+    cr.set_line_width(0.95);
     let _ = cr.set_source(&shadow);
     let _ = cr.stroke();
 
@@ -101,7 +99,7 @@ fn draw_leopard_separator(
         theme
             .shelf_highlight
             .mix(theme.shelf_top, 0.18)
-            .with_alpha(0.32 * theme.highlight_strength),
+            .with_alpha(0.24 * theme.highlight_strength),
     );
     add_stop(
         &highlight,
@@ -109,63 +107,12 @@ fn draw_leopard_separator(
         theme
             .shelf_highlight
             .mix(theme.shelf_bottom, 0.14)
-            .with_alpha(0.40 * theme.highlight_strength),
+            .with_alpha(0.30 * theme.highlight_strength),
     );
-    cr.move_to(center_x + separator.rect.width * 0.24, top + 1.1);
-    cr.line_to(center_x + separator.rect.width * 0.24, geom.lip_y + 0.7);
-    cr.set_line_width(1.25);
+    cr.move_to(center_x + separator.rect.width * 0.10, top + 0.8);
+    cr.line_to(center_x + separator.rect.width * 0.10, bottom - 0.2);
+    cr.set_line_width(0.85);
     let _ = cr.set_source(&highlight);
-    let _ = cr.stroke();
-
-    cr.restore().ok();
-
-    cr.save().ok();
-    leopard_front_face_path(cr, &geom, &body);
-    cr.clip();
-
-    let lip_top = geom.lip_y + (bottom - geom.lip_y).max(1.0) * 0.08;
-    let lip_bottom = bottom - 0.6;
-    let lip_trench = LinearGradient::new(0.0, lip_top, 0.0, lip_bottom);
-    add_stop(
-        &lip_trench,
-        0.00,
-        theme
-            .shelf_stroke
-            .mix(theme.shelf_bottom, 0.30)
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.38)
-            .with_alpha(0.58),
-    );
-    add_stop(
-        &lip_trench,
-        1.00,
-        theme
-            .shelf_stroke
-            .mix(theme.shelf_bottom, 0.42)
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.32)
-            .with_alpha(0.48),
-    );
-    cr.move_to(center_x, lip_top);
-    cr.line_to(center_x, lip_bottom);
-    cr.set_line_width((separator.rect.width * 0.76).max(4.2));
-    cr.set_line_cap(gtk::cairo::LineCap::Round);
-    let _ = cr.set_source(&lip_trench);
-    let _ = cr.stroke();
-
-    cr.move_to(center_x - separator.rect.width * 0.22, lip_top + 0.3);
-    cr.line_to(center_x - separator.rect.width * 0.22, lip_bottom - 0.2);
-    cr.set_line_width(1.0);
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.42);
-    let _ = cr.stroke();
-
-    cr.move_to(center_x + separator.rect.width * 0.22, lip_top + 0.3);
-    cr.line_to(center_x + separator.rect.width * 0.22, lip_bottom - 0.2);
-    cr.set_line_width(1.0);
-    cr.set_source_rgba(
-        theme.shelf_highlight.red,
-        theme.shelf_highlight.green,
-        theme.shelf_highlight.blue,
-        0.36 * theme.highlight_strength,
-    );
     let _ = cr.stroke();
 
     cr.restore().ok();
