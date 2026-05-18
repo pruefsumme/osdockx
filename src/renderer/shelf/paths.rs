@@ -1,6 +1,6 @@
 use super::geometry::{
     LeopardWedgeBodyGeometry, PerspectiveShelfGeometry, compute_perspective_shelf_geometry,
-    crystal_shelf_geometry,
+    crystal_shelf_geometry, leopard_glass_plane_front_corner_radius,
 };
 use crate::layout::{Point, Rect};
 use crate::theme::Theme;
@@ -8,6 +8,7 @@ use gtk::cairo::Context;
 
 pub(crate) fn leopard_glass_plane_path(cr: &Context, shelf: &Rect, theme: &Theme) {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let radius = leopard_glass_plane_front_corner_radius(shelf, &geom);
     rounded_polygon_path(
         cr,
         &[
@@ -16,7 +17,7 @@ pub(crate) fn leopard_glass_plane_path(cr: &Context, shelf: &Rect, theme: &Theme
             geom.lip_right,
             geom.lip_left,
         ],
-        (shelf.height * 0.26).clamp(4.8, 11.0),
+        radius,
     );
 }
 
@@ -25,16 +26,7 @@ pub(crate) fn leopard_wedge_body_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let radius = leopard_front_face_radius(geom, body);
-    cr.new_path();
-    cr.move_to(geom.back_left.x, geom.back_left.y);
-    cr.line_to(geom.back_right.x, geom.back_right.y);
-    cr.line_to(geom.lip_right.x - radius, geom.lip_right.y);
-    leopard_right_fascia_corner(cr, geom, body, radius);
-    cr.line_to(body.face_left_bottom.x + radius, body.face_left_bottom.y);
-    leopard_left_fascia_corner(cr, geom, body, radius);
-    cr.line_to(geom.back_left.x, geom.back_left.y);
-    cr.close_path();
+    leopard_front_face_path(cr, geom, body);
 }
 
 pub(crate) fn leopard_front_face_path(
@@ -42,13 +34,13 @@ pub(crate) fn leopard_front_face_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let radius = leopard_front_face_radius(geom, body);
+    let edge = leopard_front_edge_geometry(geom, body);
     cr.new_path();
-    cr.move_to(geom.lip_left.x + radius, geom.lip_left.y);
-    cr.line_to(geom.lip_right.x - radius, geom.lip_right.y);
-    leopard_right_fascia_corner(cr, geom, body, radius);
-    cr.line_to(body.face_left_bottom.x + radius, body.face_left_bottom.y);
-    leopard_left_fascia_corner(cr, geom, body, radius);
+    cr.move_to(edge.left_side.x, edge.left_side.y);
+    add_leopard_front_edge(cr, &edge);
+    add_leopard_right_cap(cr, &edge, body);
+    cr.line_to(body.face_left_bottom.x, body.face_left_bottom.y);
+    add_leopard_left_cap(cr, &edge, body);
     cr.close_path();
 }
 
@@ -57,11 +49,10 @@ pub(crate) fn leopard_front_lip_top_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let radius = leopard_front_face_radius(geom, body);
+    let edge = leopard_front_edge_geometry(geom, body);
     cr.new_path();
-    let _ = body;
-    cr.move_to(geom.lip_left.x + radius * 1.18, geom.lip_left.y + 0.45);
-    cr.line_to(geom.lip_right.x - radius * 1.18, geom.lip_right.y + 0.45);
+    cr.move_to(edge.left_front.x + 1.0, geom.lip_y + 0.45);
+    cr.line_to(edge.right_front.x - 1.0, geom.lip_y + 0.45);
 }
 
 pub(crate) fn leopard_front_lip_bottom_path(
@@ -69,53 +60,109 @@ pub(crate) fn leopard_front_lip_bottom_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let radius = leopard_front_face_radius(geom, body);
+    let inset = ((body.face_left_bottom.y - geom.lip_y).max(1.0) * 0.42).clamp(1.2, 3.2);
     let y = body.face_left_bottom.y - 0.55;
     cr.new_path();
-    cr.move_to(body.face_left_bottom.x + radius * 1.24, y);
-    cr.line_to(body.face_right_bottom.x - radius * 1.24, y);
+    cr.move_to(body.face_left_bottom.x + inset, y);
+    cr.line_to(body.face_right_bottom.x - inset, y);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LeopardFrontEdgeGeometry {
+    left_side: Point,
+    left_side_control: Point,
+    left_front_control: Point,
+    left_front: Point,
+    right_front: Point,
+    right_front_control: Point,
+    right_side_control: Point,
+    right_side: Point,
+}
+
+fn leopard_front_edge_geometry(
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) -> LeopardFrontEdgeGeometry {
+    let radius = leopard_front_face_radius(geom, body);
+    let control_radius = radius * 0.36;
+    LeopardFrontEdgeGeometry {
+        left_side: move_toward(geom.lip_left, geom.back_left, radius),
+        left_side_control: move_toward(geom.lip_left, geom.back_left, control_radius),
+        left_front_control: move_toward(geom.lip_left, geom.lip_right, control_radius),
+        left_front: move_toward(geom.lip_left, geom.lip_right, radius),
+        right_front: move_toward(geom.lip_right, geom.lip_left, radius),
+        right_front_control: move_toward(geom.lip_right, geom.lip_left, control_radius),
+        right_side_control: move_toward(geom.lip_right, geom.back_right, control_radius),
+        right_side: move_toward(geom.lip_right, geom.back_right, radius),
+    }
 }
 
 fn leopard_front_face_radius(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) -> f64 {
-    let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
     let face_width = (geom.lip_right.x - geom.lip_left.x).max(1.0);
-    (face_height * 0.86).clamp(3.2, 8.4).min(face_width * 0.08)
+    let bottom_width = (body.face_right_bottom.x - body.face_left_bottom.x).max(1.0);
+    body.front_corner_radius
+        .min(face_width * 0.45)
+        .min(bottom_width * 0.45)
 }
 
-fn leopard_right_fascia_corner(
-    cr: &Context,
-    geom: &PerspectiveShelfGeometry,
-    body: &LeopardWedgeBodyGeometry,
-    radius: f64,
-) {
-    let face_height = (body.face_right_bottom.y - geom.lip_right.y).max(1.0);
+fn add_leopard_front_edge(cr: &Context, edge: &LeopardFrontEdgeGeometry) {
     cr.curve_to(
-        geom.lip_right.x - radius * 0.18,
-        geom.lip_right.y + face_height * 0.22,
-        body.face_right_bottom.x + radius * 0.72,
-        body.face_right_bottom.y - face_height * 0.20,
+        edge.left_side_control.x,
+        edge.left_side_control.y,
+        edge.left_front_control.x,
+        edge.left_front_control.y,
+        edge.left_front.x,
+        edge.left_front.y,
+    );
+    cr.line_to(edge.right_front.x, edge.right_front.y);
+    cr.curve_to(
+        edge.right_front_control.x,
+        edge.right_front_control.y,
+        edge.right_side_control.x,
+        edge.right_side_control.y,
+        edge.right_side.x,
+        edge.right_side.y,
+    );
+}
+
+fn add_leopard_right_cap(
+    cr: &Context,
+    edge: &LeopardFrontEdgeGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) {
+    let cap_span = (body.face_right_bottom.y - edge.right_side.y).max(1.0);
+    let cap_smooth = (body.front_corner_radius * 0.44)
+        .min(cap_span * 0.45)
+        .clamp(2.0, 6.0);
+    cr.curve_to(
+        edge.right_side.x,
+        edge.right_side.y + cap_span * 0.44,
+        body.face_right_bottom.x + cap_smooth,
+        body.face_right_bottom.y,
         body.face_right_bottom.x,
         body.face_right_bottom.y,
     );
 }
 
-fn leopard_left_fascia_corner(
+fn add_leopard_left_cap(
     cr: &Context,
-    geom: &PerspectiveShelfGeometry,
+    edge: &LeopardFrontEdgeGeometry,
     body: &LeopardWedgeBodyGeometry,
-    radius: f64,
 ) {
-    let face_height = (body.face_left_bottom.y - geom.lip_left.y).max(1.0);
+    let cap_span = (body.face_left_bottom.y - edge.left_side.y).max(1.0);
+    let cap_smooth = (body.front_corner_radius * 0.44)
+        .min(cap_span * 0.45)
+        .clamp(2.0, 6.0);
     cr.curve_to(
-        body.face_left_bottom.x - radius * 0.72,
-        body.face_left_bottom.y - face_height * 0.20,
-        geom.lip_left.x + radius * 0.18,
-        geom.lip_left.y + face_height * 0.22,
-        geom.lip_left.x + radius,
-        geom.lip_left.y,
+        body.face_left_bottom.x - cap_smooth,
+        body.face_left_bottom.y,
+        edge.left_side.x,
+        edge.left_side.y + cap_span * 0.44,
+        edge.left_side.x,
+        edge.left_side.y,
     );
 }
 

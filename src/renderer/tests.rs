@@ -365,6 +365,26 @@ fn leopard_front_face_tucks_bottom_corners_under_lip() {
 }
 
 #[test]
+fn leopard_front_face_uses_glass_corner_radius() {
+    let config = Config::default().normalized();
+    let theme = Theme::from_config(&config.theme);
+    let shelf = Rect {
+        x: 24.0,
+        y: 20.0,
+        width: 192.0,
+        height: 48.0,
+    };
+
+    let geom = compute_perspective_shelf_geometry(&shelf, &theme);
+    let body = leopard_wedge_body_geometry(&shelf, &theme);
+    let glass_radius = super::shelf::leopard_glass_plane_front_corner_radius(&shelf, &geom);
+    let front_face_height = geom.bottom_y - geom.lip_y;
+
+    assert!((body.front_corner_radius - glass_radius).abs() < 0.001);
+    assert!(body.front_corner_radius > front_face_height * 2.0);
+}
+
+#[test]
 fn leopard_front_body_reaches_outer_corner_join() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);

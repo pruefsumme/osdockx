@@ -17,6 +17,7 @@ pub(crate) struct PerspectiveShelfGeometry {
 pub(crate) struct LeopardWedgeBodyGeometry {
     pub(crate) face_left_bottom: Point,
     pub(crate) face_right_bottom: Point,
+    pub(crate) front_corner_radius: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +92,7 @@ pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> Leopar
     let geom = compute_perspective_shelf_geometry(shelf, theme);
     let face_height = (geom.bottom_y - geom.lip_y).max(1.0);
     let bottom_inset = (face_height * 2.10).clamp(shelf.height * 0.090, shelf.height * 0.180);
+    let front_corner_radius = leopard_glass_plane_front_corner_radius(shelf, &geom);
     LeopardWedgeBodyGeometry {
         face_left_bottom: Point {
             x: geom.front_left.x + bottom_inset,
@@ -100,5 +102,22 @@ pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> Leopar
             x: geom.front_right.x - bottom_inset,
             y: geom.bottom_y,
         },
+        front_corner_radius,
     }
+}
+
+pub(crate) fn leopard_glass_plane_front_corner_radius(
+    shelf: &Rect,
+    geom: &PerspectiveShelfGeometry,
+) -> f64 {
+    let radius = (shelf.height * 0.26).clamp(4.8, 11.0);
+    radius
+        .min(distance(geom.lip_right, geom.lip_left) * 0.45)
+        .min(distance(geom.lip_left, geom.back_left) * 0.45)
+}
+
+fn distance(a: Point, b: Point) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    (dx * dx + dy * dy).sqrt()
 }

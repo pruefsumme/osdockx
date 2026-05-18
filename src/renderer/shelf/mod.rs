@@ -6,7 +6,7 @@ mod separator;
 
 pub(super) use self::geometry::{
     LeopardWedgeBodyGeometry, PerspectiveShelfGeometry, compute_perspective_shelf_geometry,
-    crystal_shelf_geometry, leopard_wedge_body_geometry,
+    crystal_shelf_geometry, leopard_glass_plane_front_corner_radius, leopard_wedge_body_geometry,
 };
 pub(super) use self::leopard::{
     draw_front_lip, draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes,
