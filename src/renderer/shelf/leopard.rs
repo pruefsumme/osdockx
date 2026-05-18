@@ -20,7 +20,7 @@ pub(crate) fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
         theme
             .shelf_top
             .mix(theme.shelf_bottom, 0.30)
-            .with_alpha(0.64 + theme.floor_opacity * 0.10),
+            .with_alpha(0.82 + theme.floor_opacity * 0.12),
         0.0006 + theme.material_roughness * 0.0012,
         |cr| {
             leopard_glass_plane_path(cr, shelf, theme);
@@ -37,33 +37,33 @@ pub(crate) fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
         0.00,
         theme
             .shelf_bottom
-            .mix(theme.shelf_top, 0.06)
-            .with_alpha(0.72),
+            .mix(theme.shelf_top, 0.34)
+            .with_alpha(0.96),
     );
     add_stop(
         &glass,
         0.32,
         theme
             .shelf_bottom
-            .mix(theme.shelf_top, 0.34)
-            .mix(theme.shelf_highlight, 0.06)
-            .with_alpha(0.60),
+            .mix(theme.shelf_top, 0.46)
+            .mix(theme.shelf_highlight, 0.03)
+            .with_alpha(0.94),
     );
     add_stop(
         &glass,
         0.72,
         theme
             .shelf_top
-            .mix(theme.shelf_bottom, 0.20)
-            .with_alpha(0.62),
+            .mix(theme.shelf_bottom, 0.12)
+            .with_alpha(0.96),
     );
     add_stop(
         &glass,
         1.00,
         theme
             .shelf_top
-            .mix(Color::rgba(0.18, 0.32, 0.48, 1.0), 0.18)
-            .with_alpha(0.76),
+            .mix(Color::rgba(0.18, 0.32, 0.48, 1.0), 0.26)
+            .with_alpha(0.98),
     );
     let _ = cr.set_source(&glass);
     let _ = cr.paint();
@@ -324,99 +324,46 @@ pub(crate) fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
     leopard_front_face_path(cr, &geom, &body);
     cr.clip();
 
-    let face_height = (geom.bottom_y - geom.front_left.y).max(1.0);
     let face_fill = LinearGradient::new(0.0, geom.front_left.y, 0.0, geom.bottom_y);
-    add_stop(
-        &face_fill,
-        0.00,
-        theme
-            .shelf_top
-            .mix(theme.shelf_bottom, 0.72)
-            .with_alpha(0.56),
-    );
-    add_stop(
-        &face_fill,
-        0.34,
-        theme
-            .shelf_bottom
-            .mix(theme.shelf_top, 0.26)
-            .with_alpha(0.82),
-    );
-    add_stop(
-        &face_fill,
-        1.00,
-        theme
-            .shelf_bottom
-            .mix(theme.shelf_top, 0.50)
-            .mix(Color::rgba(0.24, 0.34, 0.46, 1.0), 0.18)
-            .with_alpha(0.96),
-    );
+    add_stop(&face_fill, 0.00, Color::rgba(0.76, 0.84, 0.90, 1.0));
+    add_stop(&face_fill, 0.20, Color::rgba(0.76, 0.80, 0.84, 1.0));
+    add_stop(&face_fill, 0.58, Color::rgba(0.58, 0.62, 0.66, 1.0));
+    add_stop(&face_fill, 0.82, Color::rgba(0.56, 0.64, 0.74, 1.0));
+    add_stop(&face_fill, 1.00, Color::rgba(0.55, 0.65, 0.76, 0.72));
     let _ = cr.set_source(&face_fill);
     let _ = cr.paint();
 
-    let face_roll = LinearGradient::new(
-        0.0,
-        geom.lip_y - face_height * 0.08,
-        0.0,
-        geom.lip_y + face_height * 0.62,
-    );
-    face_roll.add_color_stop_rgba(0.00, 0.88, 0.92, 0.96, 0.0);
-    face_roll.add_color_stop_rgba(0.14, 0.88, 0.92, 0.96, 0.12);
-    face_roll.add_color_stop_rgba(0.30, 0.88, 0.92, 0.96, 0.08);
-    face_roll.add_color_stop_rgba(0.54, 0.88, 0.92, 0.96, 0.018);
-    face_roll.add_color_stop_rgba(1.00, 0.88, 0.92, 0.96, 0.0);
-    let _ = cr.set_source(&face_roll);
-    let _ = cr.paint();
-
-    let recess = LinearGradient::new(0.0, geom.lip_y + 0.2, 0.0, geom.bottom_y);
-    recess.add_color_stop_rgba(0.00, 0.13, 0.17, 0.23, 0.10);
-    recess.add_color_stop_rgba(0.22, 0.13, 0.17, 0.23, 0.05);
-    recess.add_color_stop_rgba(0.72, 0.13, 0.17, 0.23, 0.018);
-    recess.add_color_stop_rgba(1.00, 0.13, 0.17, 0.23, 0.0);
-    let _ = cr.set_source(&recess);
-    let _ = cr.paint();
-
-    let glaze = LinearGradient::new(0.0, geom.lip_y + 0.7, 0.0, geom.bottom_y);
-    glaze.add_color_stop_rgba(0.00, 0.90, 0.93, 0.97, 0.034);
-    glaze.add_color_stop_rgba(0.28, 0.90, 0.93, 0.97, 0.012);
-    glaze.add_color_stop_rgba(1.00, 0.90, 0.93, 0.97, 0.0);
-    let _ = cr.set_source(&glaze);
-    let _ = cr.paint();
-
     leopard_front_lip_top_path(cr, &geom, &body);
-    cr.set_line_width(1.05);
+    cr.set_line_width(1.20);
     cr.set_line_cap(gtk::cairo::LineCap::Butt);
     let lip_highlight = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
     add_stop(&lip_highlight, 0.00, theme.shelf_highlight.with_alpha(0.0));
-    add_stop(&lip_highlight, 0.12, theme.shelf_highlight.with_alpha(0.13));
+    add_stop(&lip_highlight, 0.10, theme.shelf_highlight.with_alpha(0.34));
     add_stop(
         &lip_highlight,
         0.50,
-        theme
-            .shelf_highlight
-            .mix(theme.shelf_top, 0.12)
-            .with_alpha(0.20 * theme.highlight_strength + 0.10),
+        Color::rgba(0.93, 0.98, 1.0, 0.58 * theme.highlight_strength + 0.47),
     );
-    add_stop(&lip_highlight, 0.88, theme.shelf_highlight.with_alpha(0.13));
+    add_stop(&lip_highlight, 0.90, theme.shelf_highlight.with_alpha(0.34));
     add_stop(&lip_highlight, 1.00, theme.shelf_highlight.with_alpha(0.0));
     let _ = cr.set_source(&lip_highlight);
     let _ = cr.stroke();
 
     leopard_front_lip_bottom_path(cr, &geom, &body);
-    cr.set_line_width(0.82);
+    cr.set_line_width(1.10);
     cr.set_line_cap(gtk::cairo::LineCap::Butt);
     let lip_shadow = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
     add_stop(&lip_shadow, 0.00, theme.shelf_stroke.with_alpha(0.0));
-    add_stop(&lip_shadow, 0.18, theme.shelf_stroke.with_alpha(0.06));
+    add_stop(&lip_shadow, 0.16, theme.shelf_stroke.with_alpha(0.10));
     add_stop(
         &lip_shadow,
         0.50,
         theme
             .shelf_stroke
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.24)
-            .with_alpha(0.16),
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.32)
+            .with_alpha(0.22),
     );
-    add_stop(&lip_shadow, 0.82, theme.shelf_stroke.with_alpha(0.06));
+    add_stop(&lip_shadow, 0.84, theme.shelf_stroke.with_alpha(0.10));
     add_stop(&lip_shadow, 1.00, theme.shelf_stroke.with_alpha(0.0));
     let _ = cr.set_source(&lip_shadow);
     let _ = cr.stroke();

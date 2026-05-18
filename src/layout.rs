@@ -99,7 +99,9 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
     let rest_step = params.icon_size + params.gap;
     let applications_width = occupied_width(application_count, rest_step, params.gap);
     let separator_slot_width = separator_slot_width(params, has_applets);
-    let applet_width = applet_section_width(applet_count, rest_step, params.gap);
+    let applet_icons_width = applet_section_width(applet_count, rest_step, params.gap);
+    let applet_edge_padding = applet_trailing_edge_padding(params, has_applets);
+    let applet_width = applet_icons_width + applet_edge_padding;
     let content_width = applications_width + separator_slot_width + applet_width;
     let zoom_padding = params.icon_size * params.zoom_strength * 0.40 + 8.0;
     let padding = params.side_margin.max(zoom_padding);
@@ -233,7 +235,15 @@ fn separator_zone_gap(params: LayoutParams) -> f64 {
 }
 
 fn separator_groove_width(params: LayoutParams) -> f64 {
-    (params.icon_size * 0.072).clamp(4.0, 5.5)
+    (params.icon_size * 0.060).clamp(4.2, 6.4)
+}
+
+fn applet_trailing_edge_padding(params: LayoutParams, has_applets: bool) -> f64 {
+    if has_applets {
+        (params.icon_size * 0.10).clamp(10.0, 18.0)
+    } else {
+        0.0
+    }
 }
 
 fn separator_rect(section_x: f64, shelf_y: f64, params: LayoutParams, has_applets: bool) -> Rect {
@@ -544,7 +554,10 @@ mod tests {
         assert!(second_applet.rect.x > first_applet.rect.x);
         assert!(app_gap >= 9.5);
         assert!(applet_gap >= 9.5);
-        assert!((right_overhang - left_overhang).abs() < 0.001);
+        assert!(
+            (right_overhang - left_overhang - applet_trailing_edge_padding(params, true)).abs()
+                < 0.001
+        );
     }
 
     #[test]

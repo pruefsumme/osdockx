@@ -47,17 +47,16 @@ pub(crate) fn compute_perspective_shelf_geometry(
     shelf: &Rect,
     theme: &Theme,
 ) -> PerspectiveShelfGeometry {
-    let slant =
-        (shelf.height * theme.shelf_slant_ratio).clamp(shelf.height * 0.32, shelf.height * 0.46);
-    let rear_inset = slant * (0.80 + theme.depth * 0.16);
-    let front_inset = (shelf.height * 0.105).clamp(5.0, 14.0);
-    let back_rise = (shelf.height * (0.104 + theme.tilt * 0.036))
-        .clamp(shelf.height * 0.104, shelf.height * 0.145);
+    let rear_inset = (shelf.height * (0.50 + theme.depth * 0.055))
+        .clamp(shelf.height * 0.48, shelf.height * 0.58);
+    let front_inset = (shelf.height * 0.070).clamp(3.0, 5.2);
+    let back_rise = (shelf.height * (0.080 + theme.tilt * 0.020))
+        .clamp(shelf.height * 0.080, shelf.height * 0.115);
     let back_y = shelf.y - back_rise;
-    let front_face_height =
-        (shelf.height * theme.front_lip_ratio).clamp(shelf.height * 0.030, shelf.height * 0.140);
+    let front_lip_ratio = (theme.front_lip_ratio * 0.68).clamp(0.070, 0.095);
+    let front_face_height = shelf.height * front_lip_ratio;
     let lip_y = shelf.y + shelf.height - front_face_height;
-    let bottom_y = shelf.y + shelf.height + (shelf.height * 0.024).clamp(0.9, 1.5);
+    let bottom_y = shelf.y + shelf.height + (shelf.height * 0.031).clamp(1.2, 1.55);
     PerspectiveShelfGeometry {
         back_left: Point {
             x: shelf.x + rear_inset,
@@ -90,16 +89,15 @@ pub(crate) fn compute_perspective_shelf_geometry(
 
 pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> LeopardWedgeBodyGeometry {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
-    let face_height = (geom.bottom_y - geom.lip_y).max(1.0);
-    let bottom_inset = (face_height * 2.10).clamp(shelf.height * 0.090, shelf.height * 0.180);
+    let bottom_inset = (shelf.height * 0.012).clamp(0.7, 1.3);
     let front_corner_radius = leopard_glass_plane_front_corner_radius(shelf, &geom);
     LeopardWedgeBodyGeometry {
         face_left_bottom: Point {
-            x: geom.front_left.x + bottom_inset,
+            x: shelf.x + bottom_inset,
             y: geom.bottom_y,
         },
         face_right_bottom: Point {
-            x: geom.front_right.x - bottom_inset,
+            x: shelf.x + shelf.width - bottom_inset,
             y: geom.bottom_y,
         },
         front_corner_radius,
@@ -110,7 +108,7 @@ pub(crate) fn leopard_glass_plane_front_corner_radius(
     shelf: &Rect,
     geom: &PerspectiveShelfGeometry,
 ) -> f64 {
-    let radius = (shelf.height * 0.26).clamp(4.8, 11.0);
+    let radius = (shelf.height * 0.048).clamp(1.6, 2.8);
     radius
         .min(distance(geom.lip_right, geom.lip_left) * 0.45)
         .min(distance(geom.lip_left, geom.back_left) * 0.45)

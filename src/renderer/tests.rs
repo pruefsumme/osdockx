@@ -329,11 +329,11 @@ fn leopard_default_layout_has_visible_front_body_thickness() {
     let fascia_to_led_ratio = front_body / active_led_height;
 
     assert!(fascia_to_led_ratio > 1.10);
-    assert!(fascia_to_led_ratio < 1.90);
+    assert!(fascia_to_led_ratio < 2.05);
 }
 
 #[test]
-fn leopard_front_face_tucks_bottom_corners_under_lip() {
+fn leopard_front_face_widens_into_trapezoid() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);
     let model = DockModel {
@@ -357,10 +357,10 @@ fn leopard_front_face_tucks_bottom_corners_under_lip() {
     let body = leopard_wedge_body_geometry(&layout.shelf, &theme);
     assert!((geom.front_left.x - geom.lip_left.x).abs() < 0.001);
     assert!((geom.front_right.x - geom.lip_right.x).abs() < 0.001);
-    assert!(body.face_left_bottom.x > geom.front_left.x);
-    assert!(body.face_right_bottom.x < geom.front_right.x);
-    assert!(body.face_left_bottom.x - geom.front_left.x >= layout.shelf.height * 0.025);
-    assert!(geom.front_right.x - body.face_right_bottom.x >= layout.shelf.height * 0.025);
+    assert!(body.face_left_bottom.x < geom.front_left.x);
+    assert!(body.face_right_bottom.x > geom.front_right.x);
+    assert!(geom.front_left.x - body.face_left_bottom.x >= layout.shelf.height * 0.004);
+    assert!(body.face_right_bottom.x - geom.front_right.x >= layout.shelf.height * 0.004);
     assert!((body.face_left_bottom.y - geom.bottom_y).abs() < 0.001);
 }
 
@@ -381,7 +381,8 @@ fn leopard_front_face_uses_glass_corner_radius() {
     let front_face_height = geom.bottom_y - geom.lip_y;
 
     assert!((body.front_corner_radius - glass_radius).abs() < 0.001);
-    assert!(body.front_corner_radius > front_face_height * 2.0);
+    assert!(body.front_corner_radius < front_face_height);
+    assert!(body.front_corner_radius > front_face_height * 0.35);
 }
 
 #[test]
@@ -418,7 +419,7 @@ fn leopard_front_body_reaches_outer_corner_join() {
 }
 
 #[test]
-fn leopard_front_lip_does_not_protrude_past_aligned_corner() {
+fn leopard_front_lip_stays_inside_trapezoid_bounds() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);
     let mut surface = ImageSurface::create(Format::ARgb32, 240, 110).unwrap();
@@ -430,25 +431,42 @@ fn leopard_front_lip_does_not_protrude_past_aligned_corner() {
         height: 48.0,
     };
     let geom = compute_perspective_shelf_geometry(&shelf, &theme);
+    let body = leopard_wedge_body_geometry(&shelf, &theme);
 
     draw_front_lip(&cr, &shelf, &theme);
     drop(cr);
 
     let y = (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.50).round() as i32;
     assert_eq!(
-        alpha_at(&mut surface, (geom.lip_left.x - 3.0).round() as i32, y),
+        alpha_at(
+            &mut surface,
+            (body.face_left_bottom.x - 4.0).round() as i32,
+            y
+        ),
         0
     );
     assert_eq!(
-        alpha_at(&mut surface, (geom.lip_right.x + 3.0).round() as i32, y),
+        alpha_at(
+            &mut surface,
+            (body.face_right_bottom.x + 4.0).round() as i32,
+            y
+        ),
         0
     );
-    assert_eq!(alpha_at(&mut surface, geom.lip_left.x.round() as i32, y), 0);
-    assert_eq!(
-        alpha_at(&mut surface, geom.lip_right.x.round() as i32, y),
-        0
+    assert!(
+        alpha_at(
+            &mut surface,
+            (geom.lip_left.x + body.front_corner_radius).round() as i32,
+            y
+        ) > 0
     );
-    let body = leopard_wedge_body_geometry(&shelf, &theme);
+    assert!(
+        alpha_at(
+            &mut surface,
+            (geom.lip_right.x - body.front_corner_radius).round() as i32,
+            y
+        ) > 0
+    );
     assert!(alpha_at(&mut surface, body.face_left_bottom.x.round() as i32, y) > 0);
     assert!(alpha_at(&mut surface, body.face_right_bottom.x.round() as i32, y) > 0);
 }
@@ -470,20 +488,28 @@ fn leopard_front_corners_scan_without_spiky_alpha() {
     draw_procedural_shelf_layer(&cr, &shelf, &theme);
     drop(cr);
 
-    let left_outside = (geom.lip_left.x - 2.0).round() as i32;
-    let right_outside = (geom.lip_right.x + 2.0).round() as i32;
     let body = leopard_wedge_body_geometry(&shelf, &theme);
-    let left_inside = (body.face_left_bottom.x + 2.0).round() as i32;
-    let right_inside = (body.face_right_bottom.x - 2.0).round() as i32;
     let start_y = (geom.lip_y + 1.0).round() as i32;
     let end_y = (geom.bottom_y - 1.0).round() as i32;
+    let face_height = geom.bottom_y - geom.lip_y;
 
     for y in start_y..=end_y {
+        let t = ((f64::from(y) - geom.lip_y) / face_height).clamp(0.0, 1.0);
+        let left_edge = geom.lip_left.x + (body.face_left_bottom.x - geom.lip_left.x) * t;
+        let right_edge = geom.lip_right.x + (body.face_right_bottom.x - geom.lip_right.x) * t;
+        let left_outside = (left_edge - 3.0).round() as i32;
+        let right_outside = (right_edge + 3.0).round() as i32;
+
         assert!(alpha_at(&mut surface, left_outside, y) <= 40);
         assert!(alpha_at(&mut surface, right_outside, y) <= 40);
     }
 
     let mid_y = (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.72).round() as i32;
+    let t = ((f64::from(mid_y) - geom.lip_y) / face_height).clamp(0.0, 1.0);
+    let left_edge = geom.lip_left.x + (body.face_left_bottom.x - geom.lip_left.x) * t;
+    let right_edge = geom.lip_right.x + (body.face_right_bottom.x - geom.lip_right.x) * t;
+    let left_inside = (left_edge + 3.0).round() as i32;
+    let right_inside = (right_edge - 3.0).round() as i32;
     assert!(alpha_at(&mut surface, left_inside, mid_y) > 70);
     assert!(alpha_at(&mut surface, right_inside, mid_y) > 70);
 }
@@ -530,16 +556,8 @@ fn leopard_front_corners_do_not_leave_bright_lip_beads() {
 
     assert!(brightness(left_bead) <= brightness(left_body) + 28);
     assert!(brightness(right_bead) <= brightness(right_body) + 28);
-    let left_old_corner_alpha = alpha_at(&mut surface, (geom.lip_left.x + 1.0).round() as i32, y);
-    let right_old_corner_alpha = alpha_at(&mut surface, (geom.lip_right.x - 1.0).round() as i32, y);
-    assert!(
-        left_old_corner_alpha <= 32,
-        "left old corner alpha {left_old_corner_alpha}"
-    );
-    assert!(
-        right_old_corner_alpha <= 32,
-        "right old corner alpha {right_old_corner_alpha}"
-    );
+    assert!(alpha_at(&mut surface, (geom.lip_left.x + 1.0).round() as i32, y) > 96);
+    assert!(alpha_at(&mut surface, (geom.lip_right.x - 1.0).round() as i32, y) > 96);
 }
 
 #[test]
@@ -731,11 +749,60 @@ fn leopard_active_indicator_has_larger_glow_than_core() {
     drop(cr);
 
     let core = alpha_at(&mut surface, center_x, y);
-    let glow = alpha_at(&mut surface, center_x - 13, y);
+    let glow = alpha_at(&mut surface, center_x - 16, y);
 
     assert!(core > 220);
     assert!(glow > 0);
     assert!(glow < core);
+}
+
+#[test]
+fn leopard_active_indicator_is_bright_white_blue_lip_light() {
+    let config = Config::default().normalized();
+    let theme = Theme::from_config(&config.theme);
+    let shelf = Rect {
+        x: 18.0,
+        y: 36.0,
+        width: 164.0,
+        height: 30.0,
+    };
+    let icon = Rect {
+        x: 66.0,
+        y: 2.0,
+        width: 64.0,
+        height: 64.0,
+    };
+    let layout = DockLayout {
+        icons: Vec::new(),
+        label: None,
+        shelf,
+        sections: Vec::new(),
+        separator: None,
+        size: (200, 80),
+    };
+    let mut surface = ImageSurface::create(Format::ARgb32, 200, 80).unwrap();
+    let cr = Context::new(&surface).unwrap();
+    let geom = compute_perspective_shelf_geometry(&shelf, &theme);
+
+    draw_leopard_active_indicator(&cr, icon, &layout, &theme, 1.0);
+    drop(cr);
+
+    let center_x = icon.center_x().round() as i32;
+    let center_y = leopard_active_indicator_center_y(icon, &shelf, &theme).round() as i32;
+    let face_top = geom.lip_y.ceil() as i32;
+    let face_bottom = geom.bottom_y.floor() as i32;
+    let core_alpha = alpha_at(&mut surface, center_x, center_y);
+    let top_alpha = alpha_at(&mut surface, center_x, face_top);
+    let bottom_alpha = alpha_at(&mut surface, center_x, face_bottom);
+    let color = color_at(&mut surface, center_x, center_y);
+
+    assert!(core_alpha > 180);
+    assert!(top_alpha > 80);
+    assert!(bottom_alpha < core_alpha);
+    assert!(color.0 > 220);
+    assert!(color.1 > 190);
+    assert!(color.2 > 150);
+    assert!(color.0 > color.2);
 }
 
 #[test]
@@ -764,7 +831,7 @@ fn leopard_separator_paints_deeper_theme_aware_trench() {
     draw_shelf_section_separator(&cr, &shelf, &separator, &theme);
     drop(cr);
 
-    let sample_y = (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.45).round() as i32;
+    let sample_y = (geom.lip_y + (geom.bottom_y - geom.lip_y) * 0.72).round() as i32;
     let center_x = separator.rect.center_x().round() as i32;
     let trench = color_at(&mut surface, center_x, sample_y);
     let panel = color_at(&mut surface, center_x + 8, sample_y);
