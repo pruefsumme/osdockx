@@ -133,7 +133,7 @@ impl Default for Theme {
             badge: Color::rgba(0.89, 0.13, 0.18, 1.0),
             reflection_opacity: 0.26,
             reflection_height: 0.46,
-            shelf_height_ratio: 0.62,
+            shelf_height_ratio: 0.78,
             shelf_slant_ratio: 0.42,
             icon_gap_ratio: 0.04,
             side_margin_ratio: 0.42,

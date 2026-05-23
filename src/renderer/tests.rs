@@ -139,7 +139,7 @@ fn reserved_thickness_stays_compact_for_leopard_theme() {
 
     let reserved = Renderer::reserved_thickness(&model, &config.dock, &theme);
 
-    assert!(reserved < config.dock.icon_size + 48);
+    assert!(reserved < config.dock.icon_size + 56);
 }
 
 #[test]
@@ -348,8 +348,8 @@ fn leopard_default_layout_has_visible_floor_below_icons() {
     let icon = layout.icons[0].rect;
     let floor_depth = geom.lip_y - (icon.y + icon.height);
 
-    assert!(floor_depth > icon.height * 0.08);
-    assert!(floor_depth < icon.height * 0.23);
+    assert!(floor_depth > icon.height * 0.18);
+    assert!(floor_depth < icon.height * 0.30);
 }
 
 #[test]
@@ -379,7 +379,7 @@ fn leopard_default_layout_has_visible_front_body_thickness() {
     let fascia_to_led_ratio = front_body / active_led_height;
 
     assert!(fascia_to_led_ratio > 1.10);
-    assert!(fascia_to_led_ratio < 2.05);
+    assert!(fascia_to_led_ratio < 2.30);
 }
 
 #[test]
