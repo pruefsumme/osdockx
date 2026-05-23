@@ -66,7 +66,7 @@ pub(crate) fn leopard_front_lip_top_path(
     body: &LeopardWedgeBodyGeometry,
 ) {
     let top_y = geom.lip_y - 0.30;
-    let y = geom.lip_y + 0.45;
+    let y = geom.lip_y + 0.95;
     let left_t = ((y - top_y) / (body.face_left_join.y - top_y).max(0.001)).clamp(0.0, 1.0);
     let right_t = ((y - top_y) / (body.face_right_join.y - top_y).max(0.001)).clamp(0.0, 1.0);
     let left_x = geom.lip_left.x + (body.face_left_join.x - geom.lip_left.x) * left_t + 0.35;

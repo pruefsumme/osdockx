@@ -113,8 +113,8 @@ fn draw_glowing_lip_indicator(
     let hot = Color::rgba(0.96, 1.0, 1.0, 1.0);
     let core = theme.indicator.mix(hot, 0.78);
     let lower_blue = theme.indicator.mix(electric, 0.34).mix(hot, 0.48);
-    let strength = 0.76 + emphasis.clamp(0.0, 1.0) * 0.24;
-    let glow = 0.74 + visibility.clamp(0.0, 1.0) * 0.26;
+    let strength = 0.82 + emphasis.clamp(0.0, 1.0) * 0.26;
+    let glow = 0.80 + visibility.clamp(0.0, 1.0) * 0.28;
 
     cr.save().ok();
     super::leopard_front_face_path(cr, &geom, &body);
@@ -132,7 +132,7 @@ fn draw_glowing_lip_indicator(
         electric.red,
         electric.green,
         electric.blue,
-        0.17 * strength * glow * alpha,
+        0.20 * strength * glow * alpha,
     );
     let _ = cr.fill();
 
@@ -144,7 +144,7 @@ fn draw_glowing_lip_indicator(
         metrics.height * 1.58,
         metrics.height * 0.70,
     );
-    cr.set_source_rgba(hot.red, hot.green, hot.blue, 0.38 * strength * glow * alpha);
+    cr.set_source_rgba(hot.red, hot.green, hot.blue, 0.44 * strength * glow * alpha);
     let _ = cr.fill();
 
     rounded_rect(
@@ -182,7 +182,7 @@ fn draw_glowing_lip_indicator(
     let _ = cr.set_source(&fill);
     let _ = cr.fill_preserve();
     cr.set_line_width(0.55);
-    cr.set_source_rgba(0.98, 1.0, 1.0, 0.86 * strength * glow * alpha);
+    cr.set_source_rgba(0.98, 1.0, 1.0, 0.96 * strength * glow * alpha);
     let _ = cr.stroke();
 
     rounded_rect(
@@ -193,7 +193,7 @@ fn draw_glowing_lip_indicator(
         metrics.height * 0.24,
         metrics.radius * 0.55,
     );
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.92 * strength * glow * alpha);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 1.00 * strength * glow * alpha);
     let _ = cr.fill();
 
     rounded_rect(
@@ -208,7 +208,7 @@ fn draw_glowing_lip_indicator(
         electric.red,
         electric.green,
         electric.blue,
-        0.18 * strength * glow * alpha,
+        0.24 * strength * glow * alpha,
     );
     let _ = cr.fill();
     cr.restore().ok();

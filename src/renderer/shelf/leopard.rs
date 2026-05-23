@@ -37,7 +37,7 @@ pub(crate) fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
         0.00,
         theme
             .shelf_bottom
-            .mix(theme.shelf_top, 0.34)
+            .mix(theme.shelf_top, 0.40)
             .with_alpha(0.96),
     );
     add_stop(
@@ -45,26 +45,12 @@ pub(crate) fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
         0.32,
         theme
             .shelf_bottom
-            .mix(theme.shelf_top, 0.46)
-            .mix(theme.shelf_highlight, 0.03)
+            .mix(theme.shelf_top, 0.50)
+            .mix(theme.shelf_highlight, 0.02)
             .with_alpha(0.94),
     );
-    add_stop(
-        &glass,
-        0.72,
-        theme
-            .shelf_top
-            .mix(theme.shelf_bottom, 0.12)
-            .with_alpha(0.96),
-    );
-    add_stop(
-        &glass,
-        1.00,
-        theme
-            .shelf_top
-            .mix(Color::rgba(0.18, 0.32, 0.48, 1.0), 0.26)
-            .with_alpha(0.98),
-    );
+    add_stop(&glass, 0.72, Color::rgba(0.50, 0.62, 0.70, 0.96));
+    add_stop(&glass, 1.00, Color::rgba(0.40, 0.54, 0.65, 0.98));
     let _ = cr.set_source(&glass);
     let _ = cr.paint();
 
@@ -325,11 +311,12 @@ pub(crate) fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
     cr.clip();
 
     let face_fill = LinearGradient::new(0.0, geom.front_left.y, 0.0, geom.bottom_y);
-    add_stop(&face_fill, 0.00, Color::rgba(0.76, 0.86, 0.93, 0.98));
-    add_stop(&face_fill, 0.22, Color::rgba(0.90, 0.95, 0.98, 1.0));
-    add_stop(&face_fill, 0.58, Color::rgba(0.78, 0.86, 0.91, 0.96));
-    add_stop(&face_fill, 0.86, Color::rgba(0.62, 0.73, 0.83, 0.84));
-    add_stop(&face_fill, 1.00, Color::rgba(0.48, 0.63, 0.76, 0.50));
+    add_stop(&face_fill, 0.00, Color::rgba(0.78, 0.88, 0.94, 0.98));
+    add_stop(&face_fill, 0.18, Color::rgba(0.90, 0.95, 0.98, 1.0));
+    add_stop(&face_fill, 0.36, Color::rgba(0.66, 0.73, 0.78, 0.98));
+    add_stop(&face_fill, 0.62, Color::rgba(0.55, 0.64, 0.71, 0.94));
+    add_stop(&face_fill, 0.86, Color::rgba(0.52, 0.63, 0.73, 0.84));
+    add_stop(&face_fill, 1.00, Color::rgba(0.48, 0.64, 0.76, 0.54));
     let _ = cr.set_source(&face_fill);
     let _ = cr.paint();
 
