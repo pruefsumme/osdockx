@@ -35,7 +35,6 @@ pub struct DockConfig {
 pub struct ThemeConfig {
     pub preset: String,
     pub renderer: Option<RenderMode>,
-    pub shelf_style: ShelfStyle,
     pub shelf_top: String,
     pub shelf_bottom: String,
     pub shelf_stroke: String,
@@ -60,15 +59,6 @@ pub struct ThemeConfig {
     pub reflection_blur: f64,
     pub material_roughness: f64,
     pub icon_floor_offset: f64,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ShelfStyle {
-    CrystalGlass,
-    #[default]
-    LeopardPlank,
-    Legacy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -132,7 +122,7 @@ impl Default for DockConfig {
         Self {
             edge: DockEdge::Bottom,
             monitor: None,
-            icon_size: 64,
+            icon_size: 128,
             zoom_strength: 0.72,
             autohide: false,
             hide_delay_ms: 350,
@@ -148,24 +138,23 @@ impl Default for ThemeConfig {
         Self {
             preset: "leopard".to_string(),
             renderer: None,
-            shelf_style: ShelfStyle::LeopardPlank,
-            shelf_top: "#cfd5dbff".to_string(),
-            shelf_bottom: "#97a4b0ff".to_string(),
-            shelf_stroke: "#5b6a79ff".to_string(),
-            shelf_highlight: "#dbe2e8ff".to_string(),
+            shelf_top: "#5a83aaff".to_string(),
+            shelf_bottom: "#ffffffff".to_string(),
+            shelf_stroke: "#b6bbc0ff".to_string(),
+            shelf_highlight: "#ffffffff".to_string(),
             indicator: "#6fd3ffff".to_string(),
             badge: "#e4202dff".to_string(),
             reflection_opacity: 0.26,
             reflection_height: 0.46,
-            shelf_height_ratio: 0.62,
+            shelf_height_ratio: 0.78,
             shelf_slant_ratio: 0.42,
             icon_gap_ratio: 0.04,
-            side_margin_ratio: 0.82,
+            side_margin_ratio: 0.42,
             shelf_horizon_ratio: 0.62,
-            front_lip_ratio: 0.18,
+            front_lip_ratio: 0.05,
             reflection_band_ratio: 0.16,
-            tilt: 0.58,
-            depth: 0.58,
+            tilt: 0.10,
+            depth: 0.98,
             bevel: 0.10,
             floor_opacity: 0.72,
             shadow_strength: 0.28,

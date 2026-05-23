@@ -59,6 +59,11 @@ impl DockLayout {
     pub fn section(&self, kind: DockSectionKind) -> Option<&DockSectionLayout> {
         self.sections.iter().find(|section| section.kind == kind)
     }
+
+    pub fn separator_hover_rect(&self) -> Option<Rect> {
+        self.separator
+            .map(|separator| separator_hover_rect(separator.rect))
+    }
 }
 
 impl Rect {
@@ -99,7 +104,8 @@ pub fn compute_layout(model: &DockModel, hover: Option<Point>, params: LayoutPar
     let rest_step = params.icon_size + params.gap;
     let applications_width = occupied_width(application_count, rest_step, params.gap);
     let separator_slot_width = separator_slot_width(params, has_applets);
-    let applet_width = applet_section_width(applet_count, rest_step, params.gap);
+    let applet_icons_width = applet_section_width(applet_count, rest_step, params.gap);
+    let applet_width = applet_icons_width;
     let content_width = applications_width + separator_slot_width + applet_width;
     let zoom_padding = params.icon_size * params.zoom_strength * 0.40 + 8.0;
     let padding = params.side_margin.max(zoom_padding);
@@ -217,7 +223,9 @@ fn separator_slot_width(params: LayoutParams, has_applets: bool) -> f64 {
         return (params.icon_size * 0.08 + params.gap * 0.55).max(12.0);
     }
 
-    separator_groove_width(params) + separator_zone_gap(params) * 2.0
+    separator_groove_width(params)
+        + separator_left_zone_gap(params)
+        + separator_right_zone_gap(params)
 }
 
 fn applet_section_width(count: usize, rest_step: f64, gap: f64) -> f64 {
@@ -232,8 +240,16 @@ fn separator_zone_gap(params: LayoutParams) -> f64 {
     (params.icon_size * 0.065 + params.gap * 0.65).clamp(11.0, 16.0)
 }
 
+fn separator_left_zone_gap(params: LayoutParams) -> f64 {
+    separator_zone_gap(params)
+}
+
+fn separator_right_zone_gap(params: LayoutParams) -> f64 {
+    separator_zone_gap(params) + (params.icon_size * 0.024).clamp(1.6, 3.2)
+}
+
 fn separator_groove_width(params: LayoutParams) -> f64 {
-    (params.icon_size * 0.072).clamp(4.0, 5.5)
+    (params.icon_size * 0.060).clamp(4.2, 6.4)
 }
 
 fn separator_rect(section_x: f64, shelf_y: f64, params: LayoutParams, has_applets: bool) -> Rect {
@@ -241,10 +257,26 @@ fn separator_rect(section_x: f64, shelf_y: f64, params: LayoutParams, has_applet
     let groove_width = separator_groove_width(params);
     let groove_height = (params.shelf_height * 1.02).max(18.0);
     Rect {
-        x: section_x + slot_width * 0.50 - groove_width / 2.0,
+        x: if has_applets {
+            section_x + separator_left_zone_gap(params)
+        } else {
+            section_x + slot_width * 0.50 - groove_width / 2.0
+        },
         y: shelf_y - params.shelf_height * 0.10,
         width: groove_width,
         height: groove_height,
+    }
+}
+
+pub fn separator_hover_rect(separator: Rect) -> Rect {
+    let horizontal_pad = (separator.width * 0.85).max(4.0);
+    let top_pad = (separator.height * 0.48).max(8.0);
+    let bottom_pad = (separator.height * 0.12).max(2.0);
+    Rect {
+        x: separator.x - horizontal_pad,
+        y: (separator.y - top_pad).max(0.0),
+        width: separator.width + horizontal_pad * 2.0,
+        height: separator.height + top_pad + bottom_pad,
     }
 }
 
@@ -411,7 +443,8 @@ mod tests {
         let first_icon = &layout.icons[0].rect;
         let last_icon = &layout.icons[2].rect;
         let left_overhang = first_icon.x - layout.shelf.x;
-        let right_overhang = (layout.shelf.x + layout.shelf.width) - (last_icon.x + last_icon.width);
+        let right_overhang =
+            (layout.shelf.x + layout.shelf.width) - (last_icon.x + last_icon.width);
         let icon_spacing = layout.icons[1].rect.center_x() - layout.icons[0].rect.center_x();
         let applets = layout
             .section(DockSectionKind::Applets)
@@ -486,7 +519,9 @@ mod tests {
 
         assert!(separator.rect.x > last_icon.rect.x + last_icon.rect.width);
         assert_eq!(
-            layout.section(DockSectionKind::Separator).map(|section| section.kind),
+            layout
+                .section(DockSectionKind::Separator)
+                .map(|section| section.kind),
             Some(DockSectionKind::Separator)
         );
     }
@@ -533,14 +568,14 @@ mod tests {
         let applet_gap = first_applet.rect.x - (separator.rect.x + separator.rect.width);
         let first_icon = layout.icons.first().expect("first icon");
         let left_overhang = first_icon.rect.x - layout.shelf.x;
-        let right_overhang =
-            (layout.shelf.x + layout.shelf.width) - (second_applet.rect.x + second_applet.rect.width);
+        let right_overhang = (layout.shelf.x + layout.shelf.width)
+            - (second_applet.rect.x + second_applet.rect.width);
 
         assert!(applets.rect.width > 0.0);
         assert!(first_applet.rect.x > separator.rect.x + separator.rect.width);
         assert!(second_applet.rect.x > first_applet.rect.x);
         assert!(app_gap >= 9.5);
-        assert!(applet_gap >= 9.5);
+        assert!(applet_gap > app_gap);
         assert!((right_overhang - left_overhang).abs() < 0.001);
     }
 
@@ -570,7 +605,11 @@ mod tests {
             .expect("applets section");
 
         assert_eq!(
-            layout.sections.iter().map(|section| section.kind).collect::<Vec<_>>(),
+            layout
+                .sections
+                .iter()
+                .map(|section| section.kind)
+                .collect::<Vec<_>>(),
             vec![
                 DockSectionKind::Applications,
                 DockSectionKind::Separator,
@@ -612,6 +651,8 @@ mod tests {
         assert!(separator.rect.x > last_icon.rect.x + last_icon.rect.width);
         assert_eq!(applets.rect.width, 0.0);
         assert!(separator.rect.x < applets.rect.x + 8.0);
-        assert!((right_overhang - left_overhang - separator_slot_width(params, false)).abs() < 0.001);
+        assert!(
+            (right_overhang - left_overhang - separator_slot_width(params, false)).abs() < 0.001
+        );
     }
 }

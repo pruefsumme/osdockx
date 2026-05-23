@@ -1,6 +1,6 @@
 use super::geometry::{
     LeopardWedgeBodyGeometry, PerspectiveShelfGeometry, compute_perspective_shelf_geometry,
-    crystal_shelf_geometry,
+    crystal_shelf_geometry, leopard_glass_plane_front_corner_radius,
 };
 use crate::layout::{Point, Rect};
 use crate::theme::Theme;
@@ -8,10 +8,16 @@ use gtk::cairo::Context;
 
 pub(crate) fn leopard_glass_plane_path(cr: &Context, shelf: &Rect, theme: &Theme) {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
+    let radius = leopard_glass_plane_front_corner_radius(shelf, &geom);
     rounded_polygon_path(
         cr,
-        &[geom.back_left, geom.back_right, geom.lip_right, geom.lip_left],
-        (shelf.height * 0.18).clamp(3.2, 7.0),
+        &[
+            geom.back_left,
+            geom.back_right,
+            geom.lip_right,
+            geom.lip_left,
+        ],
+        radius,
     );
 }
 
@@ -20,19 +26,7 @@ pub(crate) fn leopard_wedge_body_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
-    rounded_polygon_path(
-        cr,
-        &[
-            geom.back_left,
-            geom.back_right,
-            geom.lip_right,
-            body.face_right_bottom,
-            body.face_left_bottom,
-            geom.lip_left,
-        ],
-        (face_height * 0.66).clamp(2.8, 7.6),
-    );
+    leopard_front_face_path(cr, geom, body);
 }
 
 pub(crate) fn leopard_front_face_path(
@@ -40,25 +34,59 @@ pub(crate) fn leopard_front_face_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let face_height = (body.face_left_bottom.y - geom.front_left.y).max(1.0);
-    let face_top_left = Point {
-        x: geom.lip_left.x + (geom.front_left.x - geom.lip_left.x) * 0.30,
-        y: geom.front_left.y,
-    };
-    let face_top_right = Point {
-        x: geom.lip_right.x + (geom.front_right.x - geom.lip_right.x) * 0.30,
-        y: geom.front_right.y,
-    };
-    rounded_polygon_path(
-        cr,
-        &[
-            face_top_left,
-            face_top_right,
-            body.face_right_bottom,
-            body.face_left_bottom,
-        ],
-        (face_height * 0.96).clamp(3.4, 8.8),
+    let face_height = (geom.bottom_y - geom.lip_y).max(1.0);
+    let top_y = geom.lip_y - 0.30;
+
+    cr.new_path();
+    cr.move_to(geom.lip_left.x, top_y);
+    cr.line_to(geom.lip_right.x, top_y);
+    cr.curve_to(
+        body.face_right_join.x,
+        body.face_right_join.y,
+        body.face_right_inner_bottom.x,
+        body.face_right_bottom.y - face_height * 0.18,
+        body.face_right_bottom.x,
+        body.face_right_bottom.y,
     );
+    cr.line_to(body.face_left_inner_bottom.x, body.face_left_inner_bottom.y);
+    cr.curve_to(
+        body.face_left_bottom.x,
+        body.face_left_bottom.y - face_height * 0.18,
+        body.face_left_join.x,
+        body.face_left_join.y,
+        geom.lip_left.x,
+        top_y,
+    );
+    cr.close_path();
+}
+
+pub(crate) fn leopard_front_lip_top_path(
+    cr: &Context,
+    geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) {
+    let top_y = geom.lip_y - 0.30;
+    let y = geom.lip_y + 0.95;
+    let left_t = ((y - top_y) / (body.face_left_join.y - top_y).max(0.001)).clamp(0.0, 1.0);
+    let right_t = ((y - top_y) / (body.face_right_join.y - top_y).max(0.001)).clamp(0.0, 1.0);
+    let left_x = geom.lip_left.x + (body.face_left_join.x - geom.lip_left.x) * left_t + 0.35;
+    let right_x = geom.lip_right.x + (body.face_right_join.x - geom.lip_right.x) * right_t - 0.35;
+
+    cr.new_path();
+    cr.move_to(left_x, y);
+    cr.line_to(right_x, y);
+}
+
+pub(crate) fn leopard_front_lip_bottom_path(
+    cr: &Context,
+    _geom: &PerspectiveShelfGeometry,
+    body: &LeopardWedgeBodyGeometry,
+) {
+    let inset = 1.0;
+    let y = body.face_left_bottom.y - 0.45;
+    cr.new_path();
+    cr.move_to(body.face_left_bottom.x + inset, y);
+    cr.line_to(body.face_right_bottom.x - inset, y);
 }
 
 fn rounded_polygon_path(cr: &Context, points: &[Point], radius: f64) {
@@ -80,9 +108,18 @@ fn rounded_polygon_path(cr: &Context, points: &[Point], radius: f64) {
         let corner_radius = corner_radius(prev, corner, next, radius);
         let entry = move_toward(corner, prev, corner_radius);
         let exit = move_toward(corner, next, corner_radius);
+        let control_in = move_toward(corner, prev, corner_radius * 0.36);
+        let control_out = move_toward(corner, next, corner_radius * 0.36);
 
         cr.line_to(entry.x, entry.y);
-        cr.curve_to(corner.x, corner.y, corner.x, corner.y, exit.x, exit.y);
+        cr.curve_to(
+            control_in.x,
+            control_in.y,
+            control_out.x,
+            control_out.y,
+            exit.x,
+            exit.y,
+        );
     }
 
     cr.close_path();

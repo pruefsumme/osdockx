@@ -39,7 +39,14 @@ pub(super) fn draw_badge(cr: &Context, rect: Rect, count: u32, color: Color, alp
     let _ = cr.stroke();
 
     cr.save().ok();
-    rounded_rect(cr, x + 1.2, y + 1.0, width - 2.4, height * 0.38, height * 0.20);
+    rounded_rect(
+        cr,
+        x + 1.2,
+        y + 1.0,
+        width - 2.4,
+        height * 0.38,
+        height * 0.20,
+    );
     cr.set_source_rgba(1.0, 1.0, 1.0, 0.20 * alpha);
     let _ = cr.fill();
     cr.restore().ok();

@@ -60,5 +60,6 @@ fn split_items_by_section(items: Vec<DockItem>) -> (Vec<DockItem>, Vec<DockItem>
 }
 
 fn sort_items_by_order(items: &mut [DockItem], ordered_keys: &[String]) {
-    items.sort_by_key(|item| order_position(ordered_keys, &item.config_key()).unwrap_or(usize::MAX));
+    items
+        .sort_by_key(|item| order_position(ordered_keys, &item.config_key()).unwrap_or(usize::MAX));
 }

@@ -11,13 +11,8 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const REPO_THEME_PACKS: &[(&str, &str)] = &[
-    ("leopard", include_str!("../../themes/leopard/theme.toml")),
-    (
-        "osx-glass-3d",
-        include_str!("../../themes/osx-glass-3d/theme.toml"),
-    ),
-];
+const REPO_THEME_PACKS: &[(&str, &str)] =
+    &[("leopard", include_str!("../../themes/leopard/theme.toml"))];
 
 fn builtin_theme_contents(id: &str) -> Option<&'static str> {
     REPO_THEME_PACKS
@@ -90,14 +85,10 @@ impl ThemePack {
     pub fn builtin(id: &str, config: &ThemeConfig) -> Self {
         let mut config = config.clone();
         config.preset = normalized_theme_id(id);
-        let renderer = config.renderer.unwrap_or(match config.preset.as_str() {
-            "osx-glass-3d" => RenderMode::Scene3d,
-            _ => RenderMode::Procedural2d,
-        });
+        let renderer = config.renderer.unwrap_or(RenderMode::Procedural2d);
         config.renderer = Some(renderer);
         let theme = Theme::from_config(&config).with_renderer(renderer);
         let name = match config.preset.as_str() {
-            "osx-glass-3d" => "OSX Glass 3D",
             "leopard" => "Leopard",
             _ => "OSDockX Theme",
         };

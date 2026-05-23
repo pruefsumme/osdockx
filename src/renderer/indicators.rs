@@ -1,14 +1,36 @@
 use super::{add_stop, rounded_rect};
 use crate::layout::{DockLayout, Rect};
-use crate::theme::Theme;
+use crate::theme::{Color, Theme};
 use gtk::cairo::{Context, LinearGradient};
 
-pub(super) fn leopard_running_indicator_size(active: bool) -> (f64, f64) {
-    if active {
-        (12.3, 3.45)
-    } else {
-        (8.9, 2.7)
+pub(super) fn draw_leopard_indicator(
+    cr: &Context,
+    rect: Rect,
+    layout: &DockLayout,
+    theme: &Theme,
+    emphasis: f64,
+    visibility: f64,
+    alpha: f64,
+) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let visibility = visibility.clamp(0.0, 1.0);
+    if alpha <= 0.0 || visibility <= 0.0 {
+        return;
     }
+    let metrics = leopard_indicator_metrics(rect, &layout.shelf, theme, emphasis, visibility);
+    draw_glowing_lip_indicator(
+        cr,
+        &layout.shelf,
+        theme,
+        metrics,
+        emphasis.clamp(0.0, 1.0),
+        visibility,
+        alpha,
+    );
+}
+
+pub(super) fn leopard_running_indicator_size(active: bool) -> (f64, f64) {
+    if active { (24.0, 5.0) } else { (19.0, 4.2) }
 }
 
 pub(super) fn draw_leopard_running_indicator(
@@ -19,71 +41,15 @@ pub(super) fn draw_leopard_running_indicator(
     active: bool,
     alpha: f64,
 ) {
-    let alpha = alpha.clamp(0.0, 1.0);
-    if alpha <= 0.0 {
-        return;
-    }
-    let y = leopard_running_indicator_center_y(&layout.shelf, theme);
-    let (width, height) = leopard_running_indicator_size(active);
-    let x = rect.center_x() - width / 2.0;
-    let color = theme
-        .shelf_highlight
-        .mix(theme.indicator, if active { 0.08 } else { 0.05 });
-
-    cr.save().ok();
-    rounded_rect(cr, x - 2.1, y - height * 0.80, width + 4.2, height * 1.60, height * 0.92);
-    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.20 } else { 0.11 }) * alpha);
-    let _ = cr.fill();
-    cr.restore().ok();
-
-    cr.save().ok();
-    rounded_rect(cr, x - 0.9, y - height * 0.56, width + 1.8, height * 1.12, height * 0.64);
-    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.14 } else { 0.07 }) * alpha);
-    let _ = cr.fill();
-    cr.restore().ok();
-
-    cr.save().ok();
-    rounded_rect(cr, x, y - height / 2.0, width, height, height / 2.0);
-    let fill = LinearGradient::new(0.0, y - height / 2.0, 0.0, y + height / 2.0);
-    add_stop(
-        &fill,
-        0.00,
-        theme
-            .shelf_highlight
-            .with_alpha((if active { 0.78 } else { 0.60 }) * alpha),
-    );
-    add_stop(
-        &fill,
-        0.24,
-        color.with_alpha((if active { 0.90 } else { 0.78 }) * alpha),
-    );
-    add_stop(
-        &fill,
-        1.00,
-        theme
-            .shelf_highlight
-            .mix(theme.indicator, if active { 0.18 } else { 0.10 })
-            .with_alpha((if active { 0.84 } else { 0.68 }) * alpha),
-    );
-    let _ = cr.set_source(&fill);
-    let _ = cr.fill_preserve();
-    cr.set_line_width(0.7);
-    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.34 } else { 0.22 }) * alpha);
-    let _ = cr.stroke();
-    cr.restore().ok();
-
-    cr.save().ok();
-    rounded_rect(
+    draw_leopard_indicator(
         cr,
-        x + width * 0.18,
-        y - height * 0.28,
-        width * 0.64,
-        height * 0.22,
-        height * 0.20,
+        rect,
+        layout,
+        theme,
+        if active { 1.0 } else { 0.0 },
+        1.0,
+        alpha,
     );
-    cr.set_source_rgba(1.0, 1.0, 1.0, (if active { 0.56 } else { 0.34 }) * alpha);
-    let _ = cr.fill();
-    cr.restore().ok();
 }
 
 pub(super) fn draw_leopard_active_indicator(
@@ -93,29 +59,157 @@ pub(super) fn draw_leopard_active_indicator(
     theme: &Theme,
     alpha: f64,
 ) {
-    let alpha = alpha.clamp(0.0, 1.0);
-    if alpha <= 0.0 {
-        return;
+    draw_leopard_indicator(cr, rect, layout, theme, 1.0, 1.0, alpha);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LeopardIndicatorMetrics {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+}
+
+fn leopard_indicator_metrics(
+    rect: Rect,
+    shelf: &Rect,
+    theme: &Theme,
+    emphasis: f64,
+    visibility: f64,
+) -> LeopardIndicatorMetrics {
+    let geom = super::compute_perspective_shelf_geometry(shelf, theme);
+    let face_height = (geom.bottom_y - geom.lip_y).max(1.0);
+    let emphasis = emphasis.clamp(0.0, 1.0);
+    let visibility = visibility.clamp(0.0, 1.0);
+    let running_height = (face_height * 0.58).clamp(3.0, 4.0);
+    let active_height = (face_height * 0.72).clamp(3.6, 4.6);
+    let running_width = (rect.width * 0.16).clamp(16.0, 23.0);
+    let active_width = (rect.width * 0.22).clamp(23.0, 29.0);
+    let size_scale = 0.58 + visibility * 0.42;
+    let height = (running_height + (active_height - running_height) * emphasis) * size_scale;
+    let width = (running_width + (active_width - running_width) * emphasis) * size_scale;
+    LeopardIndicatorMetrics {
+        x: rect.center_x() - width / 2.0,
+        y: geom.bottom_y - height - (face_height * 0.08).clamp(0.4, 1.1),
+        width,
+        height,
+        radius: (height * 0.42).clamp(1.2, 2.2),
     }
-    let y = leopard_active_indicator_center_y(rect, &layout.shelf, theme);
-    let x = rect.center_x();
-    let color = theme.indicator;
+}
+
+fn draw_glowing_lip_indicator(
+    cr: &Context,
+    shelf: &Rect,
+    theme: &Theme,
+    metrics: LeopardIndicatorMetrics,
+    emphasis: f64,
+    visibility: f64,
+    alpha: f64,
+) {
+    let geom = super::compute_perspective_shelf_geometry(shelf, theme);
+    let body = super::leopard_wedge_body_geometry(shelf, theme);
+    let electric = Color::rgba(0.42, 0.86, 1.0, 1.0);
+    let hot = Color::rgba(0.96, 1.0, 1.0, 1.0);
+    let core = theme.indicator.mix(hot, 0.78);
+    let lower_blue = theme.indicator.mix(electric, 0.34).mix(hot, 0.48);
+    let strength = 0.82 + emphasis.clamp(0.0, 1.0) * 0.26;
+    let glow = 0.80 + visibility.clamp(0.0, 1.0) * 0.28;
 
     cr.save().ok();
-    cr.arc(x, y, 6.1, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(color.red, color.green, color.blue, 0.12 * alpha);
+    super::leopard_front_face_path(cr, &geom, &body);
+    cr.clip();
+
+    rounded_rect(
+        cr,
+        metrics.x - metrics.width * 0.26,
+        metrics.y - metrics.height * 0.86,
+        metrics.width * 1.52,
+        metrics.height * 2.48,
+        metrics.height * 1.10,
+    );
+    cr.set_source_rgba(
+        electric.red,
+        electric.green,
+        electric.blue,
+        0.20 * strength * glow * alpha,
+    );
     let _ = cr.fill();
-    cr.restore().ok();
 
-    cr.save().ok();
-    cr.arc(x, y, 3.8, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.94 * alpha);
+    rounded_rect(
+        cr,
+        metrics.x - metrics.width * 0.08,
+        metrics.y - metrics.height * 0.34,
+        metrics.width * 1.16,
+        metrics.height * 1.58,
+        metrics.height * 0.70,
+    );
+    cr.set_source_rgba(hot.red, hot.green, hot.blue, 0.44 * strength * glow * alpha);
     let _ = cr.fill();
-    cr.restore().ok();
 
-    cr.save().ok();
-    cr.arc(x, y, 1.9, 0.0, std::f64::consts::TAU);
-    cr.set_source_rgba(color.red, color.green, color.blue, 0.74 * alpha);
+    rounded_rect(
+        cr,
+        metrics.x - 0.45,
+        metrics.y - 0.15,
+        metrics.width + 0.90,
+        metrics.height + 0.35,
+        metrics.radius + 0.4,
+    );
+    cr.set_source_rgba(0.0, 0.04, 0.08, 0.08 * strength * glow * alpha);
+    let _ = cr.fill();
+
+    rounded_rect(
+        cr,
+        metrics.x,
+        metrics.y,
+        metrics.width,
+        metrics.height,
+        metrics.radius,
+    );
+    let fill = LinearGradient::new(0.0, metrics.y, 0.0, metrics.y + metrics.height);
+    add_stop(&fill, 0.00, hot.with_alpha(1.00 * strength * glow * alpha));
+    add_stop(
+        &fill,
+        0.58,
+        hot.mix(core, 0.16)
+            .with_alpha(1.00 * strength * glow * alpha),
+    );
+    add_stop(
+        &fill,
+        1.00,
+        lower_blue.with_alpha(0.72 * strength * glow * alpha),
+    );
+    let _ = cr.set_source(&fill);
+    let _ = cr.fill_preserve();
+    cr.set_line_width(0.55);
+    cr.set_source_rgba(0.98, 1.0, 1.0, 0.96 * strength * glow * alpha);
+    let _ = cr.stroke();
+
+    rounded_rect(
+        cr,
+        metrics.x + metrics.width * 0.14,
+        metrics.y + metrics.height * 0.18,
+        metrics.width * 0.72,
+        metrics.height * 0.24,
+        metrics.radius * 0.55,
+    );
+    cr.set_source_rgba(1.0, 1.0, 1.0, 1.00 * strength * glow * alpha);
+    let _ = cr.fill();
+
+    rounded_rect(
+        cr,
+        metrics.x + metrics.width * 0.12,
+        metrics.y + metrics.height * 0.58,
+        metrics.width * 0.76,
+        metrics.height * 0.24,
+        metrics.radius * 0.70,
+    );
+    cr.set_source_rgba(
+        electric.red,
+        electric.green,
+        electric.blue,
+        0.24 * strength * glow * alpha,
+    );
     let _ = cr.fill();
     cr.restore().ok();
 }
@@ -123,13 +217,12 @@ pub(super) fn draw_leopard_active_indicator(
 pub(super) fn leopard_running_indicator_center_y(shelf: &Rect, theme: &Theme) -> f64 {
     let geom = super::compute_perspective_shelf_geometry(shelf, theme);
     let face_height = geom.bottom_y - geom.lip_y;
-    let inner_margin = (face_height * 0.28).clamp(0.9, 1.8);
-    (geom.lip_y + face_height * 0.50).clamp(geom.lip_y + inner_margin, geom.bottom_y - inner_margin)
+    geom.lip_y + face_height * 0.50
 }
 
 pub(super) fn leopard_active_indicator_center_y(rect: Rect, shelf: &Rect, theme: &Theme) -> f64 {
     let geom = super::compute_perspective_shelf_geometry(shelf, theme);
-    let shelf_drop = geom.bottom_y + (shelf.height * (0.15 + theme.depth * 0.01)).clamp(6.8, 8.8);
-    let icon_drop = rect.y + rect.height + (rect.height * 0.14).clamp(7.0, 10.0);
-    shelf_drop.max(icon_drop)
+    let _ = rect;
+    let face_height = geom.bottom_y - geom.lip_y;
+    geom.lip_y + face_height * 0.50
 }

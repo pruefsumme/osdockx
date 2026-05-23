@@ -1,26 +1,6 @@
 use crate::layout::Rect;
-use crate::theme::{Color, Theme};
+use crate::theme::Color;
 use gtk::cairo::Context;
-
-pub(crate) fn draw_shadow(cr: &Context, shelf: &Rect, theme: &Theme) {
-    cr.save().ok();
-    let shadow_y = shelf.y + shelf.height * 0.82;
-    let base_alpha = (0.07 * theme.shadow_strength).clamp(0.012, 0.040);
-    for pass in 0..6 {
-        let grow = pass as f64 * shelf.height * 0.14;
-        super::super::rounded_rect(
-            cr,
-            shelf.x + shelf.height * 0.10 - grow * 0.88,
-            shadow_y - grow * 0.10,
-            shelf.width - shelf.height * 0.20 + grow * 1.76,
-            shelf.height * 0.20 + grow * 0.32,
-            shelf.height * 0.10 + grow * 0.24,
-        );
-        cr.set_source_rgba(0.0, 0.0, 0.0, base_alpha / (pass as f64 + 1.0));
-        let _ = cr.fill();
-    }
-    cr.restore().ok();
-}
 
 pub(crate) fn fill_crystal_material<F>(
     cr: &Context,

@@ -1,11 +1,13 @@
 use super::{
-    IconCache, ResolvedIcon, crystal_shelf_geometry, draw_icon_art,
-    draw_icon_source, leopard_glass_plane_path, rounded_rect,
+    IconCache, ResolvedIcon, crystal_shelf_geometry, draw_icon_art, draw_icon_source,
+    leopard_glass_plane_path, rounded_rect,
 };
 use crate::layout::{DockLayout, Point, Rect};
 use crate::model::DockItem;
 use crate::theme::Theme;
 use gtk::cairo::{Context, Format, ImageSurface, LinearGradient};
+
+const SHELF_ICON_REFLECTION_SOURCE_RATIO: f64 = 0.30;
 
 pub(super) fn render_icon_surface(
     resolved_icons: &[ResolvedIcon<'_>],
@@ -135,8 +137,9 @@ pub(super) fn draw_icon_reflections_on_shelf(
 
     for icon in resolved_icons {
         let item = icon.item.as_ref();
-        let max_height = (geom.lip_y - (icon.rect.y + icon.rect.height) - layout.shelf.height * 0.055)
-            .max(icon.rect.height * 0.07);
+        let max_height =
+            (geom.lip_y - (icon.rect.y + icon.rect.height) - layout.shelf.height * 0.055)
+                .max(icon.rect.height * 0.07);
         draw_icon_reflection(cr, item, icon.rect, max_height, theme, icons, icon.alpha);
     }
 
@@ -156,7 +159,7 @@ fn draw_icon_reflection(
     if alpha <= 0.0 {
         return;
     }
-    let default_height = icon_rect.height * (theme.reflection_height * 0.90).clamp(0.22, 0.44);
+    let default_height = icon_rect.height * (theme.reflection_height * 0.78).clamp(0.18, 0.36);
     let reflection_height = default_height.min(max_height.max(icon_rect.height * 0.07));
     if reflection_height <= 1.0 {
         return;
@@ -173,16 +176,20 @@ fn draw_icon_reflection(
     icon_surface.flush();
 
     let reflection_y = icon_rect.y + icon_rect.height;
-    let alpha = (theme.reflection_opacity * 0.94 * alpha).clamp(0.0, 0.26);
+    let alpha = (theme.reflection_opacity * 1.08 * alpha).clamp(0.0, 0.34);
     if alpha <= 0.0 {
         return;
     }
-    let blur = 1.8 + theme.reflection_blur * 3.0;
+    let source_height = icon_rect.height * SHELF_ICON_REFLECTION_SOURCE_RATIO;
+    let source_y = icon_rect.height - source_height;
+    let blur = 2.6 + theme.reflection_blur * 6.0;
     let passes = [
-        (0.0, 0.0, alpha),
-        (-blur * 0.28, blur * 0.10, alpha * 0.34),
-        (blur * 0.28, blur * 0.10, alpha * 0.34),
-        (0.0, blur * 0.24, alpha * 0.18),
+        (0.0, 0.0, alpha * 0.72),
+        (-blur * 0.38, blur * 0.08, alpha * 0.28),
+        (blur * 0.38, blur * 0.08, alpha * 0.28),
+        (-blur * 0.16, blur * 0.24, alpha * 0.18),
+        (blur * 0.16, blur * 0.24, alpha * 0.18),
+        (0.0, blur * 0.38, alpha * 0.12),
     ];
 
     for (dx, dy, pass_alpha) in passes {
@@ -199,13 +206,12 @@ fn draw_icon_reflection(
         cr.translate(icon_rect.x + dx, reflection_y + reflection_height + dy);
         cr.scale(
             icon_rect.width / icon_rect.height,
-            -reflection_height / icon_rect.height,
+            -reflection_height / source_height,
         );
-        if cr.set_source_surface(&icon_surface, 0.0, 0.0).is_ok() {
-            let fade = LinearGradient::new(0.0, 0.0, 0.0, icon_rect.height);
-            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, 0.0);
-            fade.add_color_stop_rgba(0.44, 1.0, 1.0, 1.0, pass_alpha * 0.08);
-            fade.add_color_stop_rgba(0.76, 1.0, 1.0, 1.0, pass_alpha * 0.36);
+        if cr.set_source_surface(&icon_surface, 0.0, -source_y).is_ok() {
+            let fade = LinearGradient::new(0.0, 0.0, 0.0, source_height);
+            fade.add_color_stop_rgba(0.00, 1.0, 1.0, 1.0, pass_alpha * 0.05);
+            fade.add_color_stop_rgba(0.45, 1.0, 1.0, 1.0, pass_alpha * 0.30);
             fade.add_color_stop_rgba(1.00, 1.0, 1.0, 1.0, pass_alpha);
             let _ = cr.mask(&fade);
         }

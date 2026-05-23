@@ -6,14 +6,14 @@ mod separator;
 
 pub(super) use self::geometry::{
     LeopardWedgeBodyGeometry, PerspectiveShelfGeometry, compute_perspective_shelf_geometry,
-    crystal_shelf_geometry, leopard_wedge_body_geometry,
+    crystal_shelf_geometry, leopard_glass_plane_front_corner_radius, leopard_wedge_body_geometry,
 };
 pub(super) use self::leopard::{
-    draw_front_lip, draw_glass_highlight_overlay, draw_glass_shelf_base,
-    draw_leopard_shelf_strokes,
+    draw_front_lip, draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes,
 };
-pub(super) use self::material::{draw_shadow, fill_crystal_material};
+pub(super) use self::material::fill_crystal_material;
 pub(super) use self::paths::{
-    leopard_front_face_path, leopard_glass_plane_path, leopard_wedge_body_path,
+    leopard_front_face_path, leopard_front_lip_bottom_path, leopard_front_lip_top_path,
+    leopard_glass_plane_path, leopard_wedge_body_path,
 };
 pub(super) use self::separator::draw_shelf_section_separator;
