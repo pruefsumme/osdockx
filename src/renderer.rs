@@ -21,7 +21,7 @@ use self::reflections::{
 };
 use self::shelf::{
     compute_perspective_shelf_geometry, crystal_shelf_geometry, draw_front_lip,
-    draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes, draw_shadow,
+    draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes,
     draw_shelf_section_separator, leopard_front_face_path, leopard_glass_plane_path,
     leopard_wedge_body_geometry,
 };
@@ -254,7 +254,6 @@ impl Renderer {
     ) {
         clear(cr);
         if shelf_layer != ShelfLayer::None {
-            draw_shadow(cr, &layout.shelf, theme);
             draw_glass_shelf_base(cr, &layout.shelf, theme);
             if theme.reflection_opacity > 0.0 {
                 draw_icon_reflections_on_shelf(cr, resolved_icons, layout, theme, icons);
@@ -583,7 +582,6 @@ fn clear(cr: &Context) {
 }
 
 fn draw_procedural_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) {
-    draw_shadow(cr, shelf, theme);
     draw_glass_shelf_base(cr, shelf, theme);
     draw_glass_highlight_overlay(cr, shelf, theme);
     draw_front_lip(cr, shelf, theme);

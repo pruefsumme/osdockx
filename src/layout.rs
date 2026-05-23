@@ -61,7 +61,8 @@ impl DockLayout {
     }
 
     pub fn separator_hover_rect(&self) -> Option<Rect> {
-        self.separator.map(|separator| separator_hover_rect(separator.rect))
+        self.separator
+            .map(|separator| separator_hover_rect(separator.rect))
     }
 }
 

@@ -1,8 +1,7 @@
 use super::{
-    APPLET_FAN_BOTTOM_PADDING, APPLET_FAN_ICON_SIZE, APPLET_FAN_LABEL_HEIGHT,
-    APPLET_FAN_MAX_ITEMS, APPLET_FAN_REVEAL_DURATION, APPLET_FAN_ROW_HEIGHT,
-    APPLET_FAN_TOP_PADDING, APPLET_FAN_WIDTH, ICON_ANIMATION_FRAME, ease_out_cubic,
-    open_path_in_default_app, open_uri, rounded_rect_path,
+    APPLET_FAN_BOTTOM_PADDING, APPLET_FAN_ICON_SIZE, APPLET_FAN_LABEL_HEIGHT, APPLET_FAN_MAX_ITEMS,
+    APPLET_FAN_REVEAL_DURATION, APPLET_FAN_ROW_HEIGHT, APPLET_FAN_TOP_PADDING, APPLET_FAN_WIDTH,
+    ICON_ANIMATION_FRAME, ease_out_cubic, open_path_in_default_app, open_uri, rounded_rect_path,
 };
 use crate::layout::Rect;
 use crate::model::DockItem;
@@ -258,7 +257,10 @@ pub(super) fn draw_applet_fan(
     let top_center_y = APPLET_FAN_TOP_PADDING + row_step * 0.5;
     let visible_count = source.entries.len();
     let more_label = applet_fan_more_label(source, visible_count);
-    let more_action = source.open_target.clone().map(AppletFanHitAction::OpenTarget);
+    let more_action = source
+        .open_target
+        .clone()
+        .map(AppletFanHitAction::OpenTarget);
     draw_applet_fan_row(
         cr,
         width as f64,

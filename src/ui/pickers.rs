@@ -1,9 +1,9 @@
 use super::{
     ADD_APPLICATION_MENU_VISIBLE_ROWS, ADD_APPLICATION_MENU_WIDTH, CONTEXT_MENU_GAP,
-    CONTEXT_MENU_ITEM_HEIGHT, Runtime, THEME_ICON_MENU_MAX_MATCHES,
-    THEME_ICON_MENU_VISIBLE_ROWS, THEME_ICON_MENU_WIDTH, context_menu_anchor_rect,
-    context_menu_icon_button, dismiss_context_menu, dock_layout_for_state, menu_height,
-    pin_application, present_runtime_popover, set_custom_icon_value,
+    CONTEXT_MENU_ITEM_HEIGHT, Runtime, THEME_ICON_MENU_MAX_MATCHES, THEME_ICON_MENU_VISIBLE_ROWS,
+    THEME_ICON_MENU_WIDTH, context_menu_anchor_rect, context_menu_icon_button,
+    dismiss_context_menu, dock_layout_for_state, menu_height, pin_application,
+    present_runtime_popover, set_custom_icon_value,
 };
 use crate::layout::Rect;
 use gtk::prelude::*;

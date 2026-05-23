@@ -171,9 +171,14 @@ fn draw_glowing_lip_indicator(
     add_stop(
         &fill,
         0.58,
-        hot.mix(core, 0.16).with_alpha(1.00 * strength * glow * alpha),
+        hot.mix(core, 0.16)
+            .with_alpha(1.00 * strength * glow * alpha),
     );
-    add_stop(&fill, 1.00, lower_blue.with_alpha(0.72 * strength * glow * alpha));
+    add_stop(
+        &fill,
+        1.00,
+        lower_blue.with_alpha(0.72 * strength * glow * alpha),
+    );
     let _ = cr.set_source(&fill);
     let _ = cr.fill_preserve();
     cr.set_line_width(0.55);

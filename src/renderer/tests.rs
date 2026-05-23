@@ -106,6 +106,32 @@ fn export_leopard_shelf_only_preview_png() {
 }
 
 #[test]
+fn leopard_shelf_only_silhouette_matches_reference_shape() {
+    let config = Config::default().normalized();
+    let theme = Theme::from_config(&config.theme);
+    let mut surface = ImageSurface::create(Format::ARgb32, 1295, 192).unwrap();
+    let cr = Context::new(&surface).unwrap();
+    let shelf = Rect {
+        x: 2.0,
+        y: 96.0,
+        width: 1291.0,
+        height: 56.0,
+    };
+
+    draw_procedural_shelf_layer(&cr, &shelf, &theme);
+    drop(cr);
+
+    let (min_x, min_y, max_x, max_y) = alpha_bounds(&mut surface).unwrap();
+    assert_eq!((min_x, min_y, max_x), (2, 96, 1292));
+    assert!((150..=151).contains(&max_y));
+
+    assert_row_span_near(&mut surface, 98, 28, 1264, 2);
+    assert_row_span_near(&mut surface, 120, 15, 1278, 2);
+    assert_row_span_near(&mut surface, 145, 2, 1292, 2);
+    assert_row_span_near(&mut surface, 150, 5, 1289, 2);
+}
+
+#[test]
 fn reserved_thickness_stays_compact_for_leopard_theme() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);
@@ -357,7 +383,7 @@ fn leopard_default_layout_has_visible_front_body_thickness() {
 }
 
 #[test]
-fn leopard_front_face_widens_into_trapezoid() {
+fn leopard_front_face_narrows_into_ground_edge() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);
     let model = DockModel {
@@ -381,10 +407,10 @@ fn leopard_front_face_widens_into_trapezoid() {
     let body = leopard_wedge_body_geometry(&layout.shelf, &theme);
     assert!((geom.front_left.x - geom.lip_left.x).abs() < 0.001);
     assert!((geom.front_right.x - geom.lip_right.x).abs() < 0.001);
-    assert!(body.face_left_bottom.x < geom.front_left.x);
-    assert!(body.face_right_bottom.x > geom.front_right.x);
-    assert!(geom.front_left.x - body.face_left_bottom.x >= layout.shelf.height * 0.004);
-    assert!(body.face_right_bottom.x - geom.front_right.x >= layout.shelf.height * 0.004);
+    assert!(body.face_left_bottom.x > geom.front_left.x);
+    assert!(body.face_right_bottom.x < geom.front_right.x);
+    assert!(body.face_left_bottom.x - geom.front_left.x >= layout.shelf.height * 0.030);
+    assert!(geom.front_right.x - body.face_right_bottom.x >= layout.shelf.height * 0.030);
     assert!((body.face_left_bottom.y - geom.bottom_y).abs() < 0.001);
 }
 
@@ -494,8 +520,7 @@ fn leopard_front_lip_stays_inside_trapezoid_bounds() {
     assert!(
         alpha_at(
             &mut surface,
-            (body.face_left_join.x
-                + (body.face_left_inner_bottom.x - body.face_left_join.x) * 0.35)
+            (body.face_left_join.x + (body.face_left_inner_bottom.x - body.face_left_join.x) * 0.35)
                 .round() as i32,
             y
         ) > 0
@@ -596,8 +621,22 @@ fn leopard_front_corners_do_not_leave_bright_lip_beads() {
 
     assert!(brightness(left_bead) <= brightness(left_body) + 28);
     assert!(brightness(right_bead) <= brightness(right_body) + 28);
-    assert!(alpha_at(&mut surface, (geom.lip_left.x + 1.0).round() as i32, y) > 96);
-    assert!(alpha_at(&mut surface, (geom.lip_right.x - 1.0).round() as i32, y) > 96);
+    assert!(alpha_at(&mut surface, (geom.lip_left.x + 1.0).round() as i32, y) <= 96);
+    assert!(alpha_at(&mut surface, (geom.lip_right.x - 1.0).round() as i32, y) <= 96);
+    assert!(
+        alpha_at(
+            &mut surface,
+            (body.face_left_bottom.x + 1.0).round() as i32,
+            y
+        ) > 40
+    );
+    assert!(
+        alpha_at(
+            &mut surface,
+            (body.face_right_bottom.x - 1.0).round() as i32,
+            y
+        ) > 40
+    );
 }
 
 #[test]
@@ -625,7 +664,7 @@ fn leopard_default_layout_has_raised_rear_edge() {
     let icon = layout.icons[0].rect;
     let rear_rise = (icon.y + icon.height) - geom.back_left.y;
 
-    assert!(rear_rise > icon.height * 0.36);
+    assert!(rear_rise > icon.height * 0.34);
 }
 
 #[test]
@@ -924,6 +963,66 @@ fn rect_has_alpha(surface: &mut ImageSurface, rect: Rect) -> bool {
             data[offset] != 0
         })
     })
+}
+
+fn alpha_bounds(surface: &mut ImageSurface) -> Option<(i32, i32, i32, i32)> {
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let width = surface.width().max(0);
+    let height = surface.height().max(0);
+    let data = surface.data().unwrap();
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = -1;
+    let mut max_y = -1;
+
+    for y in 0..height {
+        for x in 0..width {
+            let offset = y as usize * stride + x as usize * 4 + 3;
+            if data[offset] == 0 {
+                continue;
+            }
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    (max_x >= min_x && max_y >= min_y).then_some((min_x, min_y, max_x, max_y))
+}
+
+fn assert_row_span_near(
+    surface: &mut ImageSurface,
+    y: i32,
+    expected_min_x: i32,
+    expected_max_x: i32,
+    tolerance: i32,
+) {
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let width = surface.width().max(0);
+    let data = surface.data().unwrap();
+    let mut min_x = width;
+    let mut max_x = -1;
+
+    for x in 0..width {
+        let offset = y as usize * stride + x as usize * 4 + 3;
+        if data[offset] == 0 {
+            continue;
+        }
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+    }
+
+    assert!(
+        (min_x - expected_min_x).abs() <= tolerance,
+        "row {y} min_x {min_x} differed from {expected_min_x}"
+    );
+    assert!(
+        (max_x - expected_max_x).abs() <= tolerance,
+        "row {y} max_x {max_x} differed from {expected_max_x}"
+    );
 }
 
 fn preview_item(id: &str, name: &str, badge: Option<u32>) -> DockItem {

@@ -8,9 +8,8 @@ use crate::theme::Color as ThemeColor;
 use gtk::glib::{self, Propagation};
 use gtk::prelude::*;
 use gtk::{
-    Align, ApplicationWindow, Box as GtkBox, Button, CheckButton, ColorDialog,
-    ColorDialogButton, DrawingArea, GLArea, Label, Orientation, PolicyType, Scale,
-    ScrolledWindow, gdk,
+    Align, ApplicationWindow, Box as GtkBox, Button, CheckButton, ColorDialog, ColorDialogButton,
+    DrawingArea, GLArea, Label, Orientation, PolicyType, Scale, ScrolledWindow, gdk,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

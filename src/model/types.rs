@@ -1,6 +1,11 @@
 use crate::config::{AppletConfig, AppletKind};
 use crate::desktop::DesktopApp;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 
 pub type WindowId = u32;
 
@@ -8,11 +13,35 @@ const DOWNLOADS_APPLET_ID: &str = "applet:downloads";
 const TRASH_APPLET_ID: &str = "applet:trash";
 const FOLDER_APPLET_PREFIX: &str = "applet:folder:";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct WindowIcon {
     pub width: u32,
     pub height: u32,
-    pub argb: Vec<u32>,
+    pub argb: Arc<[u32]>,
+    signature: u64,
+}
+
+impl WindowIcon {
+    pub fn from_argb(width: u32, height: u32, argb: Vec<u32>) -> Self {
+        let mut hasher = DefaultHasher::new();
+        width.hash(&mut hasher);
+        height.hash(&mut hasher);
+        argb.hash(&mut hasher);
+        Self {
+            width,
+            height,
+            argb: Arc::from(argb),
+            signature: hasher.finish(),
+        }
+    }
+}
+
+impl PartialEq for WindowIcon {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.signature == other.signature
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

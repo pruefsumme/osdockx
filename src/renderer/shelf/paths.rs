@@ -35,30 +35,27 @@ pub(crate) fn leopard_front_face_path(
     body: &LeopardWedgeBodyGeometry,
 ) {
     let face_height = (geom.bottom_y - geom.lip_y).max(1.0);
-    let right_nose_span = body.face_right_bottom.x - body.face_right_inner_bottom.x;
-    let left_nose_span = body.face_left_inner_bottom.x - body.face_left_bottom.x;
-    let top_y = geom.lip_y - 0.55;
+    let top_y = geom.lip_y - 0.30;
 
     cr.new_path();
     cr.move_to(geom.lip_left.x, top_y);
     cr.line_to(geom.lip_right.x, top_y);
-    cr.line_to(body.face_right_join.x, body.face_right_join.y);
     cr.curve_to(
-        body.face_right_bottom.x,
-        body.face_right_join.y + face_height * 0.42,
-        body.face_right_bottom.x - right_nose_span * 0.10,
-        body.face_right_bottom.y,
+        body.face_right_join.x,
+        body.face_right_join.y,
         body.face_right_inner_bottom.x,
+        body.face_right_bottom.y - face_height * 0.18,
+        body.face_right_bottom.x,
         body.face_right_bottom.y,
     );
     cr.line_to(body.face_left_inner_bottom.x, body.face_left_inner_bottom.y);
     cr.curve_to(
-        body.face_left_bottom.x + left_nose_span * 0.10,
-        body.face_left_bottom.y,
         body.face_left_bottom.x,
-        body.face_left_join.y + face_height * 0.42,
+        body.face_left_bottom.y - face_height * 0.18,
         body.face_left_join.x,
         body.face_left_join.y,
+        geom.lip_left.x,
+        top_y,
     );
     cr.close_path();
 }
@@ -68,12 +65,12 @@ pub(crate) fn leopard_front_lip_top_path(
     geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let top_y = geom.lip_y - 0.55;
-    let y = geom.lip_y + 0.85;
+    let top_y = geom.lip_y - 0.30;
+    let y = geom.lip_y + 0.45;
     let left_t = ((y - top_y) / (body.face_left_join.y - top_y).max(0.001)).clamp(0.0, 1.0);
     let right_t = ((y - top_y) / (body.face_right_join.y - top_y).max(0.001)).clamp(0.0, 1.0);
-    let left_x = geom.lip_left.x + (body.face_left_join.x - geom.lip_left.x) * left_t + 0.20;
-    let right_x = geom.lip_right.x + (body.face_right_join.x - geom.lip_right.x) * right_t - 0.20;
+    let left_x = geom.lip_left.x + (body.face_left_join.x - geom.lip_left.x) * left_t + 0.35;
+    let right_x = geom.lip_right.x + (body.face_right_join.x - geom.lip_right.x) * right_t - 0.35;
 
     cr.new_path();
     cr.move_to(left_x, y);
@@ -85,8 +82,8 @@ pub(crate) fn leopard_front_lip_bottom_path(
     _geom: &PerspectiveShelfGeometry,
     body: &LeopardWedgeBodyGeometry,
 ) {
-    let inset = ((body.face_left_inner_bottom.x - body.face_left_bottom.x) * 0.42).clamp(1.8, 3.6);
-    let y = body.face_left_bottom.y - 0.55;
+    let inset = 1.0;
+    let y = body.face_left_bottom.y - 0.45;
     cr.new_path();
     cr.move_to(body.face_left_bottom.x + inset, y);
     cr.line_to(body.face_right_bottom.x - inset, y);

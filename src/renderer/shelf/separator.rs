@@ -1,7 +1,5 @@
 use super::super::add_stop;
-use super::{
-    compute_perspective_shelf_geometry, leopard_glass_plane_path,
-};
+use super::{compute_perspective_shelf_geometry, leopard_glass_plane_path};
 use crate::layout::{DockSeparatorLayout, Rect};
 use crate::theme::{Color, Theme};
 use gtk::cairo::{Context, LinearGradient};
@@ -41,8 +39,8 @@ fn draw_leopard_separator(
         theme
             .shelf_top
             .mix(theme.shelf_stroke, 0.22)
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.12)
-            .with_alpha(0.22),
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.20)
+            .with_alpha(0.30),
     );
     add_stop(
         &trench,
@@ -50,8 +48,8 @@ fn draw_leopard_separator(
         theme
             .shelf_bottom
             .mix(theme.shelf_stroke, 0.36)
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.28)
-            .with_alpha(0.38),
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.40)
+            .with_alpha(0.55),
     );
     add_stop(
         &trench,
@@ -59,8 +57,8 @@ fn draw_leopard_separator(
         theme
             .shelf_bottom
             .mix(theme.shelf_stroke, 0.28)
-            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.18)
-            .with_alpha(0.26),
+            .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.28)
+            .with_alpha(0.38),
     );
     cr.move_to(center_x, top + 0.3);
     cr.line_to(center_x, bottom);

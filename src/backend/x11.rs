@@ -3,7 +3,7 @@ use crate::config::DockEdge;
 use crate::layout::Rect;
 use crate::model::{WindowIcon, WindowId, WindowInfo};
 use anyhow::Context;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use x11rb::CURRENT_TIME;
@@ -25,6 +25,7 @@ pub struct X11Backend {
     root: Window,
     atoms: Atoms,
     dock_window: Option<WindowId>,
+    window_icon_cache: HashMap<WindowId, WindowIcon>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +74,7 @@ impl X11Backend {
             root,
             atoms,
             dock_window: None,
+            window_icon_cache: HashMap::new(),
         })
     }
 
@@ -199,7 +201,7 @@ impl X11Backend {
     }
 
     fn window_info(
-        &self,
+        &mut self,
         xid: WindowId,
         active_window: Option<WindowId>,
     ) -> anyhow::Result<Option<WindowInfo>> {
@@ -267,11 +269,16 @@ impl X11Backend {
         String::from_utf8(class.to_vec()).ok()
     }
 
-    fn window_icon(&self, xid: WindowId) -> Option<WindowIcon> {
+    fn window_icon(&mut self, xid: WindowId) -> Option<WindowIcon> {
+        if let Some(icon) = self.window_icon_cache.get(&xid) {
+            return Some(icon.clone());
+        }
         let values = self
             .property_u32_list(xid, self.atoms.net_wm_icon, AtomEnum::CARDINAL.into())
             .ok()?;
-        parse_window_icon(&values)
+        let icon = parse_window_icon(&values)?;
+        self.window_icon_cache.insert(xid, icon.clone());
+        Some(icon)
     }
 
     fn randr_monitor_geometry(&self, preferred: Option<&str>) -> anyhow::Result<MonitorGeometry> {
@@ -483,11 +490,16 @@ impl PlatformBackend for X11Backend {
         while self.conn.poll_for_event()?.is_some() {}
 
         let active_window = self.active_window();
-        let windows = self
-            .window_list()?
-            .into_iter()
-            .filter_map(|xid| self.window_info(xid, active_window).transpose())
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let window_ids = self.window_list()?;
+        self.window_icon_cache
+            .retain(|xid, _| window_ids.iter().any(|candidate| candidate == xid));
+
+        let mut windows = Vec::with_capacity(window_ids.len());
+        for xid in window_ids {
+            if let Some(info) = self.window_info(xid, active_window)? {
+                windows.push(info);
+            }
+        }
         Ok(windows)
     }
 
@@ -584,11 +596,7 @@ fn parse_window_icon(values: &[u32]) -> Option<WindowIcon> {
         let argb = values[offset..offset + len].to_vec();
         offset += len;
 
-        let candidate = WindowIcon {
-            width,
-            height,
-            argb,
-        };
+        let candidate = WindowIcon::from_argb(width, height, argb);
         let candidate_area = candidate.width.saturating_mul(candidate.height);
         let best_area = best
             .as_ref()

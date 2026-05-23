@@ -325,45 +325,46 @@ pub(crate) fn draw_front_lip(cr: &Context, shelf: &Rect, theme: &Theme) {
     cr.clip();
 
     let face_fill = LinearGradient::new(0.0, geom.front_left.y, 0.0, geom.bottom_y);
-    add_stop(&face_fill, 0.00, Color::rgba(0.76, 0.84, 0.90, 1.0));
-    add_stop(&face_fill, 0.20, Color::rgba(0.76, 0.80, 0.84, 1.0));
-    add_stop(&face_fill, 0.58, Color::rgba(0.58, 0.62, 0.66, 1.0));
-    add_stop(&face_fill, 0.82, Color::rgba(0.56, 0.64, 0.74, 1.0));
-    add_stop(&face_fill, 1.00, Color::rgba(0.55, 0.65, 0.76, 0.72));
+    add_stop(&face_fill, 0.00, Color::rgba(0.76, 0.86, 0.93, 0.98));
+    add_stop(&face_fill, 0.22, Color::rgba(0.90, 0.95, 0.98, 1.0));
+    add_stop(&face_fill, 0.58, Color::rgba(0.78, 0.86, 0.91, 0.96));
+    add_stop(&face_fill, 0.86, Color::rgba(0.62, 0.73, 0.83, 0.84));
+    add_stop(&face_fill, 1.00, Color::rgba(0.48, 0.63, 0.76, 0.50));
     let _ = cr.set_source(&face_fill);
     let _ = cr.paint();
 
     leopard_front_lip_top_path(cr, &geom, &body);
-    cr.set_line_width(1.20);
+    cr.set_line_width(0.82);
     cr.set_line_cap(gtk::cairo::LineCap::Round);
-    let lip_highlight = LinearGradient::new(body.face_left_join.x, 0.0, body.face_right_join.x, 0.0);
-    add_stop(&lip_highlight, 0.00, theme.shelf_highlight.with_alpha(0.12));
-    add_stop(&lip_highlight, 0.04, theme.shelf_highlight.with_alpha(0.34));
+    let lip_highlight =
+        LinearGradient::new(body.face_left_join.x, 0.0, body.face_right_join.x, 0.0);
+    add_stop(&lip_highlight, 0.00, theme.shelf_highlight.with_alpha(0.08));
+    add_stop(&lip_highlight, 0.04, theme.shelf_highlight.with_alpha(0.22));
     add_stop(
         &lip_highlight,
         0.50,
-        Color::rgba(0.93, 0.98, 1.0, 0.58 * theme.highlight_strength + 0.47),
+        Color::rgba(0.93, 0.98, 1.0, 0.30 * theme.highlight_strength + 0.30),
     );
-    add_stop(&lip_highlight, 0.96, theme.shelf_highlight.with_alpha(0.34));
-    add_stop(&lip_highlight, 1.00, theme.shelf_highlight.with_alpha(0.12));
+    add_stop(&lip_highlight, 0.96, theme.shelf_highlight.with_alpha(0.22));
+    add_stop(&lip_highlight, 1.00, theme.shelf_highlight.with_alpha(0.08));
     let _ = cr.set_source(&lip_highlight);
     let _ = cr.stroke();
 
     leopard_front_lip_bottom_path(cr, &geom, &body);
-    cr.set_line_width(1.10);
+    cr.set_line_width(0.72);
     cr.set_line_cap(gtk::cairo::LineCap::Butt);
     let lip_shadow = LinearGradient::new(geom.lip_left.x, 0.0, geom.lip_right.x, 0.0);
     add_stop(&lip_shadow, 0.00, theme.shelf_stroke.with_alpha(0.0));
-    add_stop(&lip_shadow, 0.16, theme.shelf_stroke.with_alpha(0.10));
+    add_stop(&lip_shadow, 0.16, theme.shelf_stroke.with_alpha(0.06));
     add_stop(
         &lip_shadow,
         0.50,
         theme
             .shelf_stroke
             .mix(Color::rgba(0.0, 0.0, 0.0, 1.0), 0.32)
-            .with_alpha(0.22),
+            .with_alpha(0.13),
     );
-    add_stop(&lip_shadow, 0.84, theme.shelf_stroke.with_alpha(0.10));
+    add_stop(&lip_shadow, 0.84, theme.shelf_stroke.with_alpha(0.06));
     add_stop(&lip_shadow, 1.00, theme.shelf_stroke.with_alpha(0.0));
     let _ = cr.set_source(&lip_shadow);
     let _ = cr.stroke();

@@ -51,16 +51,14 @@ pub(crate) fn compute_perspective_shelf_geometry(
     shelf: &Rect,
     theme: &Theme,
 ) -> PerspectiveShelfGeometry {
-    let rear_inset = (shelf.height * (0.50 + theme.depth * 0.055))
-        .clamp(shelf.height * 0.48, shelf.height * 0.58);
-    let front_inset = (shelf.height * 0.070).clamp(3.0, 5.2);
-    let back_rise = (shelf.height * (0.080 + theme.tilt * 0.020))
-        .clamp(shelf.height * 0.080, shelf.height * 0.115);
-    let back_y = shelf.y - back_rise;
-    let front_lip_ratio = (theme.front_lip_ratio * 0.68).clamp(0.070, 0.095);
+    let rear_inset = (shelf.height * (0.47 + theme.depth * 0.025))
+        .clamp(shelf.height * 0.48, shelf.height * 0.52);
+    let front_inset = (shelf.height * 0.006).clamp(0.2, 0.6);
+    let back_y = shelf.y + 1.25;
+    let front_lip_ratio = theme.front_lip_ratio.clamp(0.10, 0.13);
     let front_face_height = shelf.height * front_lip_ratio;
     let lip_y = shelf.y + shelf.height - front_face_height;
-    let bottom_y = shelf.y + shelf.height + (shelf.height * 0.031).clamp(1.2, 1.55);
+    let bottom_y = shelf.y + shelf.height - (shelf.height * 0.030).clamp(0.7, 1.65);
     PerspectiveShelfGeometry {
         back_left: Point {
             x: shelf.x + rear_inset,
@@ -94,13 +92,9 @@ pub(crate) fn compute_perspective_shelf_geometry(
 pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> LeopardWedgeBodyGeometry {
     let geom = compute_perspective_shelf_geometry(shelf, theme);
     let face_height = (geom.bottom_y - geom.lip_y).max(1.0);
-    let bottom_inset = (shelf.height * 0.012).clamp(0.7, 1.3);
-    let side_span = (geom.lip_left.x - (shelf.x + bottom_inset)).max(0.0);
-    let join_drop = (face_height * 0.42).clamp(1.8, face_height * 0.62);
-    let join_outset = side_span * 0.22;
-    let nose_width_max = (shelf.height * 0.16).max(0.0);
-    let nose_width_min = 4.8_f64.min(nose_width_max);
-    let nose_width = (face_height * 1.35).clamp(nose_width_min, nose_width_max.max(nose_width_min));
+    let bottom_inset = (shelf.height * 0.055).clamp(2.4, 4.8);
+    let join_drop = (face_height * 0.42).clamp(face_height * 0.22, face_height * 0.58);
+    let join_inset = (bottom_inset * 0.35).clamp(0.8, 1.8);
     let front_corner_radius = leopard_glass_plane_front_corner_radius(shelf, &geom);
     LeopardWedgeBodyGeometry {
         face_left_bottom: Point {
@@ -112,19 +106,19 @@ pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> Leopar
             y: geom.bottom_y,
         },
         face_left_join: Point {
-            x: geom.lip_left.x - join_outset,
+            x: geom.lip_left.x + join_inset,
             y: geom.lip_y + join_drop,
         },
         face_right_join: Point {
-            x: geom.lip_right.x + join_outset,
+            x: geom.lip_right.x - join_inset,
             y: geom.lip_y + join_drop,
         },
         face_left_inner_bottom: Point {
-            x: shelf.x + bottom_inset + nose_width,
+            x: shelf.x + bottom_inset,
             y: geom.bottom_y,
         },
         face_right_inner_bottom: Point {
-            x: shelf.x + shelf.width - bottom_inset - nose_width,
+            x: shelf.x + shelf.width - bottom_inset,
             y: geom.bottom_y,
         },
         front_corner_radius,
@@ -160,11 +154,13 @@ mod tests {
             height: 29.76,
         };
 
-        let body = leopard_wedge_body_geometry(&shelf, &Theme::default());
+        let theme = Theme::default();
+        let geom = compute_perspective_shelf_geometry(&shelf, &theme);
+        let body = leopard_wedge_body_geometry(&shelf, &theme);
 
         assert!(body.face_left_inner_bottom.x.is_finite());
         assert!(body.face_right_inner_bottom.x.is_finite());
-        assert!(body.face_left_inner_bottom.x > body.face_left_bottom.x);
-        assert!(body.face_right_inner_bottom.x < body.face_right_bottom.x);
+        assert!(body.face_left_bottom.x > geom.lip_left.x);
+        assert!(body.face_right_bottom.x < geom.lip_right.x);
     }
 }

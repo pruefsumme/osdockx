@@ -16,7 +16,13 @@ use self::applet_fan::{
     recent_applet_entries_from_dir, run_applet_fan_action, start_applet_fan_reveal_tick,
 };
 use self::customizer::show_customizer_debug_window;
+#[cfg(test)]
+use self::customizer::{
+    CustomizerColorField, CustomizerSliderField, rgba_from_config_color, rgba_to_config_color,
+};
 use self::hover::show_hover_settings_menu;
+#[cfg(test)]
+use self::menus::{application_context_actions, context_menu_height};
 use self::menus::{
     context_menu_anchor_rect, context_menu_icon_button, context_menu_separator, menu_height,
     present_runtime_popover, show_context_menu, show_dock_context_menu,
@@ -25,12 +31,6 @@ use self::pickers::{show_add_application_menu, show_theme_icon_menu};
 use self::state::{
     DockSizeTransition, IconDrag, IconPresenceGhost, IconPresenceTransition, IconSlide,
     IndicatorAnimation, IndicatorVisual, SeparatorResize, StartupReveal,
-};
-#[cfg(test)]
-use self::menus::{application_context_actions, context_menu_height};
-#[cfg(test)]
-use self::customizer::{
-    CustomizerColorField, CustomizerSliderField, rgba_from_config_color, rgba_to_config_color,
 };
 
 use crate::backend::x11::X11Backend;
@@ -174,7 +174,7 @@ enum DockContextAction {
 }
 
 impl Runtime {
-    fn refresh_model(&mut self) {
+    fn refresh_model(&mut self) -> bool {
         let previous_model = self.model.clone();
         let previous_layout = dock_layout_for_state(self, None);
         let previous_rects = current_visible_icon_rects(self);
@@ -206,11 +206,9 @@ impl Runtime {
             &self.config.dock,
             &self.theme,
         );
-        let indicator_animations = build_indicator_animations(
-            &previous_model,
-            &next_model,
-            &self.indicator_animations,
-        );
+        let indicator_animations =
+            build_indicator_animations(&previous_model, &next_model, &self.indicator_animations);
+        let model_changed = previous_model != next_model;
 
         self.model = next_model;
         if icon_presence.is_some() {
@@ -218,6 +216,7 @@ impl Runtime {
         }
         self.icon_presence = icon_presence;
         self.indicator_animations = indicator_animations;
+        model_changed
     }
 
     fn desired_size(&self) -> (i32, i32) {
@@ -435,7 +434,11 @@ fn interpolate_presence_layout(transition: &IconPresenceTransition, progress: f6
         progress,
     );
 
-    for (section, from_section) in layout.sections.iter_mut().zip(&transition.from_layout.sections) {
+    for (section, from_section) in layout
+        .sections
+        .iter_mut()
+        .zip(&transition.from_layout.sections)
+    {
         section.rect = interpolate_rect(from_section.rect, section.rect, progress);
     }
 
@@ -1393,6 +1396,7 @@ fn finish_separator_resize(state: &mut Runtime) -> bool {
     }
     state.last_size = None;
     state.last_geometry = None;
+    state.last_reserved_geometry = None;
     state.last_shape_size = None;
     resize.current_icon_size != resize.start_icon_size
 }
@@ -1646,12 +1650,22 @@ fn build_indicator_animations(
     let previous = previous_model
         .items
         .iter()
-        .map(|item| (item.config_key().to_ascii_lowercase(), indicator_visual_for_item(item)))
+        .map(|item| {
+            (
+                item.config_key().to_ascii_lowercase(),
+                indicator_visual_for_item(item),
+            )
+        })
         .collect::<HashMap<_, _>>();
     let next = next_model
         .items
         .iter()
-        .map(|item| (item.config_key().to_ascii_lowercase(), indicator_visual_for_item(item)))
+        .map(|item| {
+            (
+                item.config_key().to_ascii_lowercase(),
+                indicator_visual_for_item(item),
+            )
+        })
         .collect::<HashMap<_, _>>();
     let mut animations = HashMap::new();
 
@@ -1728,7 +1742,7 @@ fn indicator_animation_frame(state: &Runtime) -> Option<IndicatorAnimationFrame>
 fn current_indicator_visual(animation: &IndicatorAnimation) -> IndicatorVisual {
     let raw = (animation.started.elapsed().as_secs_f64()
         / INDICATOR_ANIMATION_DURATION.as_secs_f64())
-        .clamp(0.0, 1.0);
+    .clamp(0.0, 1.0);
     let visibility_progress = ease_out_cubic(raw);
     let emphasis_progress = ease_in_out_cubic(raw);
     IndicatorVisual {
@@ -2353,26 +2367,19 @@ fn wire_refresh(
     let drawing = drawing.clone();
     let gl_area = gl_area.clone();
     glib::timeout_add_local(Duration::from_millis(refresh as u64), move || {
-        let menu_open = {
+        let changed = {
             let mut state = state.borrow_mut();
             prune_finished_icon_slide(&mut state);
             prune_finished_icon_presence(&mut state);
-            if state.context_menu.is_some() {
-                true
-            } else if state.drag.is_none()
-                && state.separator_resize.is_none()
-                && state.icon_slide.is_none()
-                && state.icon_presence.is_none()
-                && !state.customizer_open
-            {
-                refresh_config_and_theme(&mut state);
-                state.refresh_model();
+            if !should_run_periodic_refresh(&state) {
                 false
             } else {
-                false
+                let config_or_theme_changed = refresh_config_and_theme(&mut state);
+                let model_changed = state.refresh_model();
+                config_or_theme_changed || model_changed
             }
         };
-        if menu_open {
+        if !changed {
             return glib::ControlFlow::Continue;
         }
         ensure_icon_animation_if_needed(&state, &window, &drawing, &gl_area);
@@ -2398,6 +2405,18 @@ fn ensure_icon_animation_if_needed(
     }
 }
 
+fn should_run_periodic_refresh(state: &Runtime) -> bool {
+    state.context_menu.is_none()
+        && state.drag.is_none()
+        && state.separator_resize.is_none()
+        && state.icon_slide.is_none()
+        && state.icon_presence.is_none()
+        && state.indicator_animations.is_empty()
+        && state.dock_size_transition.is_none()
+        && state.startup_reveal.is_none()
+        && !state.customizer_open
+}
+
 fn wire_icon_theme_changes(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea, gl_area: &GLArea) {
     let Some(display) = gdk::Display::default() else {
         return;
@@ -2419,7 +2438,8 @@ fn wire_icon_theme_changes(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea, 
     });
 }
 
-fn refresh_config_and_theme(state: &mut Runtime) {
+fn refresh_config_and_theme(state: &mut Runtime) -> bool {
+    let mut changed = false;
     match Config::load_from_path(&state.config_path) {
         Ok(config) => {
             if config != state.config {
@@ -2438,7 +2458,9 @@ fn refresh_config_and_theme(state: &mut Runtime) {
                 state.hidden = false;
                 state.last_size = None;
                 state.last_geometry = None;
+                state.last_reserved_geometry = None;
                 state.last_shape_size = None;
+                changed = true;
             }
         }
         Err(error) => {
@@ -2446,7 +2468,7 @@ fn refresh_config_and_theme(state: &mut Runtime) {
                 "could not reload config {}: {error:#}",
                 state.config_path.display()
             );
-            return;
+            return false;
         }
     }
 
@@ -2457,8 +2479,12 @@ fn refresh_config_and_theme(state: &mut Runtime) {
         state.theme = theme;
         state.last_size = None;
         state.last_geometry = None;
+        state.last_reserved_geometry = None;
         state.last_shape_size = None;
+        changed = true;
     }
+
+    changed
 }
 
 fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {
@@ -2608,7 +2634,7 @@ fn sync_dock_window(
     }
 
     let mut state = state.borrow_mut();
-    let update_reserved_space = state.separator_resize.is_none() && state.icon_presence.is_none();
+    let update_reserved_space = state.icon_presence.is_none();
     gl_area.set_visible(state.theme.renderer == RenderMode::Scene3d);
     move_dock(&mut state, update_reserved_space);
     let shape_label = current_label_index(&state);
@@ -3050,7 +3076,11 @@ mod tests {
     #[test]
     fn indicator_animation_builds_for_running_transition() {
         let previous = DockModel {
-            items: vec![item_with_state(Some("xfce4-terminal.desktop"), false, false)],
+            items: vec![item_with_state(
+                Some("xfce4-terminal.desktop"),
+                false,
+                false,
+            )],
         };
         let next = DockModel {
             items: vec![item_with_state(Some("xfce4-terminal.desktop"), false, true)],
