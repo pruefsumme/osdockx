@@ -81,9 +81,6 @@ const CUSTOMIZER_HEIGHT: i32 = 620;
 const CUSTOMIZER_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(120);
 const ADD_APPLICATION_MENU_WIDTH: i32 = 292;
 const ADD_APPLICATION_MENU_VISIBLE_ROWS: usize = 12;
-const THEME_ICON_MENU_WIDTH: i32 = 292;
-const THEME_ICON_MENU_VISIBLE_ROWS: usize = 12;
-const THEME_ICON_MENU_MAX_MATCHES: usize = 80;
 const APPLET_FAN_WIDTH: i32 = 390;
 const APPLET_FAN_MAX_ITEMS: usize = 7;
 const APPLET_FAN_GAP: f64 = 10.0;
@@ -824,6 +821,48 @@ fn install_css() {
         searchentry.osdock-menu-search image,
         entry.osdock-menu-search image {
             color: #7a818c;
+        }
+        .osdock-theme-icon-picker {
+            padding: 8px;
+        }
+        .osdock-theme-icon-picker .osdock-menu-title {
+            margin: 2px 8px;
+        }
+        flowbox.osdock-theme-icon-grid {
+            background: transparent;
+            padding: 4px 8px 10px 8px;
+        }
+        flowbox.osdock-theme-icon-grid flowboxchild {
+            padding: 0;
+        }
+        button.osdock-icon-choice {
+            min-width: 124px;
+            min-height: 104px;
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid alpha(#ffffff, 0.08);
+            background: alpha(#ffffff, 0.06);
+            box-shadow: none;
+            color: #f3f6fb;
+        }
+        button.osdock-icon-choice:hover,
+        button.osdock-icon-choice:focus {
+            border-color: alpha(#91c4ff, 0.55);
+            background-image: linear-gradient(to bottom, #5aa7ff, #1f68d7);
+            color: #ffffff;
+        }
+        button.osdock-icon-choice image {
+            color: #eef4ff;
+        }
+        button.osdock-icon-choice label {
+            color: #edf2f8;
+            font-size: 10px;
+            font-weight: 600;
+            text-shadow: 0 1px alpha(#000000, 0.55);
+        }
+        button.osdock-icon-choice:hover label,
+        button.osdock-icon-choice:focus label {
+            color: #ffffff;
         }
         button.osdock-menu-item {
             min-height: 24px;

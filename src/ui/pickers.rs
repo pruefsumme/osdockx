@@ -1,19 +1,25 @@
 use super::{
     ADD_APPLICATION_MENU_VISIBLE_ROWS, ADD_APPLICATION_MENU_WIDTH, CONTEXT_MENU_GAP,
-    CONTEXT_MENU_ITEM_HEIGHT, Runtime, THEME_ICON_MENU_MAX_MATCHES, THEME_ICON_MENU_VISIBLE_ROWS,
-    THEME_ICON_MENU_WIDTH, context_menu_anchor_rect, context_menu_icon_button,
+    CONTEXT_MENU_ITEM_HEIGHT, Runtime, context_menu_anchor_rect, context_menu_icon_button,
     dismiss_context_menu, dock_layout_for_state, menu_height, pin_application,
     present_runtime_popover, set_custom_icon_value,
 };
 use crate::layout::Rect;
 use gtk::prelude::*;
 use gtk::{
-    ApplicationWindow, Box as GtkBox, DrawingArea, GLArea, IconLookupFlags, IconTheme, Label,
-    Orientation, PolicyType, Popover, PositionType, ScrolledWindow, SearchEntry, TextDirection,
-    gdk,
+    Align, ApplicationWindow, Box as GtkBox, Button, DrawingArea, FlowBox, GLArea, IconLookupFlags,
+    IconTheme, Image, Justification, Label, Orientation, PolicyType, Popover, PositionType,
+    ScrolledWindow, SearchEntry, SelectionMode, TextDirection, gdk,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
+
+const THEME_ICON_PICKER_WIDTH: i32 = 560;
+const THEME_ICON_PICKER_HEIGHT: i32 = 560;
+const THEME_ICON_PICKER_ICON_SIZE: i32 = 48;
+const THEME_ICON_PICKER_TILE_WIDTH: i32 = 124;
+const THEME_ICON_PICKER_TILE_HEIGHT: i32 = 104;
+const THEME_ICON_PICKER_MAX_MATCHES: usize = 96;
 
 pub(super) fn show_add_application_menu(
     state: &Rc<RefCell<Runtime>>,
@@ -148,107 +154,103 @@ pub(super) fn show_theme_icon_menu(
     gl_area: &GLArea,
     item_key: String,
 ) {
-    let (icon_names, dock_width) = {
-        let state = state.borrow();
-        let dock_width = dock_layout_for_state(&state, None).size.0;
-        (theme_icon_names(), dock_width)
-    };
-    let visible_rows = if icon_names.is_empty() {
-        1
-    } else {
-        THEME_ICON_MENU_VISIBLE_ROWS
-    };
+    let icon_names = Rc::new(theme_icon_names());
 
-    let menu = GtkBox::new(Orientation::Vertical, 0);
-    menu.add_css_class("osdock-context-menu");
-    menu.add_css_class("osdock-menu-box");
-    menu.set_size_request(THEME_ICON_MENU_WIDTH, menu_height(visible_rows, 0) + 56);
+    let picker = ApplicationWindow::builder()
+        .title("Use Theme Icon")
+        .transient_for(window)
+        .modal(true)
+        .default_width(THEME_ICON_PICKER_WIDTH)
+        .default_height(THEME_ICON_PICKER_HEIGHT)
+        .resizable(true)
+        .build();
+    if let Some(app) = window.application() {
+        picker.set_application(Some(&app));
+    }
+    picker.add_css_class("osdock-theme-icon-window");
+
+    let shell = GtkBox::new(Orientation::Vertical, 10);
+    shell.add_css_class("osdock-context-menu");
+    shell.add_css_class("osdock-theme-icon-picker");
+    shell.set_margin_top(10);
+    shell.set_margin_bottom(10);
+    shell.set_margin_start(10);
+    shell.set_margin_end(10);
 
     let title = Label::new(Some("Use Theme Icon"));
     title.add_css_class("osdock-menu-title");
     title.set_xalign(0.0);
-    menu.append(&title);
+    shell.append(&title);
 
-    let mut focus_search = None;
-    if icon_names.is_empty() {
-        let empty = Label::new(Some("No theme icons found"));
-        empty.add_css_class("osdock-menu-title");
-        empty.set_xalign(0.0);
-        menu.append(&empty);
-    } else {
-        let search = SearchEntry::new();
-        search.add_css_class("osdock-menu-search");
-        search.set_placeholder_text(Some("Search icon theme"));
-        search.set_hexpand(true);
-        menu.append(&search);
-        focus_search = Some(search.clone());
+    let search = SearchEntry::new();
+    search.add_css_class("osdock-menu-search");
+    search.set_placeholder_text(Some("Search icon theme"));
+    search.set_hexpand(true);
+    search.set_sensitive(!icon_names.is_empty());
+    shell.append(&search);
 
-        let list = GtkBox::new(Orientation::Vertical, 0);
-        let scroll = ScrolledWindow::new();
-        scroll.set_policy(PolicyType::Never, PolicyType::Automatic);
-        scroll.set_size_request(
-            -1,
-            (visible_rows as i32 * CONTEXT_MENU_ITEM_HEIGHT).max(CONTEXT_MENU_ITEM_HEIGHT),
-        );
-        scroll.set_child(Some(&list));
-        menu.append(&scroll);
+    let status = Label::new(None);
+    status.add_css_class("osdock-menu-title");
+    status.set_xalign(0.0);
+    shell.append(&status);
 
-        let icon_names = Rc::new(icon_names);
-        populate_theme_icon_list(
-            &list,
-            icon_names.as_ref(),
-            "",
-            state,
-            window,
-            drawing,
-            gl_area,
-            &item_key,
-        );
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_policy(PolicyType::Never, PolicyType::Automatic);
+    scrolled.set_vexpand(true);
 
-        {
-            let list = list.clone();
-            let icon_names = Rc::clone(&icon_names);
-            let state = Rc::clone(state);
-            let window = window.clone();
-            let drawing = drawing.clone();
-            let gl_area = gl_area.clone();
-            search.connect_search_changed(move |entry| {
-                populate_theme_icon_list(
-                    &list,
-                    icon_names.as_ref(),
-                    entry.text().as_str(),
-                    &state,
-                    &window,
-                    &drawing,
-                    &gl_area,
-                    &item_key,
-                );
-            });
-        }
+    let grid = FlowBox::new();
+    grid.add_css_class("osdock-theme-icon-grid");
+    grid.set_column_spacing(10);
+    grid.set_row_spacing(10);
+    grid.set_homogeneous(true);
+    grid.set_max_children_per_line(4);
+    grid.set_min_children_per_line(2);
+    grid.set_selection_mode(SelectionMode::None);
+    grid.set_valign(Align::Start);
+    scrolled.set_child(Some(&grid));
+    shell.append(&scrolled);
+    picker.set_child(Some(&shell));
+
+    populate_theme_icon_grid(
+        &grid,
+        &status,
+        icon_names.as_ref(),
+        "",
+        state,
+        window,
+        drawing,
+        gl_area,
+        &picker,
+        &item_key,
+    );
+
+    {
+        let grid = grid.clone();
+        let status = status.clone();
+        let icon_names = Rc::clone(&icon_names);
+        let state = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        let picker = picker.clone();
+        search.connect_search_changed(move |entry| {
+            populate_theme_icon_grid(
+                &grid,
+                &status,
+                icon_names.as_ref(),
+                entry.text().as_str(),
+                &state,
+                &window,
+                &drawing,
+                &gl_area,
+                &picker,
+                &item_key,
+            );
+        });
     }
 
-    let popover = Popover::new();
-    popover.add_css_class("osdock-context-popover");
-    popover.set_autohide(true);
-    popover.set_has_arrow(false);
-    popover.set_position(PositionType::Top);
-    popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
-    popover.set_pointing_to(Some(&context_menu_anchor_rect(
-        Rect {
-            x: dock_width as f64 / 2.0,
-            y: 1.0,
-            width: 1.0,
-            height: 1.0,
-        },
-        dock_width,
-    )));
-    popover.set_child(Some(&menu));
-    popover.set_parent(drawing);
-
-    present_runtime_popover(state, window, drawing, gl_area, &popover);
-    if let Some(search) = focus_search {
-        let _ = search.grab_focus();
-    }
+    picker.present();
+    let _ = search.grab_focus();
 }
 
 fn theme_icon_names() -> Vec<String> {
@@ -267,52 +269,51 @@ fn theme_icon_names() -> Vec<String> {
     names
 }
 
-fn populate_theme_icon_list(
-    list: &GtkBox,
+#[allow(clippy::too_many_arguments)]
+fn populate_theme_icon_grid(
+    grid: &FlowBox,
+    status: &Label,
     icon_names: &[String],
     query: &str,
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
     drawing: &DrawingArea,
     gl_area: &GLArea,
+    picker: &ApplicationWindow,
     item_key: &str,
 ) {
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
-    }
+    grid.remove_all();
 
     let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        let empty = Label::new(Some("Search for an icon name"));
-        empty.add_css_class("osdock-menu-title");
-        empty.set_xalign(0.0);
-        list.append(&empty);
+    if icon_names.is_empty() {
+        status.set_text("No theme icons found");
         return;
     }
 
-    let icon_theme = gdk::Display::default().map(|display| IconTheme::for_display(&display));
+    let Some(icon_theme) = gdk::Display::default().map(|display| IconTheme::for_display(&display))
+    else {
+        status.set_text("No icon theme available");
+        return;
+    };
     let mut match_count = 0;
     for icon_name in icon_names
         .iter()
-        .filter(|name| name.to_ascii_lowercase().contains(&query))
+        .filter(|name| query.is_empty() || name.to_ascii_lowercase().contains(&query))
     {
-        let Some(icon_theme) = icon_theme.as_ref() else {
-            break;
-        };
-        if !theme_icon_is_loadable(icon_theme, icon_name) {
+        if !theme_icon_is_loadable(&icon_theme, icon_name) {
             continue;
         }
 
-        let button = context_menu_icon_button(icon_name, icon_name, false);
+        let button = theme_icon_choice_button(icon_name);
         {
             let state = Rc::clone(state);
             let window = window.clone();
             let drawing = drawing.clone();
             let gl_area = gl_area.clone();
+            let picker = picker.clone();
             let item_key = item_key.to_string();
             let icon_name = icon_name.clone();
             button.connect_clicked(move |_| {
-                dismiss_context_menu(&state);
                 set_custom_icon_value(
                     &state,
                     &window,
@@ -321,21 +322,56 @@ fn populate_theme_icon_list(
                     &item_key,
                     icon_name.clone(),
                 );
+                picker.close();
             });
         }
-        list.append(&button);
+        grid.append(&button);
         match_count += 1;
-        if match_count >= THEME_ICON_MENU_MAX_MATCHES {
+        if match_count >= THEME_ICON_PICKER_MAX_MATCHES {
             break;
         }
     }
 
     if match_count == 0 {
-        let empty = Label::new(Some("No matching icons"));
-        empty.add_css_class("osdock-menu-title");
-        empty.set_xalign(0.0);
-        list.append(&empty);
+        status.set_text("No matching icons");
+    } else if query.is_empty() && match_count >= THEME_ICON_PICKER_MAX_MATCHES {
+        status.set_text(&format!("Showing first {match_count} icons"));
+    } else if query.is_empty() {
+        status.set_text(&format!("Showing {match_count} icons"));
+    } else if match_count >= THEME_ICON_PICKER_MAX_MATCHES {
+        status.set_text(&format!("Showing first {match_count} matches"));
+    } else {
+        status.set_text(&format!("Showing {match_count} matches"));
     }
+}
+
+fn theme_icon_choice_button(icon_name: &str) -> Button {
+    let button = Button::new();
+    button.add_css_class("osdock-icon-choice");
+    button.set_size_request(THEME_ICON_PICKER_TILE_WIDTH, THEME_ICON_PICKER_TILE_HEIGHT);
+    button.set_tooltip_text(Some(icon_name));
+
+    let tile = GtkBox::new(Orientation::Vertical, 6);
+    tile.set_halign(Align::Center);
+    tile.set_valign(Align::Center);
+
+    let image = Image::from_icon_name(icon_name);
+    image.set_pixel_size(THEME_ICON_PICKER_ICON_SIZE);
+    image.set_halign(Align::Center);
+    tile.append(&image);
+
+    let label = Label::new(Some(icon_name));
+    label.add_css_class("osdock-icon-choice-label");
+    label.set_xalign(0.5);
+    label.set_justify(Justification::Center);
+    label.set_wrap(true);
+    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    label.set_lines(2);
+    label.set_max_width_chars(16);
+    tile.append(&label);
+
+    button.set_child(Some(&tile));
+    button
 }
 
 fn theme_icon_is_loadable(icon_theme: &IconTheme, icon_name: &str) -> bool {
