@@ -71,7 +71,11 @@ pub(super) fn show_context_menu(
     let app_action_count = app_actions.len();
     let has_app_actions = app_action_count > 0;
     for action in app_actions {
-        let button = context_menu_button(application_context_action_label(&item, action), false);
+        let button = context_menu_icon_button(
+            application_context_action_label(&item, action),
+            application_context_action_icon(&item, action),
+            false,
+        );
         {
             let state = Rc::clone(state);
             let window = window.clone();
@@ -97,11 +101,13 @@ pub(super) fn show_context_menu(
         menu.append(&context_menu_separator());
     }
 
-    let keep = context_menu_button("Keep in Dock", pinned);
-    let hide_from_dock = context_menu_button("Don't Show in Dock Anymore", false);
-    let select = context_menu_button("Select Icon File...", false);
-    let theme_icon = context_menu_button("Use Theme Icon...", false);
-    let default_icon = context_menu_button("Set Default Icon", false);
+    let keep = context_menu_icon_button("Keep in Dock", "list-add", pinned);
+    let hide_from_dock =
+        context_menu_icon_button("Don't Show in Dock Anymore", "edit-delete", false);
+    let select = context_menu_icon_button("Select Icon File...", "image-x-generic", false);
+    let theme_icon =
+        context_menu_icon_button("Use Theme Icon...", "preferences-desktop-icons", false);
+    let default_icon = context_menu_icon_button("Set Default Icon", "edit-clear", false);
     menu.append(&keep);
     menu.append(&hide_from_dock);
     menu.append(&select);
@@ -168,7 +174,7 @@ pub(super) fn show_context_menu(
 
     let popover = Popover::new();
     popover.add_css_class("osdock-context-popover");
-    popover.set_autohide(false);
+    popover.set_autohide(true);
     popover.set_has_arrow(false);
     popover.set_position(PositionType::Top);
     popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
@@ -296,7 +302,7 @@ fn show_applet_context_menu(
 
     let popover = Popover::new();
     popover.add_css_class("osdock-context-popover");
-    popover.set_autohide(false);
+    popover.set_autohide(true);
     popover.set_has_arrow(false);
     popover.set_position(PositionType::Top);
     popover.set_offset(0, -(CONTEXT_MENU_GAP.round() as i32));
@@ -563,6 +569,19 @@ fn application_context_action_label(
     }
 }
 
+fn application_context_action_icon(
+    item: &DockItem,
+    action: ApplicationContextAction,
+) -> &'static str {
+    match action {
+        ApplicationContextAction::Launch if item.is_running() => "window-new",
+        ApplicationContextAction::Launch => "system-run",
+        ApplicationContextAction::Focus => "view-restore",
+        ApplicationContextAction::Minimize => "go-down",
+        ApplicationContextAction::Close => "window-close",
+    }
+}
+
 pub(super) fn context_menu_height(app_action_count: usize) -> i32 {
     let separator_count = i32::from(app_action_count > 0);
     menu_height(
@@ -584,26 +603,6 @@ pub(super) fn context_menu_anchor_rect(icon_rect: Rect, dock_width: i32) -> gdk:
     let x = (icon_rect.x.floor() as i32).clamp(2, max_x);
     let y = (icon_rect.y.floor() as i32).max(2);
     gdk::Rectangle::new(x, y, width, height)
-}
-
-fn context_menu_button(label: &str, checked: bool) -> Button {
-    let button = Button::builder().has_frame(false).build();
-    button.add_css_class("osdock-menu-item");
-    button.set_focusable(false);
-
-    let row = GtkBox::new(Orientation::Horizontal, 0);
-    row.add_css_class("osdock-menu-row");
-    let check = Label::new(Some(if checked { "✓" } else { "" }));
-    check.add_css_class("osdock-menu-check");
-    check.set_halign(Align::Start);
-    let text = Label::new(Some(label));
-    text.set_xalign(0.0);
-    text.set_hexpand(true);
-    text.set_halign(Align::Start);
-    row.append(&check);
-    row.append(&text);
-    button.set_child(Some(&row));
-    button
 }
 
 pub(super) fn context_menu_icon_button(label: &str, icon_name: &str, checked: bool) -> Button {
