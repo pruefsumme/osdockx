@@ -11,9 +11,13 @@ use self::actions::{
     select_custom_icon, select_folder_applet, set_custom_icon_value, toggle_keep_in_dock,
 };
 use self::applet_fan::{
-    AppletFanHitRegion, AppletFanSource, applet_fan_more_label, applet_fan_reveal_progress,
-    applet_fan_row_reveal, applet_fan_size, applet_fan_source, draw_applet_fan,
-    recent_applet_entries_from_dir, run_applet_fan_action, start_applet_fan_reveal_tick,
+    AppletFanDrawFrame, AppletFanHitRegion, AppletFanSource, applet_fan_reveal_progress,
+    applet_fan_size, applet_fan_source, draw_applet_fan, run_applet_fan_action,
+    start_applet_fan_reveal_tick,
+};
+#[cfg(test)]
+use self::applet_fan::{
+    applet_fan_more_label, applet_fan_row_reveal, recent_applet_entries_from_dir,
 };
 use self::customizer::show_customizer_debug_window;
 #[cfg(test)]
@@ -33,6 +37,7 @@ use self::state::{
     IndicatorAnimation, IndicatorVisual, SeparatorResize, StartupReveal,
 };
 
+use crate::autostart;
 use crate::backend::x11::X11Backend;
 use crate::backend::{DockGeometry, PlatformBackend};
 use crate::config::{Config, DockConfig, RenderMode};
@@ -54,17 +59,19 @@ use gtk::gio;
 use gtk::glib::{self, Propagation, object::Cast};
 use gtk::prelude::*;
 use gtk::{
-    Application, ApplicationWindow, DrawingArea, EventControllerMotion, GLArea, GestureClick,
-    GestureDrag, Overlay, Popover, PositionType, gdk,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, DrawingArea,
+    EventControllerMotion, GLArea, GestureClick, GestureDrag, Label, Orientation, Overlay, Popover,
+    PositionType, gdk,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+#[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-const APP_ID: &str = "dev.osdockx.OSDockX";
+const APP_ID: &str = autostart::APP_ID;
 const EDGE_VISIBLE_PIXELS: i32 = 4;
 const SLOW_UI_OP: Duration = Duration::from_millis(4);
 const CONTEXT_MENU_WIDTH: i32 = 198;
@@ -74,7 +81,7 @@ const CONTEXT_MENU_SEPARATOR_HEIGHT: i32 = 12;
 const CONTEXT_MENU_CHROME_HEIGHT: i32 = 12;
 const CONTEXT_MENU_GAP: f64 = 18.0;
 const DOCK_CONTEXT_MENU_WIDTH: i32 = 228;
-const DOCK_CONTEXT_MENU_ACTIONS: usize = 12;
+const DOCK_CONTEXT_MENU_ACTIONS: usize = 13;
 const HOVER_SETTINGS_MENU_WIDTH: i32 = 272;
 const CUSTOMIZER_WIDTH: i32 = 420;
 const CUSTOMIZER_HEIGHT: i32 = 620;
@@ -146,6 +153,13 @@ struct Runtime {
     suppress_next_left_click: bool,
 }
 
+#[derive(Clone, Copy)]
+struct DockUiHandles<'a> {
+    window: &'a ApplicationWindow,
+    drawing: &'a DrawingArea,
+    gl_area: &'a GLArea,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ApplicationContextAction {
     Launch,
@@ -164,6 +178,7 @@ enum DockContextAction {
     CustomizerDebug,
     ToggleAutohide,
     ToggleReserveSpace,
+    ToggleAutostart,
     ReloadTheme,
     ResetDefaults,
     ResetCustomIcons,
@@ -547,7 +562,6 @@ fn begin_separator_resize(
     start_icon_size: u32,
 ) -> Option<SeparatorResize> {
     separator_hit_test_in_layout(layout, point).then_some(SeparatorResize {
-        start_mouse_y: point.y,
         start_window_y,
         start_icon_size,
         target_icon_size: start_icon_size,
@@ -713,8 +727,98 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_icon_theme_changes(&state, &drawing, &gl_area);
 
     window.present();
+    sync_or_prompt_autostart(&state, &window);
     queue_gl_render_if_enabled(&state, &gl_area);
     Ok(())
+}
+
+fn sync_or_prompt_autostart(state: &Rc<RefCell<Runtime>>, parent: &ApplicationWindow) {
+    if state.borrow().config.startup.prompt_seen {
+        apply_autostart_enabled(state.borrow().config.startup.autostart);
+        return;
+    }
+
+    let state = Rc::clone(state);
+    let parent = parent.clone();
+    glib::idle_add_local_once(move || show_startup_prompt(&state, &parent));
+}
+
+fn show_startup_prompt(state: &Rc<RefCell<Runtime>>, parent: &ApplicationWindow) {
+    if state.borrow().config.startup.prompt_seen {
+        return;
+    }
+
+    let prompt = ApplicationWindow::builder()
+        .title("OSDockX Startup")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(340)
+        .resizable(false)
+        .build();
+    if let Some(app) = parent.application() {
+        prompt.set_application(Some(&app));
+    }
+
+    let shell = GtkBox::new(Orientation::Vertical, 10);
+    shell.add_css_class("osdock-context-menu");
+    shell.set_margin_top(10);
+    shell.set_margin_bottom(10);
+    shell.set_margin_start(10);
+    shell.set_margin_end(10);
+
+    let title = Label::new(Some("Start OSDockX at Login"));
+    title.add_css_class("osdock-menu-title");
+    title.set_xalign(0.0);
+    shell.append(&title);
+
+    let check = CheckButton::with_label("Start at Login");
+    check.set_active(state.borrow().config.startup.autostart);
+    check.set_margin_start(8);
+    check.set_margin_end(8);
+    shell.append(&check);
+
+    let footer = GtkBox::new(Orientation::Horizontal, 8);
+    footer.set_halign(Align::End);
+    let continue_button = Button::with_label("Continue");
+    footer.append(&continue_button);
+    shell.append(&footer);
+    prompt.set_child(Some(&shell));
+
+    {
+        let prompt = prompt.clone();
+        continue_button.connect_clicked(move |_| {
+            prompt.close();
+        });
+    }
+    {
+        let state = Rc::clone(state);
+        let check = check.clone();
+        let handled = Rc::new(Cell::new(false));
+        prompt.connect_close_request(move |_| {
+            if !handled.replace(true) {
+                finish_startup_prompt(&state, check.is_active());
+            }
+            Propagation::Proceed
+        });
+    }
+
+    prompt.present();
+}
+
+fn finish_startup_prompt(state: &Rc<RefCell<Runtime>>, enabled: bool) {
+    {
+        let mut state = state.borrow_mut();
+        state.config.startup.autostart = enabled;
+        state.config.startup.prompt_seen = true;
+        save_runtime_config(&state);
+    }
+    apply_autostart_enabled(enabled);
+}
+
+fn apply_autostart_enabled(enabled: bool) {
+    if let Err(error) = autostart::set_enabled(enabled) {
+        tracing::warn!("could not update autostart desktop file: {error:#}");
+    }
 }
 
 fn resolve_runtime_theme(
@@ -1169,7 +1273,16 @@ fn wire_clicks(
                         activate_item(&state, index, button);
                     } else {
                         activate_applet(
-                            &state, &window, &drawing, &gl_area, &item, index, button, x, y,
+                            &state,
+                            DockUiHandles {
+                                window: &window,
+                                drawing: &drawing,
+                                gl_area: &gl_area,
+                            },
+                            &item,
+                            index,
+                            button,
+                            Point { x, y },
                         );
                     }
                 }
@@ -1974,29 +2087,23 @@ fn prune_finished_icon_slide(state: &mut Runtime) {
 
 fn show_applet_fan_for_item(
     state: &Rc<RefCell<Runtime>>,
-    window: &ApplicationWindow,
-    drawing: &DrawingArea,
-    gl_area: &GLArea,
+    ui: DockUiHandles<'_>,
     item: &DockItem,
     index: usize,
-    x: f64,
-    y: f64,
+    point: Point,
 ) {
     let Some(source) = applet_fan_source(item) else {
         return;
     };
-    show_applet_fan(state, window, drawing, gl_area, source, index, x, y);
+    show_applet_fan(state, ui, source, index, point);
 }
 
 fn show_applet_fan(
     state: &Rc<RefCell<Runtime>>,
-    window: &ApplicationWindow,
-    drawing: &DrawingArea,
-    gl_area: &GLArea,
+    ui: DockUiHandles<'_>,
     source: AppletFanSource,
     index: usize,
-    x: f64,
-    y: f64,
+    point: Point,
 ) {
     let (icon_rect, dock_width) = {
         let state = state.borrow();
@@ -2009,8 +2116,8 @@ fn show_applet_fan(
         (icon_rect, layout.size.0)
     };
     let anchor = icon_rect.unwrap_or(Rect {
-        x,
-        y,
+        x: point.x,
+        y: point.y,
         width: 1.0,
         height: 1.0,
     });
@@ -2041,15 +2148,19 @@ fn show_applet_fan(
         let icon_cache = Rc::clone(&icon_cache);
         let reveal_started = Rc::clone(&reveal_started);
         fan.set_draw_func(move |_, cr, width, height| {
+            let mut hit_regions = hit_regions.borrow_mut();
+            let mut icon_cache = icon_cache.borrow_mut();
             draw_applet_fan(
                 cr,
-                width,
-                height,
-                &source,
-                *hover_index.borrow(),
-                applet_fan_reveal_progress(reveal_started.elapsed()),
-                &mut hit_regions.borrow_mut(),
-                &mut icon_cache.borrow_mut(),
+                AppletFanDrawFrame {
+                    width,
+                    height,
+                    source: source.as_ref(),
+                    hover_index: *hover_index.borrow(),
+                    reveal_progress: applet_fan_reveal_progress(reveal_started.elapsed()),
+                    hit_regions: &mut hit_regions,
+                    icon_cache: &mut icon_cache,
+                },
             );
         });
     }
@@ -2090,9 +2201,9 @@ fn show_applet_fan(
     click.set_button(1);
     {
         let state = Rc::clone(state);
-        let window = window.clone();
-        let drawing = drawing.clone();
-        let gl_area = gl_area.clone();
+        let window = ui.window.clone();
+        let drawing = ui.drawing.clone();
+        let gl_area = ui.gl_area.clone();
         let hit_regions = Rc::clone(&hit_regions);
         click.connect_released(move |_, _, x, y| {
             let point = Point { x, y };
@@ -2122,9 +2233,9 @@ fn show_applet_fan(
     popover.set_offset(0, -(APPLET_FAN_GAP.round() as i32));
     popover.set_pointing_to(Some(&context_menu_anchor_rect(anchor, dock_width)));
     popover.set_child(Some(&fan));
-    popover.set_parent(drawing);
+    popover.set_parent(ui.drawing);
 
-    present_runtime_popover(state, window, drawing, gl_area, &popover);
+    present_runtime_popover(state, ui.window, ui.drawing, ui.gl_area, &popover);
     start_applet_fan_reveal_tick(&fan, reveal_started);
 }
 
@@ -2231,6 +2342,9 @@ fn run_dock_context_action(
                 state.config.dock.reserve_space = !state.config.dock.reserve_space;
             });
         }
+        DockContextAction::ToggleAutostart => {
+            toggle_runtime_autostart(state);
+        }
         DockContextAction::ReloadTheme => {
             {
                 let mut state = state.borrow_mut();
@@ -2269,8 +2383,10 @@ fn reset_runtime_defaults(
     {
         let mut state = state.borrow_mut();
         let custom_icons = state.config.custom_icons.clone();
+        let startup = state.config.startup.clone();
         state.config = Config::default().normalized();
         state.config.custom_icons = custom_icons;
+        state.config.startup = startup;
         if let Err(error) = ThemePack::restore_builtin_theme_pack(&state.config.theme.preset) {
             tracing::warn!(
                 "could not restore built-in theme pack {}: {error:#}",
@@ -2313,6 +2429,17 @@ fn reset_runtime_custom_icons(
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
+}
+
+fn toggle_runtime_autostart(state: &Rc<RefCell<Runtime>>) {
+    let enabled = {
+        let mut state = state.borrow_mut();
+        state.config.startup.autostart = !state.config.startup.autostart;
+        state.config.startup.prompt_seen = true;
+        save_runtime_config(&state);
+        state.config.startup.autostart
+    };
+    apply_autostart_enabled(enabled);
 }
 
 fn update_dock_config(
@@ -2435,11 +2562,13 @@ fn ensure_icon_animation_if_needed(
     drawing: &DrawingArea,
     gl_area: &GLArea,
 ) {
-    if state.borrow().icon_presence.is_some() {
-        ensure_icon_animation_tick(state, window, drawing, gl_area);
-    } else if !state.borrow().indicator_animations.is_empty() {
-        ensure_icon_animation_tick(state, window, drawing, gl_area);
-    } else if state.borrow().dock_size_transition.is_some() {
+    let needs_tick = {
+        let state = state.borrow();
+        state.icon_presence.is_some()
+            || !state.indicator_animations.is_empty()
+            || state.dock_size_transition.is_some()
+    };
+    if needs_tick {
         ensure_icon_animation_tick(state, window, drawing, gl_area);
     }
 }
@@ -2485,7 +2614,11 @@ fn refresh_config_and_theme(state: &mut Runtime) -> bool {
                 tracing::info!("reloaded config {}", state.config_path.display());
                 let previous_render_icon_size = rendered_dock_config(state).icon_size as f64;
                 let next_icon_size = config.dock.icon_size as f64;
+                let startup_changed = state.config.startup != config.startup;
                 state.config = config;
+                if startup_changed && state.config.startup.prompt_seen {
+                    apply_autostart_enabled(state.config.startup.autostart);
+                }
                 if (previous_render_icon_size - next_icon_size).abs() >= 1.0 {
                     state.dock_size_transition = Some(DockSizeTransition {
                         from_icon_size: previous_render_icon_size,
@@ -2557,22 +2690,16 @@ fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {
 
 fn activate_applet(
     state: &Rc<RefCell<Runtime>>,
-    window: &ApplicationWindow,
-    drawing: &DrawingArea,
-    gl_area: &GLArea,
+    ui: DockUiHandles<'_>,
     item: &DockItem,
     index: usize,
     button: u32,
-    x: f64,
-    y: f64,
+    point: Point,
 ) {
-    if button != 1 {
-        return;
-    }
-
-    if item.is_downloads_applet() || item.is_trash_applet() || item.is_folder_applet() {
-        show_applet_fan_for_item(state, window, drawing, gl_area, item, index, x, y);
-        return;
+    if button == 1
+        && (item.is_downloads_applet() || item.is_trash_applet() || item.is_folder_applet())
+    {
+        show_applet_fan_for_item(state, ui, item, index, point);
     }
 }
 
@@ -2822,6 +2949,24 @@ fn padded_rect(rect: Rect, amount: f64) -> Rect {
     }
 }
 
+fn log_slow(operation: &'static str, elapsed: Duration) {
+    if elapsed >= SLOW_UI_OP {
+        tracing::debug!(
+            target: "osdockx::perf",
+            operation,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            "slow UI operation"
+        );
+    } else {
+        tracing::trace!(
+            target: "osdockx::perf",
+            operation,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+            "UI operation"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3043,7 +3188,6 @@ mod tests {
 
         let resize = begin_separator_resize(&layout, point, 480, 64).expect("resize mode");
 
-        assert_eq!(resize.start_mouse_y, point.y);
         assert_eq!(resize.start_window_y, 480);
         assert_eq!(resize.start_icon_size, 64);
         assert_eq!(resize.target_icon_size, 64);
@@ -3054,7 +3198,6 @@ mod tests {
     #[test]
     fn separator_resize_drag_delta_stays_anchored_when_window_moves() {
         let resize = SeparatorResize {
-            start_mouse_y: 40.0,
             start_window_y: 900,
             start_icon_size: 64,
             target_icon_size: 64,
@@ -3213,23 +3356,5 @@ mod tests {
 
         assert!(hover.y < separator.rect.y);
         assert!(hover.height > separator.rect.height);
-    }
-}
-
-fn log_slow(operation: &'static str, elapsed: Duration) {
-    if elapsed >= SLOW_UI_OP {
-        tracing::debug!(
-            target: "osdockx::perf",
-            operation,
-            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
-            "slow UI operation"
-        );
-    } else {
-        tracing::trace!(
-            target: "osdockx::perf",
-            operation,
-            elapsed_ms = elapsed.as_secs_f64() * 1000.0,
-            "UI operation"
-        );
     }
 }

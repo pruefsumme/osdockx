@@ -61,6 +61,16 @@ pub(super) struct AppletFanHitRegion {
     pub(super) action: AppletFanHitAction,
 }
 
+pub(super) struct AppletFanDrawFrame<'a> {
+    pub(super) width: i32,
+    pub(super) height: i32,
+    pub(super) source: &'a AppletFanSource,
+    pub(super) hover_index: Option<usize>,
+    pub(super) reveal_progress: f64,
+    pub(super) hit_regions: &'a mut Vec<AppletFanHitRegion>,
+    pub(super) icon_cache: &'a mut HashMap<String, Option<Pixbuf>>,
+}
+
 pub(super) fn applet_fan_source(item: &DockItem) -> Option<AppletFanSource> {
     if item.is_downloads_applet() {
         let downloads_dir = downloads_directory()?;
@@ -232,16 +242,16 @@ fn applet_entry_icon_name(path: &Path, is_directory: bool) -> &'static str {
     }
 }
 
-pub(super) fn draw_applet_fan(
-    cr: &Context,
-    width: i32,
-    height: i32,
-    source: &AppletFanSource,
-    hover_index: Option<usize>,
-    reveal_progress: f64,
-    hit_regions: &mut Vec<AppletFanHitRegion>,
-    icon_cache: &mut HashMap<String, Option<Pixbuf>>,
-) {
+pub(super) fn draw_applet_fan(cr: &Context, frame: AppletFanDrawFrame<'_>) {
+    let AppletFanDrawFrame {
+        width,
+        height,
+        source,
+        hover_index,
+        reveal_progress,
+        hit_regions,
+        icon_cache,
+    } = frame;
     hit_regions.clear();
     cr.set_operator(gtk::cairo::Operator::Clear);
     let _ = cr.paint();
@@ -377,13 +387,15 @@ fn draw_applet_fan_row(
     cr.push_group();
     draw_fan_label(
         cr,
-        label_center_x,
-        center_y,
-        label_width,
-        APPLET_FAN_LABEL_HEIGHT,
-        &fitted,
-        hovered,
-        rotation * 0.55,
+        FanLabelFrame {
+            center_x: label_center_x,
+            center_y,
+            width: label_width,
+            height: APPLET_FAN_LABEL_HEIGHT,
+            text: &fitted,
+            hovered,
+            rotation: rotation * 0.55,
+        },
     );
 
     if let Some(entry) = entry {
@@ -438,29 +450,41 @@ fn draw_applet_fan_empty(
     cr.push_group();
     draw_fan_label(
         cr,
-        label_right - label_width / 2.0,
-        center_y,
-        label_width,
-        APPLET_FAN_LABEL_HEIGHT,
-        &fitted,
-        false,
-        -0.03,
+        FanLabelFrame {
+            center_x: label_right - label_width / 2.0,
+            center_y,
+            width: label_width,
+            height: APPLET_FAN_LABEL_HEIGHT,
+            text: &fitted,
+            hovered: false,
+            rotation: -0.03,
+        },
     );
     let _ = cr.pop_group_to_source();
     let _ = cr.paint_with_alpha(alpha);
     cr.restore().ok();
 }
 
-fn draw_fan_label(
-    cr: &Context,
+struct FanLabelFrame<'a> {
     center_x: f64,
     center_y: f64,
     width: f64,
     height: f64,
-    text: &str,
+    text: &'a str,
     hovered: bool,
     rotation: f64,
-) {
+}
+
+fn draw_fan_label(cr: &Context, frame: FanLabelFrame<'_>) {
+    let FanLabelFrame {
+        center_x,
+        center_y,
+        width,
+        height,
+        text,
+        hovered,
+        rotation,
+    } = frame;
     cr.save().ok();
     cr.translate(center_x, center_y);
     cr.rotate(rotation);
@@ -643,7 +667,7 @@ fn fit_middle_text(cr: &Context, text: &str, max_width: f64) -> String {
 
     let chars = text.chars().collect::<Vec<_>>();
     for keep in (1..chars.len()).rev() {
-        let head_len = (keep + 1) / 2;
+        let head_len = keep.div_ceil(2);
         let tail_len = keep / 2;
         let head = chars.iter().take(head_len).collect::<String>();
         let tail = chars

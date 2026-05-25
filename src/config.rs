@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Config {
     pub dock: DockConfig,
+    pub startup: StartupConfig,
     pub theme: ThemeConfig,
     pub pinned: Vec<String>,
     pub hidden: Vec<String>,
@@ -28,6 +29,13 @@ pub struct DockConfig {
     pub unhide_delay_ms: u32,
     pub reserve_space: bool,
     pub refresh_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct StartupConfig {
+    pub autostart: bool,
+    pub prompt_seen: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -102,6 +110,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             dock: DockConfig::default(),
+            startup: StartupConfig::default(),
             theme: ThemeConfig::default(),
             pinned: vec![
                 "xfce4-terminal.desktop".to_string(),
@@ -129,6 +138,24 @@ impl Default for DockConfig {
             unhide_delay_ms: 40,
             reserve_space: true,
             refresh_ms: 500,
+        }
+    }
+}
+
+impl Default for StartupConfig {
+    fn default() -> Self {
+        Self {
+            autostart: true,
+            prompt_seen: false,
+        }
+    }
+}
+
+impl StartupConfig {
+    fn legacy_default() -> Self {
+        Self {
+            autostart: false,
+            prompt_seen: true,
         }
     }
 }
@@ -205,7 +232,7 @@ impl Config {
 
     pub fn load_from_path(path: &Path) -> anyhow::Result<Self> {
         let raw = fs::read_to_string(path)?;
-        Ok(toml::from_str::<Self>(&raw)?.normalized())
+        Self::from_toml_str(&raw)
     }
 
     pub fn save_to_path(&self, path: &Path) -> anyhow::Result<()> {
@@ -290,6 +317,18 @@ impl Config {
             .collect();
 
         self
+    }
+
+    fn from_toml_str(raw: &str) -> anyhow::Result<Self> {
+        let has_startup = toml::from_str::<toml::Value>(raw)
+            .ok()
+            .and_then(|value| value.as_table().map(|table| table.contains_key("startup")))
+            .unwrap_or(false);
+        let mut config = toml::from_str::<Self>(raw)?;
+        if !has_startup {
+            config.startup = StartupConfig::legacy_default();
+        }
+        Ok(config.normalized())
     }
 }
 
@@ -420,6 +459,7 @@ mod tests {
         assert_eq!(config.dock.icon_size, 24);
         assert_eq!(config.dock.zoom_strength, 1.6);
         assert_eq!(config.dock.refresh_ms, 100);
+        assert_eq!(config.startup, StartupConfig::default());
         assert_eq!(config.pinned, vec!["xfce4-terminal.desktop"]);
         assert_eq!(config.hidden, vec!["xfce4-terminal.desktop"]);
         assert_eq!(config.applets.len(), 1);
@@ -439,5 +479,27 @@ mod tests {
         let encoded = toml::to_string(&config).unwrap();
         let decoded = toml::from_str::<Config>(&encoded).unwrap().normalized();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn missing_startup_section_migrates_to_disabled_and_seen() {
+        let config = Config::from_toml_str(
+            r#"
+            [dock]
+            icon_size = 64
+
+            [theme]
+            preset = "leopard"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.startup,
+            StartupConfig {
+                autostart: false,
+                prompt_seen: true,
+            }
+        );
     }
 }

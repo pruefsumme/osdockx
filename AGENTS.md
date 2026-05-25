@@ -58,8 +58,6 @@ Current shelf split:
 - `geometry.rs`: pure shelf geometry structs and formulas
 - `paths.rs`: Cairo path builders for shelf shapes
 - `material.rs`: shared shelf material helpers
-- `crystal.rs`: crystal shelf renderer
-- `legacy.rs`: legacy shelf renderer
 - `leopard.rs`: Leopard-specific shelf renderer passes
 
 ## Practical Editing Guidance

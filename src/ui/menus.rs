@@ -409,6 +409,14 @@ pub(super) fn show_dock_context_menu(
         gl_area,
         DockContextAction::ToggleReserveSpace,
     );
+    append_dock_context_button(
+        &menu,
+        state,
+        window,
+        drawing,
+        gl_area,
+        DockContextAction::ToggleAutostart,
+    );
     menu.append(&context_menu_separator());
     append_dock_context_button(
         &menu,
@@ -496,6 +504,7 @@ fn dock_context_action_checked(state: &Rc<RefCell<Runtime>>, action: DockContext
     match action {
         DockContextAction::ToggleAutohide => state.config.dock.autohide,
         DockContextAction::ToggleReserveSpace => state.config.dock.reserve_space,
+        DockContextAction::ToggleAutostart => state.config.startup.autostart,
         _ => false,
     }
 }
@@ -510,6 +519,7 @@ fn dock_context_action_label(action: DockContextAction) -> &'static str {
         DockContextAction::CustomizerDebug => "Customizer (Debug)",
         DockContextAction::ToggleAutohide => "Auto Hide",
         DockContextAction::ToggleReserveSpace => "Reserve Screen Space",
+        DockContextAction::ToggleAutostart => "Start at Login",
         DockContextAction::ReloadTheme => "Reload Theme",
         DockContextAction::ResetDefaults => "Reset to Dock Defaults",
         DockContextAction::ResetCustomIcons => "Reset Custom Icons",
@@ -527,6 +537,7 @@ fn dock_context_action_icon(action: DockContextAction) -> &'static str {
         DockContextAction::CustomizerDebug => "applications-graphics",
         DockContextAction::ToggleAutohide => "view-fullscreen",
         DockContextAction::ToggleReserveSpace => "view-restore",
+        DockContextAction::ToggleAutostart => "system-run",
         DockContextAction::ReloadTheme => "view-refresh",
         DockContextAction::ResetDefaults => "edit-clear-all",
         DockContextAction::ResetCustomIcons => "edit-delete",

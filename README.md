@@ -11,6 +11,27 @@ and notification badges.
 cargo run
 ```
 
+## Install
+
+For a user-local install from this checkout:
+
+```sh
+./install.sh
+```
+
+This installs `osdockx` to `~/.local/bin` and adds a desktop launcher under
+`~/.local/share/applications`. Remove those files with:
+
+```sh
+./install.sh --uninstall
+```
+
+Arch users can build the live Git package from:
+
+```text
+packaging/arch/osdockx-git/PKGBUILD
+```
+
 Runtime configuration is read from:
 
 ```text
@@ -18,6 +39,8 @@ $XDG_CONFIG_HOME/osdockx/config.toml
 ```
 
 If no file exists, OSDockX writes a default config on first launch.
+On first launch, OSDockX asks whether it should start at login. This can later
+be toggled from the OSDockX right-click settings menu.
 
 ## Current Scope
 
@@ -36,8 +59,7 @@ If no file exists, OSDockX writes a default config on first launch.
 - App matching through `StartupWMClass`, desktop IDs, names, and executable fallback
 - Default `leopard` theme with an editable cairo Leopard-style plank,
   mirrored icon-band reflections, magnification, running indicators, and badges
-- Opt-in `osx-glass-3d` / `scene-3d` renderer remains available for GL shelf
-  experiments
+- Opt-in `scene-3d` renderer remains available for GL shelf experiments
 - Theme packs checked into `themes/<theme-id>/theme.toml`, plus user theme packs
   under `$XDG_CONFIG_HOME/osdockx/themes/<theme-id>/theme.toml` or
   `$XDG_DATA_HOME/osdockx/themes/<theme-id>/theme.toml`, with

@@ -16,7 +16,6 @@ pub(super) struct IconDrag {
 
 #[derive(Debug, Clone)]
 pub(super) struct SeparatorResize {
-    pub(super) start_mouse_y: f64,
     pub(super) start_window_y: i32,
     pub(super) start_icon_size: u32,
     pub(super) target_icon_size: u32,

@@ -1,7 +1,7 @@
 use super::super::{add_stop, set_color};
 use super::{
     LeopardWedgeBodyGeometry, PerspectiveShelfGeometry, compute_perspective_shelf_geometry,
-    fill_crystal_material, leopard_front_face_path, leopard_front_lip_bottom_path,
+    fill_glass_material, leopard_front_face_path, leopard_front_lip_bottom_path,
     leopard_front_lip_top_path, leopard_glass_plane_path, leopard_wedge_body_geometry,
     leopard_wedge_body_path,
 };
@@ -14,7 +14,7 @@ pub(crate) fn draw_glass_shelf_base(cr: &Context, shelf: &Rect, theme: &Theme) {
 
     draw_leopard_undercarriage(cr, shelf, theme);
 
-    fill_crystal_material(
+    fill_glass_material(
         cr,
         shelf,
         theme
@@ -117,7 +117,7 @@ fn draw_leopard_connector_wall(
         .mix(theme.shelf_bottom, 0.44)
         .with_alpha(0.88 + theme.floor_opacity * 0.06);
 
-    fill_crystal_material(
+    fill_glass_material(
         cr,
         shelf,
         base,

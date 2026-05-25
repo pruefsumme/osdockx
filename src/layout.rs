@@ -513,8 +513,7 @@ mod tests {
         let last_icon = layout
             .icons
             .iter()
-            .filter(|icon| model.items[icon.item_index].is_application())
-            .last()
+            .rfind(|icon| model.items[icon.item_index].is_application())
             .expect("app icons");
 
         assert!(separator.rect.x > last_icon.rect.x + last_icon.rect.width);
@@ -561,8 +560,7 @@ mod tests {
         let last_application = layout
             .icons
             .iter()
-            .filter(|icon| model.items[icon.item_index].is_application())
-            .last()
+            .rfind(|icon| model.items[icon.item_index].is_application())
             .expect("app icon");
         let app_gap = separator.rect.x - (last_application.rect.x + last_application.rect.width);
         let applet_gap = first_applet.rect.x - (separator.rect.x + separator.rect.width);

@@ -21,30 +21,10 @@ pub(crate) struct LeopardWedgeBodyGeometry {
     pub(crate) face_right_join: Point,
     pub(crate) face_left_inner_bottom: Point,
     pub(crate) face_right_inner_bottom: Point,
-    pub(crate) front_corner_radius: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CrystalShelfGeometry {
-    pub(crate) slant: f64,
-    pub(crate) horizon_y: f64,
-    pub(crate) lip_y: f64,
-    pub(crate) bottom_y: f64,
-}
-
-pub(crate) fn crystal_shelf_geometry(shelf: &Rect, theme: &Theme) -> CrystalShelfGeometry {
-    let slant = shelf.height * theme.shelf_slant_ratio;
-    let horizon_y = shelf.y + shelf.height * theme.shelf_horizon_ratio;
-    let bottom_y = shelf.y + shelf.height;
-    let lip_height = (shelf.height * theme.front_lip_ratio)
-        .max(2.0)
-        .min(shelf.height * 0.34);
-    CrystalShelfGeometry {
-        slant,
-        horizon_y,
-        lip_y: bottom_y - lip_height,
-        bottom_y,
-    }
+pub(crate) fn shelf_horizon_y(shelf: &Rect, theme: &Theme) -> f64 {
+    shelf.y + shelf.height * theme.shelf_horizon_ratio
 }
 
 pub(crate) fn compute_perspective_shelf_geometry(
@@ -95,7 +75,6 @@ pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> Leopar
     let bottom_inset = (shelf.height * 0.055).clamp(2.4, 4.8);
     let join_drop = (face_height * 0.42).clamp(face_height * 0.22, face_height * 0.58);
     let join_inset = (bottom_inset * 0.35).clamp(0.8, 1.8);
-    let front_corner_radius = leopard_glass_plane_front_corner_radius(shelf, &geom);
     LeopardWedgeBodyGeometry {
         face_left_bottom: Point {
             x: shelf.x + bottom_inset,
@@ -121,7 +100,6 @@ pub(crate) fn leopard_wedge_body_geometry(shelf: &Rect, theme: &Theme) -> Leopar
             x: shelf.x + shelf.width - bottom_inset,
             y: geom.bottom_y,
         },
-        front_corner_radius,
     }
 }
 

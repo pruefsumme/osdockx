@@ -1,7 +1,6 @@
-use super::{
-    IconCache, ResolvedIcon, crystal_shelf_geometry, draw_icon_art, draw_icon_source,
-    leopard_glass_plane_path, rounded_rect,
-};
+use super::{IconCache, ResolvedIcon, draw_icon_source, rounded_rect, shelf_horizon_y};
+#[cfg(test)]
+use super::{draw_icon_art, leopard_glass_plane_path};
 use crate::layout::{DockLayout, Point, Rect};
 use crate::model::DockItem;
 use crate::theme::Theme;
@@ -9,6 +8,7 @@ use gtk::cairo::{Context, Format, ImageSurface, LinearGradient};
 
 const SHELF_ICON_REFLECTION_SOURCE_RATIO: f64 = 0.30;
 
+#[cfg(test)]
 pub(super) fn render_icon_surface(
     resolved_icons: &[ResolvedIcon<'_>],
     layout: &DockLayout,
@@ -23,6 +23,7 @@ pub(super) fn render_icon_surface(
     Some(surface)
 }
 
+#[cfg(test)]
 pub(super) fn draw_shelf_plane_reflections(
     cr: &Context,
     layout: &DockLayout,
@@ -34,7 +35,7 @@ pub(super) fn draw_shelf_plane_reflections(
         return;
     }
 
-    let horizon_y = crystal_shelf_geometry(&layout.shelf, theme).horizon_y;
+    let horizon_y = shelf_horizon_y(&layout.shelf, theme);
     let band_height = reflection.height.ceil().max(1.0) as i32;
     let source_y = (horizon_y - band_height as f64).max(0.0).floor() as i32;
     let Some(mirror) = mirrored_band_surface(icon_surface, source_y, band_height) else {
@@ -62,6 +63,7 @@ pub(super) fn draw_shelf_plane_reflections(
     cr.restore().ok();
 }
 
+#[cfg(test)]
 fn mirrored_band_surface(
     source: &mut ImageSurface,
     source_y: i32,
@@ -94,18 +96,19 @@ fn mirrored_band_surface(
 }
 
 pub(super) fn shelf_plane_reflection_rect(layout: &DockLayout, theme: &Theme) -> Rect {
-    let geom = crystal_shelf_geometry(&layout.shelf, theme);
+    let horizon_y = shelf_horizon_y(&layout.shelf, theme);
     let height = (layout.shelf.height * theme.reflection_band_ratio)
-        .min(geom.horizon_y - layout.shelf.y - 1.0)
+        .min(horizon_y - layout.shelf.y - 1.0)
         .max(0.0);
     Rect {
         x: layout.shelf.x,
-        y: geom.horizon_y - height,
+        y: horizon_y - height,
         width: layout.shelf.width,
         height,
     }
 }
 
+#[cfg(test)]
 fn shelf_plane_reflection_clip_path(cr: &Context, shelf: &Rect, theme: &Theme) {
     leopard_glass_plane_path(cr, shelf, theme);
 }

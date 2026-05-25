@@ -1,6 +1,6 @@
 use super::geometry::{
     LeopardWedgeBodyGeometry, PerspectiveShelfGeometry, compute_perspective_shelf_geometry,
-    crystal_shelf_geometry, leopard_glass_plane_front_corner_radius,
+    leopard_glass_plane_front_corner_radius,
 };
 use crate::layout::{Point, Rect};
 use crate::theme::Theme;
@@ -150,57 +150,4 @@ fn distance(a: Point, b: Point) -> f64 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     (dx * dx + dy * dy).sqrt()
-}
-
-pub(crate) fn crystal_top_path(cr: &Context, shelf: &Rect, theme: &Theme) {
-    let geom = crystal_shelf_geometry(shelf, theme);
-    cr.new_path();
-    cr.move_to(shelf.x + geom.slant, shelf.y);
-    cr.line_to(shelf.x + shelf.width - geom.slant, shelf.y);
-    cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
-    cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
-    cr.close_path();
-}
-
-pub(crate) fn crystal_floor_path(cr: &Context, shelf: &Rect, theme: &Theme) {
-    let geom = crystal_shelf_geometry(shelf, theme);
-    cr.new_path();
-    cr.move_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
-    cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
-    cr.line_to(shelf.x + shelf.width, geom.bottom_y);
-    cr.line_to(shelf.x, geom.bottom_y);
-    cr.close_path();
-}
-
-pub(crate) fn crystal_lip_path(cr: &Context, shelf: &Rect, theme: &Theme) {
-    let geom = crystal_shelf_geometry(shelf, theme);
-    cr.new_path();
-    cr.move_to(shelf.x + 2.0, geom.lip_y);
-    cr.line_to(shelf.x + shelf.width - 2.0, geom.lip_y);
-    cr.line_to(shelf.x + shelf.width - 5.0, geom.bottom_y);
-    cr.line_to(shelf.x + 5.0, geom.bottom_y);
-    cr.close_path();
-}
-
-pub(crate) fn crystal_side_path(cr: &Context, shelf: &Rect, theme: &Theme, left: bool) {
-    let geom = crystal_shelf_geometry(shelf, theme);
-    cr.new_path();
-    if left {
-        cr.move_to(shelf.x + geom.slant, shelf.y);
-        cr.line_to(shelf.x + geom.slant * 0.45, geom.horizon_y);
-        cr.line_to(shelf.x, geom.bottom_y);
-        cr.line_to(
-            shelf.x + geom.slant * 0.22,
-            geom.horizon_y + shelf.height * 0.10,
-        );
-    } else {
-        cr.move_to(shelf.x + shelf.width - geom.slant, shelf.y);
-        cr.line_to(shelf.x + shelf.width - geom.slant * 0.45, geom.horizon_y);
-        cr.line_to(shelf.x + shelf.width, geom.bottom_y);
-        cr.line_to(
-            shelf.x + shelf.width - geom.slant * 0.22,
-            geom.horizon_y + shelf.height * 0.10,
-        );
-    }
-    cr.close_path();
 }

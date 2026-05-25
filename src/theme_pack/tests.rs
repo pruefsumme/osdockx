@@ -2,7 +2,7 @@ use super::*;
 use crate::theme::Color;
 
 #[test]
-fn builtin_migrates_old_osx_id_to_crystal_default() {
+fn builtin_migrates_old_osx_id_to_leopard_default() {
     let mut config = ThemeConfig {
         preset: "osx-glass".to_string(),
         ..ThemeConfig::default()

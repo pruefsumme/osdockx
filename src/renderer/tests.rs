@@ -426,13 +426,11 @@ fn leopard_front_face_uses_glass_corner_radius() {
     };
 
     let geom = compute_perspective_shelf_geometry(&shelf, &theme);
-    let body = leopard_wedge_body_geometry(&shelf, &theme);
     let glass_radius = super::shelf::leopard_glass_plane_front_corner_radius(&shelf, &geom);
     let front_face_height = geom.bottom_y - geom.lip_y;
 
-    assert!((body.front_corner_radius - glass_radius).abs() < 0.001);
-    assert!(body.front_corner_radius < front_face_height);
-    assert!(body.front_corner_radius > front_face_height * 0.35);
+    assert!(glass_radius < front_face_height);
+    assert!(glass_radius > front_face_height * 0.35);
 }
 
 #[test]
@@ -482,6 +480,7 @@ fn leopard_front_lip_stays_inside_trapezoid_bounds() {
     };
     let geom = compute_perspective_shelf_geometry(&shelf, &theme);
     let body = leopard_wedge_body_geometry(&shelf, &theme);
+    let glass_radius = super::shelf::leopard_glass_plane_front_corner_radius(&shelf, &geom);
 
     draw_front_lip(&cr, &shelf, &theme);
     drop(cr);
@@ -506,14 +505,14 @@ fn leopard_front_lip_stays_inside_trapezoid_bounds() {
     assert!(
         alpha_at(
             &mut surface,
-            (geom.lip_left.x + body.front_corner_radius).round() as i32,
+            (geom.lip_left.x + glass_radius).round() as i32,
             y
         ) > 0
     );
     assert!(
         alpha_at(
             &mut surface,
-            (geom.lip_right.x - body.front_corner_radius).round() as i32,
+            (geom.lip_right.x - glass_radius).round() as i32,
             y
         ) > 0
     );

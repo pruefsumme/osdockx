@@ -9,21 +9,26 @@ pub use self::icons::IconCache;
 
 use self::badges::draw_badge;
 use self::icons::draw_icon_source;
+use self::indicators::draw_leopard_indicator;
+#[cfg(test)]
 use self::indicators::{
-    draw_leopard_active_indicator, draw_leopard_indicator, draw_leopard_running_indicator,
+    draw_leopard_active_indicator, draw_leopard_running_indicator,
     leopard_active_indicator_center_y, leopard_running_indicator_center_y,
     leopard_running_indicator_size,
 };
 use self::primitives::{add_stop, elapsed_ms, rounded_rect, set_color};
 use self::reflections::{
-    draw_icon_reflections_on_shelf, draw_reflections, draw_shelf_plane_reflections,
-    render_icon_surface, shelf_plane_reflection_rect, uses_shelf_plane_reflections,
+    draw_icon_reflections_on_shelf, draw_reflections, shelf_plane_reflection_rect,
+    uses_shelf_plane_reflections,
 };
+#[cfg(test)]
+use self::reflections::{draw_shelf_plane_reflections, render_icon_surface};
+#[cfg(test)]
+use self::shelf::leopard_glass_plane_path;
 use self::shelf::{
-    compute_perspective_shelf_geometry, crystal_shelf_geometry, draw_front_lip,
-    draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes,
-    draw_shelf_section_separator, leopard_front_face_path, leopard_glass_plane_path,
-    leopard_wedge_body_geometry,
+    compute_perspective_shelf_geometry, draw_front_lip, draw_glass_highlight_overlay,
+    draw_glass_shelf_base, draw_leopard_shelf_strokes, draw_shelf_section_separator,
+    leopard_front_face_path, leopard_wedge_body_geometry, shelf_horizon_y,
 };
 use crate::config::DockConfig;
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout, separator_hover_rect};
@@ -90,7 +95,7 @@ impl Renderer {
         let mut regions = Vec::with_capacity(layout.icons.len() * 2 + 4);
         regions.push(expand(layout.shelf, 8.0));
         if uses_shelf_plane_reflections(theme) && theme.reflection_opacity > 0.0 {
-            regions.push(expand(shelf_plane_reflection_rect(&layout, theme), 3.0));
+            regions.push(expand(shelf_plane_reflection_rect(layout, theme), 3.0));
         }
         for icon in &layout.icons {
             regions.push(expand(icon.rect, icon_expansion));
@@ -107,7 +112,7 @@ impl Renderer {
             }
         }
         if let Some(label) = layout.label.as_ref() {
-            regions.push(expand(hover_label_region(model, &layout, label), 4.0));
+            regions.push(expand(hover_label_region(model, layout, label), 4.0));
         }
         regions
     }
@@ -197,12 +202,14 @@ impl Renderer {
         let resolved_icons = resolve_icons(model, &layout, None, None, None);
         self.draw_layout(
             cr,
-            model,
-            &layout,
-            &resolved_icons,
-            theme,
-            icons,
-            ShelfLayer::Procedural,
+            DrawLayoutFrame {
+                model,
+                layout: &layout,
+                resolved_icons: &resolved_icons,
+                theme,
+                icons,
+                shelf_layer: ShelfLayer::Procedural,
+            },
         );
         self.last_layout = layout;
         self.log_draw_time(started.elapsed(), model.items.len());
@@ -231,27 +238,28 @@ impl Renderer {
         );
         self.draw_layout(
             cr,
-            frame.model,
-            &layout,
-            &resolved_icons,
-            frame.theme,
-            icons,
-            frame.shelf_layer,
+            DrawLayoutFrame {
+                model: frame.model,
+                layout: &layout,
+                resolved_icons: &resolved_icons,
+                theme: frame.theme,
+                icons,
+                shelf_layer: frame.shelf_layer,
+            },
         );
         self.last_layout = layout;
         self.log_draw_time(started.elapsed(), frame.model.items.len());
     }
 
-    fn draw_layout(
-        &self,
-        cr: &Context,
-        model: &DockModel,
-        layout: &DockLayout,
-        resolved_icons: &[ResolvedIcon<'_>],
-        theme: &Theme,
-        icons: &mut IconCache,
-        shelf_layer: ShelfLayer,
-    ) {
+    fn draw_layout(&self, cr: &Context, frame: DrawLayoutFrame<'_, '_>) {
+        let DrawLayoutFrame {
+            model,
+            layout,
+            resolved_icons,
+            theme,
+            icons,
+            shelf_layer,
+        } = frame;
         clear(cr);
         if shelf_layer != ShelfLayer::None {
             draw_glass_shelf_base(cr, &layout.shelf, theme);
@@ -376,6 +384,15 @@ struct ResolvedIcon<'a> {
     alpha: f64,
     indicator_visibility: f64,
     indicator_emphasis: f64,
+}
+
+struct DrawLayoutFrame<'a, 'icons> {
+    model: &'a DockModel,
+    layout: &'a DockLayout,
+    resolved_icons: &'a [ResolvedIcon<'a>],
+    theme: &'a Theme,
+    icons: &'icons mut IconCache,
+    shelf_layer: ShelfLayer,
 }
 
 fn layout_params(config: &DockConfig, theme: &Theme) -> LayoutParams {
@@ -581,6 +598,7 @@ fn clear(cr: &Context) {
     cr.set_operator(gtk::cairo::Operator::Over);
 }
 
+#[cfg(test)]
 fn draw_procedural_shelf_layer(cr: &Context, shelf: &Rect, theme: &Theme) {
     draw_glass_shelf_base(cr, shelf, theme);
     draw_glass_highlight_overlay(cr, shelf, theme);
@@ -660,45 +678,37 @@ fn draw_hover_label(cr: &Context, model: &DockModel, layout: &DockLayout) {
     let x = (label.rect.center_x() - width / 2.0).clamp(4.0, max_x);
     let y = label.rect.y + 1.0;
     let pointer_x = label.rect.center_x().clamp(x + 10.0, x + width - 10.0);
-
-    hover_label_path(
-        cr,
+    let label_path = HoverLabelPath {
         x,
-        y + 1.8,
+        y,
         width,
         height,
-        5.5,
+        radius: 5.5,
         pointer_x,
         pointer_width,
         pointer_height,
+    };
+
+    hover_label_path(
+        cr,
+        HoverLabelPath {
+            y: y + 1.8,
+            ..label_path
+        },
     );
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.30);
     let _ = cr.fill();
     hover_label_path(
         cr,
-        x,
-        y + 0.8,
-        width,
-        height,
-        5.5,
-        pointer_x,
-        pointer_width,
-        pointer_height,
+        HoverLabelPath {
+            y: y + 0.8,
+            ..label_path
+        },
     );
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.18);
     let _ = cr.fill();
 
-    hover_label_path(
-        cr,
-        x,
-        y,
-        width,
-        height,
-        5.5,
-        pointer_x,
-        pointer_width,
-        pointer_height,
-    );
+    hover_label_path(cr, label_path);
     let fill = LinearGradient::new(0.0, y, 0.0, y + height + pointer_height);
     add_stop(&fill, 0.00, Color::rgba(0.30, 0.31, 0.32, 0.94));
     add_stop(&fill, 0.52, Color::rgba(0.18, 0.19, 0.20, 0.95));
@@ -730,8 +740,8 @@ fn draw_hover_label(cr: &Context, model: &DockModel, layout: &DockLayout) {
     cr.restore().ok();
 }
 
-fn hover_label_path(
-    cr: &Context,
+#[derive(Clone, Copy)]
+struct HoverLabelPath {
     x: f64,
     y: f64,
     width: f64,
@@ -740,7 +750,19 @@ fn hover_label_path(
     pointer_x: f64,
     pointer_width: f64,
     pointer_height: f64,
-) {
+}
+
+fn hover_label_path(cr: &Context, path: HoverLabelPath) {
+    let HoverLabelPath {
+        x,
+        y,
+        width,
+        height,
+        radius,
+        pointer_x,
+        pointer_width,
+        pointer_height,
+    } = path;
     rounded_rect(cr, x, y, width, height, radius);
     let pointer_top = y + height - 0.5;
     cr.move_to(pointer_x - pointer_width / 2.0, pointer_top);

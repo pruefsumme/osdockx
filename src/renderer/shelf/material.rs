@@ -2,7 +2,7 @@ use crate::layout::Rect;
 use crate::theme::Color;
 use gtk::cairo::Context;
 
-pub(crate) fn fill_crystal_material<F>(
+pub(crate) fn fill_glass_material<F>(
     cr: &Context,
     bounds: &Rect,
     base: Color,

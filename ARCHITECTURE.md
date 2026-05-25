@@ -136,8 +136,6 @@ Shelf rendering helpers live under `src/renderer/shelf/`:
 - `geometry.rs`: geometry structs and formulas
 - `paths.rs`: shelf path builders
 - `material.rs`: shared shelf material helpers
-- `crystal.rs`: crystal shelf rendering
-- `legacy.rs`: legacy shelf rendering
 - `leopard.rs`: Leopard shelf rendering
 
 #### GL path

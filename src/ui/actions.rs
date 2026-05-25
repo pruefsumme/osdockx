@@ -220,10 +220,10 @@ pub(super) fn remove_folder_applet(
         let mut state = state.borrow_mut();
         let target = path.to_string_lossy().to_ascii_lowercase();
         state.config.applets.retain(|applet| {
-            !applet
+            applet
                 .path
                 .as_ref()
-                .is_some_and(|path| path.to_string_lossy().to_ascii_lowercase() == target)
+                .is_none_or(|path| path.to_string_lossy().to_ascii_lowercase() != target)
         });
         state
             .config

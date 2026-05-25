@@ -29,10 +29,12 @@ pub(super) fn draw_leopard_indicator(
     );
 }
 
+#[cfg(test)]
 pub(super) fn leopard_running_indicator_size(active: bool) -> (f64, f64) {
     if active { (24.0, 5.0) } else { (19.0, 4.2) }
 }
 
+#[cfg(test)]
 pub(super) fn draw_leopard_running_indicator(
     cr: &Context,
     rect: Rect,
@@ -52,6 +54,7 @@ pub(super) fn draw_leopard_running_indicator(
     );
 }
 
+#[cfg(test)]
 pub(super) fn draw_leopard_active_indicator(
     cr: &Context,
     rect: Rect,
@@ -214,12 +217,14 @@ fn draw_glowing_lip_indicator(
     cr.restore().ok();
 }
 
+#[cfg(test)]
 pub(super) fn leopard_running_indicator_center_y(shelf: &Rect, theme: &Theme) -> f64 {
     let geom = super::compute_perspective_shelf_geometry(shelf, theme);
     let face_height = geom.bottom_y - geom.lip_y;
     geom.lip_y + face_height * 0.50
 }
 
+#[cfg(test)]
 pub(super) fn leopard_active_indicator_center_y(rect: Rect, shelf: &Rect, theme: &Theme) -> f64 {
     let geom = super::compute_perspective_shelf_geometry(shelf, theme);
     let _ = rect;

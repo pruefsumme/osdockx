@@ -11,7 +11,7 @@ pub(crate) fn find_theme_pack(id: &str) -> Option<PathBuf> {
 
 pub(crate) fn normalized_theme_id(id: &str) -> String {
     match id.trim() {
-        "" | "osx-glass" | "osx-crystal-2.5d" => "leopard".to_string(),
+        "" | "osx-glass" => "leopard".to_string(),
         value => value.to_string(),
     }
 }
