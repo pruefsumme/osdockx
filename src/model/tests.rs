@@ -37,6 +37,40 @@ fn merges_running_window_into_pinned_item_by_class() {
 }
 
 #[test]
+fn resolves_pinned_aliases_to_real_desktop_apps() {
+    let app = DesktopApp {
+        desktop_id: "org.strawberrymusicplayer.strawberry.desktop".to_string(),
+        name: "Strawberry".to_string(),
+        icon_name: Some("strawberry".to_string()),
+        startup_wm_class: Some("strawberry".to_string()),
+        exec: Some("strawberry %U".to_string()),
+    };
+    let index = DesktopIndex::from_apps(vec![app]);
+    let windows = vec![WindowInfo {
+        xid: 42,
+        title: Some("Strawberry Music Player".to_string()),
+        class: Some("Strawberry".to_string()),
+        pid: Some(100),
+        executable: Some("/usr/bin/strawberry".to_string()),
+        workspace: Some(0),
+        icon: None,
+        active: true,
+        urgent: false,
+        minimized: false,
+    }];
+
+    let model = DockModel::from_sources(&["Strawberry".to_string()], &index, windows);
+
+    assert_eq!(
+        model.items[0].desktop_id.as_deref(),
+        Some("org.strawberrymusicplayer.strawberry.desktop")
+    );
+    assert!(model.items[0].pinned);
+    assert_eq!(model.items[0].windows.len(), 1);
+    assert_eq!(model.items[0].config_key(), "org.strawberrymusicplayer.strawberry.desktop");
+}
+
+#[test]
 fn applies_saved_item_order_after_merging_sources() {
     let index = DesktopIndex::from_apps(vec![
         DesktopApp {

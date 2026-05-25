@@ -35,7 +35,7 @@ impl DockModel {
                 continue;
             }
             let app = desktop_index
-                .by_id(desktop_id)
+                .resolve_app(desktop_id)
                 .cloned()
                 .unwrap_or_else(|| DesktopApp::placeholder(desktop_id));
             items.push(DockItem::from_app(&app, true));

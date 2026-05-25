@@ -57,21 +57,19 @@ impl DesktopIndex {
         self.apps.values().find(|app| app.matches_window(window))
     }
 
+    pub fn resolve_app(&self, desktop_id: &str) -> Option<&DesktopApp> {
+        self.by_id(desktop_id)
+            .or_else(|| self.match_desktop_alias(desktop_id))
+    }
+
     pub fn launch(&self, desktop_id: &str) -> anyhow::Result<()> {
-        let launch_id = self.resolve_launch_id(desktop_id).unwrap_or(desktop_id);
+        let launch_id = self.resolve_app(desktop_id)
+            .map(|app| app.desktop_id.as_str())
+            .unwrap_or(desktop_id);
         let info = DesktopAppInfo::new(launch_id)
             .ok_or_else(|| anyhow::anyhow!("desktop entry not found: {desktop_id}"))?;
         info.launch(&[], None::<&gio::AppLaunchContext>)?;
         Ok(())
-    }
-
-    fn resolve_launch_id(&self, desktop_id: &str) -> Option<&str> {
-        self.by_id(desktop_id)
-            .map(|app| app.desktop_id.as_str())
-            .or_else(|| {
-                self.match_desktop_alias(desktop_id)
-                    .map(|app| app.desktop_id.as_str())
-            })
     }
 
     fn match_desktop_alias(&self, desktop_id: &str) -> Option<&DesktopApp> {
@@ -368,7 +366,9 @@ mod tests {
         }]);
 
         assert_eq!(
-            index.resolve_launch_id("org.xfce.Terminal.desktop"),
+            index
+                .resolve_app("org.xfce.Terminal.desktop")
+                .map(|app| app.desktop_id.as_str()),
             Some("xfce4-terminal.desktop")
         );
     }

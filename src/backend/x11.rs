@@ -504,6 +504,8 @@ impl PlatformBackend for X11Backend {
     }
 
     fn focus_window(&self, xid: WindowId) -> anyhow::Result<()> {
+        // Hidden or tray-minimized clients may ignore activation until they are remapped.
+        self.conn.map_window(xid)?;
         self.conn
             .configure_window(xid, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
         self.send_root_message(
