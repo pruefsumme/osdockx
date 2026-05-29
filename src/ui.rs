@@ -1122,22 +1122,29 @@ fn wire_motion(
             let point = Point { x, y };
             let separator_hover;
             let resizing;
+            let hover_changed;
+            let label_changed;
+            let hidden_changed;
             {
                 let mut state = state.borrow_mut();
                 resizing = state.separator_resize.is_some();
                 if resizing {
                     separator_hover = false;
+                    hover_changed = false;
+                    label_changed = false;
+                    hidden_changed = false;
                     state.hover = None;
                 } else {
+                    let previous_hover = state.hover;
                     separator_hover = separator_hit_test(&state, point);
-                    let next_hover = if state.context_menu.is_some()
+                    let next_label = if state.context_menu.is_some()
                         || state.drag.is_some()
                         || state.icon_presence.is_some()
                         || separator_hover
                     {
                         None
                     } else {
-                        Renderer::hover_point_for(
+                        Renderer::hovered_item_index_for(
                             &state.model,
                             &state.config.dock,
                             &state.theme,
@@ -1145,12 +1152,16 @@ fn wire_motion(
                             state.hover.is_some(),
                         )
                     };
+                    let next_hover = next_label.map(|_| point);
+                    hidden_changed = state.hidden;
                     if state.hidden {
                         state.hidden = false;
                         state.last_shape_size = None;
                         move_dock(&mut state, true);
                     }
                     state.hover = next_hover;
+                    hover_changed = state.hover != previous_hover;
+                    label_changed = state.last_shape_label != next_label;
                 }
             }
             set_separator_resize_cursor(&drawing, separator_hover || resizing);
@@ -1158,7 +1169,13 @@ fn wire_motion(
                 log_slow("motion", started.elapsed());
                 return;
             }
-            sync_dock_window(&state, &window, &drawing, &gl_area, false);
+            if hidden_changed || label_changed {
+                sync_dock_window(&state, &window, &drawing, &gl_area, false);
+            }
+            if !(hidden_changed || label_changed || hover_changed) {
+                log_slow("motion", started.elapsed());
+                return;
+            }
             queue_gl_render_if_enabled(&state, &gl_area);
             drawing.queue_draw();
             log_slow("motion", started.elapsed());

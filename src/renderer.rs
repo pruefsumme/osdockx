@@ -146,13 +146,23 @@ impl Renderer {
         point: Point,
         retaining: bool,
     ) -> Option<Point> {
+        Self::hovered_item_index_for(model, config, theme, point, retaining).map(|_| point)
+    }
+
+    pub fn hovered_item_index_for(
+        model: &DockModel,
+        config: &DockConfig,
+        theme: &Theme,
+        point: Point,
+        retaining: bool,
+    ) -> Option<usize> {
         let ratio = if retaining {
             ICON_HOVER_RETAIN_RATIO
         } else {
             ICON_HOVER_ENTER_RATIO
         };
         let hover_layout = retaining.then_some(point);
-        icon_hit_test_with_ratio(model, config, theme, hover_layout, point, ratio).map(|_| point)
+        icon_hit_test_with_ratio(model, config, theme, hover_layout, point, ratio)
     }
 
     pub fn icon_hit_test(

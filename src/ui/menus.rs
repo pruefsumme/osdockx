@@ -18,6 +18,17 @@ use gtk::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplicationMenuEntry {
+    KeepInDock,
+    HideFromDock,
+    SelectIconFile,
+    ThemeIcon,
+    DefaultIcon,
+    Separator,
+    Action(ApplicationContextAction),
+}
+
 pub(super) fn show_context_menu(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
@@ -67,109 +78,121 @@ pub(super) fn show_context_menu(
     menu.add_css_class("osdock-context-menu");
     menu.add_css_class("osdock-menu-box");
     menu.set_size_request(CONTEXT_MENU_WIDTH, context_menu_height(app_actions.len()));
-
-    let app_action_count = app_actions.len();
-    let has_app_actions = app_action_count > 0;
-    for action in app_actions {
-        let button = context_menu_icon_button(
-            application_context_action_label(&item, action),
-            application_context_action_icon(&item, action),
-            false,
-        );
-        {
-            let state = Rc::clone(state);
-            let window = window.clone();
-            let drawing = drawing.clone();
-            let gl_area = gl_area.clone();
-            let action_item = item.clone();
-            button.connect_clicked(move |_| {
-                dismiss_context_menu(&state);
-                run_application_context_action(
-                    &state,
-                    &window,
-                    &drawing,
-                    &gl_area,
-                    &action_item,
-                    action,
+    for entry in application_context_menu_entries(&app_actions) {
+        match entry {
+            ApplicationMenuEntry::KeepInDock => {
+                let button = context_menu_icon_button("Keep in Dock", "list-add", pinned);
+                {
+                    let state = Rc::clone(state);
+                    let window = window.clone();
+                    let drawing = drawing.clone();
+                    let gl_area = gl_area.clone();
+                    let item_key = item_key.clone();
+                    button.connect_clicked(move |_| {
+                        dismiss_context_menu(&state);
+                        toggle_keep_in_dock(&state, &window, &drawing, &gl_area, &item_key, pinned);
+                    });
+                }
+                menu.append(&button);
+            }
+            ApplicationMenuEntry::HideFromDock => {
+                let button =
+                    context_menu_icon_button("Don't Show in Dock Anymore", "edit-delete", false);
+                {
+                    let state = Rc::clone(state);
+                    let window = window.clone();
+                    let drawing = drawing.clone();
+                    let gl_area = gl_area.clone();
+                    let item_key = item_key.clone();
+                    button.connect_clicked(move |_| {
+                        dismiss_context_menu(&state);
+                        hide_application_from_dock(&state, &window, &drawing, &gl_area, &item_key);
+                    });
+                }
+                menu.append(&button);
+            }
+            ApplicationMenuEntry::SelectIconFile => {
+                let button =
+                    context_menu_icon_button("Select Icon File...", "image-x-generic", false);
+                {
+                    let state = Rc::clone(state);
+                    let window = window.clone();
+                    let drawing = drawing.clone();
+                    let gl_area = gl_area.clone();
+                    let item_key = item_key.clone();
+                    button.connect_clicked(move |_| {
+                        dismiss_context_menu(&state);
+                        sync_dock_window(&state, &window, &drawing, &gl_area, true);
+                        drawing.queue_draw();
+                        select_custom_icon(&state, &window, &drawing, &gl_area, item_key.clone());
+                    });
+                }
+                menu.append(&button);
+            }
+            ApplicationMenuEntry::ThemeIcon => {
+                let button = context_menu_icon_button(
+                    "Use Theme Icon...",
+                    "preferences-desktop-icons",
+                    false,
                 );
-            });
+                {
+                    let state = Rc::clone(state);
+                    let window = window.clone();
+                    let drawing = drawing.clone();
+                    let gl_area = gl_area.clone();
+                    let item_key = item_key.clone();
+                    button.connect_clicked(move |_| {
+                        dismiss_context_menu(&state);
+                        show_theme_icon_menu(&state, &window, &drawing, &gl_area, item_key.clone());
+                    });
+                }
+                menu.append(&button);
+            }
+            ApplicationMenuEntry::DefaultIcon => {
+                let button = context_menu_icon_button("Set Default Icon", "edit-clear", false);
+                {
+                    let state = Rc::clone(state);
+                    let window = window.clone();
+                    let drawing = drawing.clone();
+                    let gl_area = gl_area.clone();
+                    let item_key = item_key.clone();
+                    button.connect_clicked(move |_| {
+                        dismiss_context_menu(&state);
+                        reset_custom_icon(&state, &window, &drawing, &gl_area, &item_key);
+                    });
+                }
+                menu.append(&button);
+            }
+            ApplicationMenuEntry::Separator => {
+                menu.append(&context_menu_separator());
+            }
+            ApplicationMenuEntry::Action(action) => {
+                let button = context_menu_icon_button(
+                    application_context_action_label(&item, action),
+                    application_context_action_icon(&item, action),
+                    false,
+                );
+                {
+                    let state = Rc::clone(state);
+                    let window = window.clone();
+                    let drawing = drawing.clone();
+                    let gl_area = gl_area.clone();
+                    let action_item = item.clone();
+                    button.connect_clicked(move |_| {
+                        dismiss_context_menu(&state);
+                        run_application_context_action(
+                            &state,
+                            &window,
+                            &drawing,
+                            &gl_area,
+                            &action_item,
+                            action,
+                        );
+                    });
+                }
+                menu.append(&button);
+            }
         }
-        menu.append(&button);
-    }
-
-    if has_app_actions {
-        menu.append(&context_menu_separator());
-    }
-
-    let keep = context_menu_icon_button("Keep in Dock", "list-add", pinned);
-    let hide_from_dock =
-        context_menu_icon_button("Don't Show in Dock Anymore", "edit-delete", false);
-    let select = context_menu_icon_button("Select Icon File...", "image-x-generic", false);
-    let theme_icon =
-        context_menu_icon_button("Use Theme Icon...", "preferences-desktop-icons", false);
-    let default_icon = context_menu_icon_button("Set Default Icon", "edit-clear", false);
-    menu.append(&keep);
-    menu.append(&hide_from_dock);
-    menu.append(&select);
-    menu.append(&theme_icon);
-    menu.append(&default_icon);
-
-    {
-        let state = Rc::clone(state);
-        let window = window.clone();
-        let drawing = drawing.clone();
-        let gl_area = gl_area.clone();
-        let item_key = item_key.clone();
-        keep.connect_clicked(move |_| {
-            dismiss_context_menu(&state);
-            toggle_keep_in_dock(&state, &window, &drawing, &gl_area, &item_key, pinned);
-        });
-    }
-    {
-        let state = Rc::clone(state);
-        let window = window.clone();
-        let drawing = drawing.clone();
-        let gl_area = gl_area.clone();
-        let item_key = item_key.clone();
-        hide_from_dock.connect_clicked(move |_| {
-            dismiss_context_menu(&state);
-            hide_application_from_dock(&state, &window, &drawing, &gl_area, &item_key);
-        });
-    }
-    {
-        let state = Rc::clone(state);
-        let window = window.clone();
-        let drawing = drawing.clone();
-        let gl_area = gl_area.clone();
-        let item_key = item_key.clone();
-        select.connect_clicked(move |_| {
-            dismiss_context_menu(&state);
-            sync_dock_window(&state, &window, &drawing, &gl_area, true);
-            drawing.queue_draw();
-            select_custom_icon(&state, &window, &drawing, &gl_area, item_key.clone());
-        });
-    }
-    {
-        let state = Rc::clone(state);
-        let window = window.clone();
-        let drawing = drawing.clone();
-        let gl_area = gl_area.clone();
-        let item_key = item_key.clone();
-        theme_icon.connect_clicked(move |_| {
-            dismiss_context_menu(&state);
-            show_theme_icon_menu(&state, &window, &drawing, &gl_area, item_key.clone());
-        });
-    }
-    {
-        let state = Rc::clone(state);
-        let window = window.clone();
-        let drawing = drawing.clone();
-        let gl_area = gl_area.clone();
-        let item_key = item_key.clone();
-        default_icon.connect_clicked(move |_| {
-            dismiss_context_menu(&state);
-            reset_custom_icon(&state, &window, &drawing, &gl_area, &item_key);
-        });
     }
 
     let popover = Popover::new();
@@ -567,6 +590,26 @@ pub(super) fn application_context_actions(item: &DockItem) -> Vec<ApplicationCon
     actions
 }
 
+fn application_context_menu_entries(
+    app_actions: &[ApplicationContextAction],
+) -> Vec<ApplicationMenuEntry> {
+    let mut entries = Vec::with_capacity(
+        CONTEXT_MENU_SETTINGS_COUNT + app_actions.len() + usize::from(!app_actions.is_empty()),
+    );
+    entries.extend([
+        ApplicationMenuEntry::KeepInDock,
+        ApplicationMenuEntry::HideFromDock,
+        ApplicationMenuEntry::SelectIconFile,
+        ApplicationMenuEntry::ThemeIcon,
+        ApplicationMenuEntry::DefaultIcon,
+    ]);
+    if !app_actions.is_empty() {
+        entries.push(ApplicationMenuEntry::Separator);
+        entries.extend(app_actions.iter().copied().map(ApplicationMenuEntry::Action));
+    }
+    entries
+}
+
 fn application_context_action_label(
     item: &DockItem,
     action: ApplicationContextAction,
@@ -716,4 +759,62 @@ pub(super) fn present_runtime_popover(
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
     drawing.queue_draw();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::WindowInfo;
+
+    fn item_with_state(desktop_id: Option<&str>, active: bool, running: bool) -> DockItem {
+        let windows = running
+            .then_some(vec![WindowInfo {
+                xid: 42,
+                title: Some("Terminal".to_string()),
+                class: Some("Xfce4-terminal".to_string()),
+                pid: Some(1000),
+                executable: Some("xfce4-terminal".to_string()),
+                workspace: Some(0),
+                icon: None,
+                active,
+                urgent: false,
+                minimized: false,
+            }])
+            .unwrap_or_default();
+
+        DockItem {
+            id: desktop_id.unwrap_or("window:42").to_string(),
+            name: "Terminal".to_string(),
+            desktop_id: desktop_id.map(str::to_string),
+            startup_wm_class: Some("Xfce4-terminal".to_string()),
+            icon_name: Some("utilities-terminal".to_string()),
+            window_icon: None,
+            pinned: desktop_id.is_some(),
+            windows,
+            active,
+            urgent: false,
+            badge: None,
+        }
+    }
+
+    #[test]
+    fn application_context_menu_places_item_settings_before_window_actions() {
+        let item = item_with_state(Some("xfce4-terminal.desktop"), false, true);
+        let entries = application_context_menu_entries(&application_context_actions(&item));
+
+        assert_eq!(
+            entries,
+            vec![
+                ApplicationMenuEntry::KeepInDock,
+                ApplicationMenuEntry::HideFromDock,
+                ApplicationMenuEntry::SelectIconFile,
+                ApplicationMenuEntry::ThemeIcon,
+                ApplicationMenuEntry::DefaultIcon,
+                ApplicationMenuEntry::Separator,
+                ApplicationMenuEntry::Action(ApplicationContextAction::Launch),
+                ApplicationMenuEntry::Action(ApplicationContextAction::Focus),
+                ApplicationMenuEntry::Action(ApplicationContextAction::Close),
+            ]
+        );
+    }
 }
