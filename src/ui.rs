@@ -139,6 +139,7 @@ struct Runtime {
     last_reserved_geometry: Option<DockGeometry>,
     last_shape_size: Option<(i32, i32)>,
     last_shape_label: Option<usize>,
+    scale_factor: f64,
     context_menu: Option<Popover>,
     customizer_open: bool,
     drag: Option<IconDrag>,
@@ -250,7 +251,7 @@ impl Runtime {
         let mut geometry = backend
             .monitor_geometry(self.config.dock.monitor.as_deref())
             .dock_geometry(
-                self.desired_size(),
+                physical_size(self.desired_size(), self.scale_factor),
                 self.config.dock.edge,
                 self.config.dock.reserve_space && !self.config.dock.autohide,
                 self.reserved_thickness(),
@@ -522,6 +523,24 @@ fn apply_edge_offset(geometry: &mut DockGeometry, edge: crate::config::DockEdge,
     }
 }
 
+fn physical_size(css_size: (i32, i32), scale: f64) -> (i32, i32) {
+    let scale = scale.max(1.0);
+    (
+        (css_size.0 as f64 * scale).round() as i32,
+        (css_size.1 as f64 * scale).round() as i32,
+    )
+}
+
+fn physical_rect(rect: Rect, scale: f64) -> Rect {
+    let scale = scale.max(1.0);
+    Rect {
+        x: (rect.x * scale).round(),
+        y: (rect.y * scale).round(),
+        width: (rect.width * scale).round(),
+        height: (rect.height * scale).round(),
+    }
+}
+
 fn hidden_edge_offset(geometry: &DockGeometry, edge: crate::config::DockEdge) -> i32 {
     match edge {
         crate::config::DockEdge::Bottom | crate::config::DockEdge::Top => {
@@ -632,6 +651,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_reserved_geometry: None,
         last_shape_size: None,
         last_shape_label: None,
+        scale_factor: 1.0,
         context_menu: None,
         customizer_open: false,
         drag: None,
@@ -1058,8 +1078,13 @@ fn wire_realize(
             return;
         };
         let xid = surface.xid() as u32;
+        {
+            let mut runtime = state.borrow_mut();
+            runtime.dock_xid = Some(xid);
+            runtime.scale_factor = surface.scale_factor().max(1) as f64;
+        }
+        wire_scale_factor_changes(&state, &surface, window, &drawing, &gl_area);
         let mut runtime = state.borrow_mut();
-        runtime.dock_xid = Some(xid);
         if runtime.backend.is_some() {
             runtime.startup_reveal = Some(StartupReveal::new());
         }
@@ -1079,6 +1104,41 @@ fn wire_realize(
         drop(runtime);
         reveal();
         ensure_startup_reveal_tick(&state, window, &drawing, &gl_area);
+    });
+}
+
+fn wire_scale_factor_changes(
+    state: &Rc<RefCell<Runtime>>,
+    surface: &X11Surface,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let state = Rc::clone(state);
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    let surface = surface.clone();
+    surface.connect_scale_factor_notify(move |surface| {
+        let new_scale = surface.scale_factor().max(1) as f64;
+        let changed = {
+            let mut state = state.borrow_mut();
+            if (state.scale_factor - new_scale).abs() < f64::EPSILON {
+                false
+            } else {
+                state.scale_factor = new_scale;
+                state.last_size = None;
+                state.last_geometry = None;
+                state.last_reserved_geometry = None;
+                state.last_shape_size = None;
+                true
+            }
+        };
+        if changed {
+            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+            queue_gl_render_if_enabled(&state, &gl_area);
+            drawing.queue_draw();
+        }
     });
 }
 
@@ -2886,14 +2946,14 @@ fn shape_dock(state: &mut Runtime) {
         return;
     }
 
-    let size = state.desired_size();
+    let size = physical_size(state.desired_size(), state.scale_factor);
     let layout = dock_layout_for_state(state, state.hover);
     let config = rendered_dock_config(state);
     let mut visual_regions =
         Renderer::visual_regions_for_layout(&state.model, &layout, &config, &state.theme);
     let mut input_regions = Renderer::input_regions_for_layout(&layout);
     if state.hidden {
-        let reveal_strip = hidden_reveal_input_region(size, state.config.dock.edge);
+        let reveal_strip = hidden_reveal_input_region(state.desired_size(), state.config.dock.edge);
         visual_regions.push(reveal_strip);
         input_regions.push(reveal_strip);
     }
@@ -2916,6 +2976,14 @@ fn shape_dock(state: &mut Runtime) {
             input_regions.push(rect);
         }
     }
+    let visual_regions = visual_regions
+        .into_iter()
+        .map(|rect| physical_rect(rect, state.scale_factor))
+        .collect::<Vec<_>>();
+    let input_regions = input_regions
+        .into_iter()
+        .map(|rect| physical_rect(rect, state.scale_factor))
+        .collect::<Vec<_>>();
     let started = Instant::now();
     if let Some(backend) = state.backend.as_mut()
         && let Err(error) = backend.set_dock_shape(size, &visual_regions, &input_regions)
@@ -2987,6 +3055,7 @@ fn log_slow(operation: &'static str, elapsed: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DockEdge;
     use crate::model::WindowInfo;
 
     fn separator_test_item(id: &str) -> DockItem {
@@ -3373,5 +3442,107 @@ mod tests {
 
         assert!(hover.y < separator.rect.y);
         assert!(hover.height > separator.rect.height);
+    }
+
+    #[test]
+    fn physical_size_doubles_under_2x() {
+        assert_eq!(physical_size((800, 100), 2.0), (1600, 200));
+    }
+
+    #[test]
+    fn physical_size_preserves_dimensions_at_1x() {
+        assert_eq!(physical_size((800, 100), 1.0), (800, 100));
+    }
+
+    #[test]
+    fn physical_size_ignores_zero_or_negative_scale() {
+        assert_eq!(physical_size((800, 100), 0.0), (800, 100));
+        assert_eq!(physical_size((800, 100), -1.0), (800, 100));
+    }
+
+    #[test]
+    fn physical_size_rounds_fractional_results() {
+        assert_eq!(physical_size((801, 101), 2.0), (1602, 202));
+    }
+
+    #[test]
+    fn physical_rect_scales_all_axes_uniformly() {
+        let rect = Rect {
+            x: 12.0,
+            y: 24.0,
+            width: 800.0,
+            height: 100.0,
+        };
+        assert_eq!(
+            physical_rect(rect, 2.0),
+            Rect {
+                x: 24.0,
+                y: 48.0,
+                width: 1600.0,
+                height: 200.0,
+            }
+        );
+    }
+
+    #[test]
+    fn physical_rect_passes_through_at_1x() {
+        let rect = Rect {
+            x: 7.0,
+            y: 11.0,
+            width: 23.0,
+            height: 31.0,
+        };
+        assert_eq!(physical_rect(rect, 1.0), rect);
+    }
+
+    #[test]
+    fn dock_geometry_uses_physical_size_at_2x() {
+        // 1920x1080 logical monitor with XFCE4's 2x window scaling reports
+        // 3840x2160 physical pixels to RandR. The dock's layout produces an
+        // 800x100 logical size, which must be scaled to 1600x200 before
+        // calling dock_geometry so the window manager sees a consistent
+        // unit. Otherwise the dock ends up off-screen.
+        let monitor = crate::backend::MonitorGeometry {
+            x: 0,
+            y: 0,
+            width: 3840,
+            height: 2160,
+        };
+
+        let geometry = monitor.dock_geometry(
+            physical_size((800, 100), 2.0),
+            DockEdge::Bottom,
+            false,
+            0,
+        );
+
+        assert_eq!(geometry.x, 1120);
+        assert_eq!(geometry.y, 1960);
+        assert_eq!(geometry.width, 1600);
+        assert_eq!(geometry.height, 200);
+    }
+
+    #[test]
+    fn dock_geometry_keeps_legacy_behavior_at_1x() {
+        // With no scale factor, a 1920x1080 monitor and an 800x100 dock should
+        // remain centered horizontally and pinned to the bottom.
+        let monitor = crate::backend::MonitorGeometry {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+
+        let geometry = monitor.dock_geometry(
+            physical_size((800, 100), 1.0),
+            DockEdge::Bottom,
+            false,
+            0,
+        );
+
+        assert_eq!(geometry.x, 560);
+        assert_eq!(geometry.y, 980);
+        assert_eq!(geometry.width, 800);
+        assert_eq!(geometry.height, 100);
     }
 }

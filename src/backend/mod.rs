@@ -44,6 +44,14 @@ pub trait PlatformBackend {
 }
 
 impl MonitorGeometry {
+    /// Computes the dock window geometry for the given monitor and edge.
+    ///
+    /// `size` must be in **physical pixels** matching the monitor's coordinate
+    /// space (the same units used by [`MonitorGeometry::width`] / [`height`],
+    /// which come from RandR). Callers that work in CSS / logical pixels (the
+    /// GTK default) must multiply by the surface scale factor first, otherwise
+    /// the dock will be sized and positioned in mixed units and slip past the
+    /// screen edge under HiDPI scaling (e.g. XFCE4's 2x Window Scaling).
     pub fn dock_geometry(
         &self,
         size: (i32, i32),
