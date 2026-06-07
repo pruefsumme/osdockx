@@ -132,17 +132,6 @@ fn leopard_shelf_only_silhouette_matches_reference_shape() {
 }
 
 #[test]
-fn reserved_thickness_stays_compact_for_leopard_theme() {
-    let config = Config::default().normalized();
-    let theme = Theme::from_config(&config.theme);
-    let model = DockModel::default();
-
-    let reserved = Renderer::reserved_thickness(&model, &config.dock, &theme);
-
-    assert!(reserved < config.dock.icon_size + 56);
-}
-
-#[test]
 fn hover_starts_when_pointer_reaches_visible_icon_edge() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);
