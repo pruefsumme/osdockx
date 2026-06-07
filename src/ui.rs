@@ -254,7 +254,7 @@ impl Runtime {
                 physical_size(self.desired_size(), self.scale_factor),
                 self.config.dock.edge,
                 self.config.dock.reserve_space && !self.config.dock.autohide,
-                self.reserved_thickness(),
+                physical_scalar(self.reserved_thickness(), self.scale_factor),
             );
 
         if self.hidden {
@@ -529,6 +529,11 @@ fn physical_size(css_size: (i32, i32), scale: f64) -> (i32, i32) {
         (css_size.0 as f64 * scale).round() as i32,
         (css_size.1 as f64 * scale).round() as i32,
     )
+}
+
+fn physical_scalar(css_value: u32, scale: f64) -> u32 {
+    let scale = scale.max(1.0);
+    (css_value as f64 * scale).round() as u32
 }
 
 fn physical_rect(rect: Rect, scale: f64) -> Rect {
@@ -3450,6 +3455,17 @@ mod tests {
     }
 
     #[test]
+    fn physical_scalar_doubles_under_2x() {
+        assert_eq!(physical_scalar(48, 2.0), 96);
+    }
+
+    #[test]
+    fn physical_scalar_ignores_zero_or_negative_scale() {
+        assert_eq!(physical_scalar(48, 0.0), 48);
+        assert_eq!(physical_scalar(48, -1.0), 48);
+    }
+
+    #[test]
     fn physical_size_preserves_dimensions_at_1x() {
         assert_eq!(physical_size((800, 100), 1.0), (800, 100));
     }
@@ -3544,5 +3560,29 @@ mod tests {
         assert_eq!(geometry.y, 980);
         assert_eq!(geometry.width, 800);
         assert_eq!(geometry.height, 100);
+    }
+
+    #[test]
+    fn dock_geometry_passes_physical_reserved_thickness_through() {
+        // The caller is responsible for scaling reserved_thickness by the
+        // surface scale factor before calling dock_geometry. dock_geometry
+        // itself should treat the value as a raw physical-pixel count and
+        // hand it to the backend unmodified.
+        let monitor = crate::backend::MonitorGeometry {
+            x: 0,
+            y: 0,
+            width: 3840,
+            height: 2160,
+        };
+
+        let geometry = monitor.dock_geometry(
+            physical_size((800, 100), 2.0),
+            DockEdge::Bottom,
+            true,
+            physical_scalar(48, 2.0),
+        );
+
+        assert!(geometry.reserve_space);
+        assert_eq!(geometry.reserved_thickness, 96);
     }
 }
