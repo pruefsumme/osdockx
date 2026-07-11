@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 150" width="100%" height="100%">
+  <defs>
+    <linearGradient id="silver" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="48%" stop-color="#e0e0e0"/>
+      <stop offset="50%" stop-color="#cccccc"/>
+      <stop offset="100%" stop-color="#999999"/>
+    </linearGradient>
+
+    <linearGradient id="aquaGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#66ccff"/>
+      <stop offset="40%" stop-color="#0077ff"/>
+      <stop offset="100%" stop-color="#0033cc"/>
+    </linearGradient>
+
+    <linearGradient id="highlightGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.0"/>
+    </linearGradient>
+
+    <filter id="dropShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <text x="15" y="105" 
+        font-family="'Lucida Grande', 'Helvetica Neue', Helvetica, sans-serif" 
+        font-size="85" 
+        font-weight="bold" 
+        fill="url(#silver)" 
+        filter="url(#dropShadow)">OSDock</text>
+
+  <g transform="translate(350, 42) scale(0.42)" filter="url(#dropShadow)">
+    <path d="M 0 0 L 45 0 L 80 60 L 115 0 L 160 0 L 102 85 L 160 170 L 115 170 L 80 110 L 45 170 L 0 170 L 58 85 Z" fill="url(#aquaGrad)" stroke="#002288" stroke-width="2"/>
+    
+    <path d="M 5 5 L 42 5 L 70 50 L 58 65 L 20 10 Z" fill="url(#highlightGrad)" opacity="0.7"/>
+    <path d="M 155 5 L 118 5 L 90 50 L 102 65 L 140 10 Z" fill="url(#highlightGrad)" opacity="0.7"/>
+  </g>
+</svg>

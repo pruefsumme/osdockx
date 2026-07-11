@@ -1,72 +1,47 @@
 # OSDockX
 
-OSDockX is a clean-room Rust dock for Linux desktops, currently focused on
-XFCE4 on X11. The first milestone prioritizes the pre-Mavericks OSX dock look:
-an opaque shelf, icon magnification, reflections, running indicators,
-and notification badges.
+![OSDockX logo](assets/osdockx-logo.svg)
 
-## Build
+A friendly, glossy dock for Linux/X11, inspired by the bright desktop style of the 2008–2013 era.
 
-```sh
-cargo run
-```
+![OSDockX running on an XFCE desktop](assets/screenshots/desktop-preview.png)
 
-## Install
+OSDockX keeps your favourite apps, running windows, notifications, and a little bit of sparkle within easy reach. It is built in Rust and currently focused on XFCE
 
-For a user-local install from this checkout:
+X11 is currently only supported, maybe I will do Wayland one day
+
+## Get started
+
+From this folder, run:
 
 ```sh
 ./install.sh
 ```
 
-This installs `osdockx` to `~/.local/bin` and adds a desktop launcher under
-`~/.local/share/applications`. Remove those files with:
+This builds OSDockX and installs it to `~/.local/bin`, along with an application launcher. On first launch, it will ask whether it should start automatically when you log in.
+
+To try it without installing, run:
+
+```sh
+cargo run
+```
+
+To remove a user-local install later:
 
 ```sh
 ./install.sh --uninstall
 ```
 
-Arch users can build the live Git package from:
+## A closer look
 
-```text
-packaging/arch/osdockx-git/PKGBUILD
-```
+The default Leopard-style theme brings icon magnification, reflections, running indicators, and notification badges to the shelf.
 
-Runtime configuration is read from:
+![OSDockX Leopard-style dock](assets/screenshots/dock-detail.png)
 
-```text
-$XDG_CONFIG_HOME/osdockx/config.toml
-```
+## Also check out
 
-If no file exists, OSDockX writes a default config on first launch.
-On first launch, OSDockX asks whether it should start at login. This can later
-be toggled from the OSDockX right-click settings menu.
+OSDockX is part of the [pruefsumme](https://github.com/pruefsumme) desktop set. Pair it with [OSNotificationX](https://github.com/pruefsumme/OSNotificationX), a matching XFCE notification center, or [OSXfce](https://github.com/pruefsumme/OSXfce), the complete XFCE setup.
 
-## Current Scope
+## Independent project
 
-- GTK4 overlay dock window with cairo shelf/icon/label rendering by default and
-  an opt-in GLArea shelf layer for `scene-3d` themes
-- X11 EWMH dock setup through `x11rb`, including dock struts, active window,
-  workspace, urgency, PID, executable, and `_NET_WM_ICON` metadata
-- RandR monitor selection via `dock.monitor` (`primary`, a monitor name, or an index)
-- Desktop launcher discovery through GIO desktop entries
-- App icons are resolved through GTK's current user icon theme, with inherited
-  theme lookup, absolute `Icon=` paths, `_NET_WM_ICON`, and placeholder fallbacks
-- Per-app custom icons can be selected from the right-click icon menu and are
-  stored under `custom_icons` in the user config
-- Dock icons can be reordered by left-click dragging, with the resulting order
-  stored under `item_order` in the user config
-- App matching through `StartupWMClass`, desktop IDs, names, and executable fallback
-- Default `leopard` theme with an editable cairo Leopard-style plank,
-  mirrored icon-band reflections, magnification, running indicators, and badges
-- Opt-in `scene-3d` renderer remains available for GL shelf experiments
-- Theme packs checked into `themes/<theme-id>/theme.toml`, plus user theme packs
-  under `$XDG_CONFIG_HOME/osdockx/themes/<theme-id>/theme.toml` or
-  `$XDG_DATA_HOME/osdockx/themes/<theme-id>/theme.toml`, with
-  `renderer = "scene-3d"`, `"texture-2d"`, or `"procedural-2d"`
-- Checked-in theme packs are exported to `$XDG_CONFIG_HOME/osdockx/themes/`
-  when missing, and config/theme TOML edits are reloaded while the dock runs
-- Configurable theme/model/layout boundaries for a later Wayland backend
-
-Wayland support is intentionally not part of v1. The backend boundary is shaped
-so a later implementation can use layer-shell and a compositor taskbar protocol.
+OSDockX is an independent Linux desktop project. It is not affiliated with, endorsed by, or sponsored by Apple Inc. Apple and Mac are trademarks of Apple Inc.
