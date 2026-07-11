@@ -241,20 +241,31 @@ impl Runtime {
             })
     }
 
-    fn reserved_thickness(&self) -> u32 {
-        let config = rendered_dock_config(self);
-        Renderer::reserved_thickness(&self.model, &config, &self.theme)
-    }
-
     fn desired_geometry(&self) -> Option<DockGeometry> {
         let backend = self.backend.as_ref()?;
+        let size = physical_size(self.desired_size(), self.scale_factor);
+        // Reserve the magnified-icon band, icons, visible shelf, and bottom
+        // padding. The label band and top padding stay outside the reserved
+        // area so maximized windows sit close to the visible dock content
+        // instead of leaving a transparent gap, and the reserve is still
+        // large enough to cover the magnified envelope when the user hovers.
+        let reserved_edge = Renderer::reserved_thickness(
+            &rendered_dock_config(self),
+            &self.theme,
+        );
+        let reserved_thickness = match self.config.dock.edge {
+            crate::config::DockEdge::Left | crate::config::DockEdge::Right => size.0 as u32,
+            crate::config::DockEdge::Top | crate::config::DockEdge::Bottom => {
+                physical_scalar(reserved_edge, self.scale_factor)
+            }
+        };
         let mut geometry = backend
             .monitor_geometry(self.config.dock.monitor.as_deref())
             .dock_geometry(
-                physical_size(self.desired_size(), self.scale_factor),
+                size,
                 self.config.dock.edge,
                 self.config.dock.reserve_space && !self.config.dock.autohide,
-                physical_scalar(self.reserved_thickness(), self.scale_factor),
+                reserved_thickness,
             );
 
         if self.hidden {
@@ -3563,26 +3574,48 @@ mod tests {
     }
 
     #[test]
-    fn dock_geometry_passes_physical_reserved_thickness_through() {
-        // The caller is responsible for scaling reserved_thickness by the
-        // surface scale factor before calling dock_geometry. dock_geometry
-        // itself should treat the value as a raw physical-pixel count and
-        // hand it to the backend unmodified.
-        let monitor = crate::backend::MonitorGeometry {
-            x: 0,
-            y: 0,
-            width: 3840,
-            height: 2160,
-        };
-
-        let geometry = monitor.dock_geometry(
-            physical_size((800, 100), 2.0),
-            DockEdge::Bottom,
-            true,
-            physical_scalar(48, 2.0),
+    fn reserved_thickness_covers_icons_and_visible_shelf() {
+        // The reserved thickness must cover from the top of the icons down
+        // through the visible shelf and bottom padding, but not the label
+        // band, top padding, or magnification headroom. Reserving only the
+        // icon footprint let windows slip under the icons under XFCE4's 2x
+        // Window Scaling; reserving the full dock height or the magnified
+        // envelope leaves a transparent gap above the dock.
+        let config = crate::config::Config::default().normalized();
+        let theme = crate::theme::Theme::from_config(&config.theme);
+        let reserved = Renderer::reserved_thickness(&config.dock, &theme);
+        let layout_size = Renderer::desired_size(
+            &crate::model::DockModel::default(),
+            &config.dock,
+            &theme,
+            None,
         );
 
-        assert!(geometry.reserve_space);
-        assert_eq!(geometry.reserved_thickness, 96);
+        // Must be strictly less than the full dock height so the label
+        // band and top padding stay outside the reserved area.
+        assert!(reserved < layout_size.1 as u32);
+
+        // The reserved area starts at baseline_y (top of the icons) and
+        // extends to the bottom of the dock.
+        let label_height = 24.0_f64.max(config.dock.icon_size as f64 * 0.34);
+        let top_padding = 5.0;
+        let label_band = label_height + 8.0;
+        let baseline_y = top_padding + label_band
+            + config.dock.icon_size as f64 * config.dock.zoom_strength;
+        let expected = (layout_size.1 as f64 - baseline_y).ceil() as u32;
+        assert_eq!(reserved, expected);
+    }
+
+    #[test]
+    fn reserved_thickness_scales_to_physical_under_2x() {
+        // The strut property is in physical pixels, so the CSS-pixel
+        // reserved thickness must be multiplied by the surface scale factor
+        // before being handed to the backend.
+        let config = crate::config::Config::default().normalized();
+        let theme = crate::theme::Theme::from_config(&config.theme);
+        let css = Renderer::reserved_thickness(&config.dock, &theme);
+
+        assert_eq!(physical_scalar(css, 2.0), css * 2);
+        assert_eq!(physical_scalar(css, 1.0), css);
     }
 }

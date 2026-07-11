@@ -67,12 +67,24 @@ impl Renderer {
         compute_layout(model, hover, params).size
     }
 
-    pub fn reserved_thickness(model: &DockModel, config: &DockConfig, theme: &Theme) -> u32 {
-        let _ = model;
-        let icon_size = config.icon_size as f64;
-        let shelf_height = icon_size * theme.shelf_height_ratio;
-        let visible_shelf = shelf_height * (1.0 - theme.shelf_horizon_ratio);
-        (icon_size + visible_shelf + 12.0).ceil() as u32
+    /// Height of the dock area the WM should keep clear.
+    ///
+    /// Covers from the top of the (non-magnified) icons down to the bottom
+    /// of the dock. The label band, top padding, and magnification
+    /// headroom stay outside the reserved area so maximized windows sit
+    /// close to the visible dock content; the magnification envelope
+    /// itself is a hover-only overlay that the WM does not need to keep
+    /// clear.
+    pub fn reserved_thickness(config: &DockConfig, theme: &Theme) -> u32 {
+        let params = layout_params(config, theme);
+        let top_padding = 5.0;
+        let label_band = params.label_height + 8.0;
+        let baseline_y = top_padding + label_band + params.icon_size * params.zoom_strength;
+        let icon_bottom = baseline_y + params.icon_size;
+        let shelf_y = icon_bottom + params.icon_floor_offset
+            - params.shelf_height * params.shelf_horizon_ratio;
+        let dock_height = (shelf_y + params.shelf_height + 5.0).max(64.0).ceil();
+        (dock_height - baseline_y).ceil().max(0.0) as u32
     }
 
     pub fn visual_regions(
