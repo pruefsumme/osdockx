@@ -1340,6 +1340,7 @@ fn wire_motion(
         let drawing = drawing.clone();
         let gl_area = gl_area.clone();
         motion.connect_motion(move |_, x, y| {
+            crate::perf::record_motion_event();
             let started = Instant::now();
             let point = Point { x, y };
             let separator_hover;
@@ -2175,6 +2176,7 @@ fn ensure_dock_frame_tick(
     let drawing = drawing.clone();
     let gl_area = gl_area.clone();
     drawing.clone().add_tick_callback(move |_, _| {
+        crate::perf::record_frame_tick();
         let (redraw, keep_running) = {
             let mut state = state.borrow_mut();
             advance_dock_frame(&mut state)
@@ -2234,6 +2236,12 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool) {
     let layout = dock_layout_for_state(state, candidate_hover);
     let signature = DevicePixelLayoutSignature::new(&layout, config.icon_size, state.scale_factor);
     let visibly_changed = state.last_layout_signature.as_ref() != Some(&signature);
+    if visibly_changed {
+        crate::perf::record_visible_layout_change();
+    }
+    if animations_active {
+        crate::perf::record_animation_frame();
+    }
     let redraw = mandatory || animations_active || visibly_changed;
     if redraw {
         state.hover = candidate_hover;
@@ -3230,6 +3238,7 @@ fn sync_dock_window(
     gl_area: &GLArea,
     force_shape: bool,
 ) {
+    crate::perf::record_window_synchronization();
     let started = Instant::now();
     let mut size_changed = false;
     let size = {
@@ -3358,6 +3367,7 @@ fn shape_dock(state: &mut Runtime) {
         .map(|rect| physical_rect(rect, state.scale_factor))
         .collect::<Vec<_>>();
     let started = Instant::now();
+    crate::perf::record_shape_update();
     if let Some(backend) = state.backend.as_mut()
         && let Err(error) = backend.set_dock_shape(size, &visual_regions, &input_regions)
     {

@@ -23,6 +23,14 @@ static SHELF_HITS: AtomicU64 = AtomicU64::new(0);
 static CONFIG_THEME_PARSES: AtomicU64 = AtomicU64::new(0);
 static X11_PROPERTY_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static X11_RECONCILIATIONS: AtomicU64 = AtomicU64::new(0);
+static MOTION_EVENTS: AtomicU64 = AtomicU64::new(0);
+static FRAME_TICKS: AtomicU64 = AtomicU64::new(0);
+static VISIBLE_LAYOUT_CHANGES: AtomicU64 = AtomicU64::new(0);
+static PAINT_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static WINDOW_SYNCHRONIZATIONS: AtomicU64 = AtomicU64::new(0);
+static SHAPE_UPDATES: AtomicU64 = AtomicU64::new(0);
+static ANIMATION_FRAMES: AtomicU64 = AtomicU64::new(0);
+static LAST_SUMMARY: OnceLock<std::sync::Mutex<PerfSnapshot>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PerfSnapshot {
@@ -37,6 +45,56 @@ pub struct PerfSnapshot {
     pub config_theme_parses: u64,
     pub x11_property_requests: u64,
     pub x11_reconciliations: u64,
+    pub motion_events: u64,
+    pub frame_ticks: u64,
+    pub visible_layout_changes: u64,
+    pub paint_requests: u64,
+    pub window_synchronizations: u64,
+    pub shape_updates: u64,
+    pub animation_frames: u64,
+}
+
+impl PerfSnapshot {
+    pub fn saturating_sub(self, earlier: Self) -> Self {
+        Self {
+            redraws_requested: self
+                .redraws_requested
+                .saturating_sub(earlier.redraws_requested),
+            redraws_completed: self
+                .redraws_completed
+                .saturating_sub(earlier.redraws_completed),
+            draw_micros: self.draw_micros.saturating_sub(earlier.draw_micros),
+            draw_max_micros: self.draw_max_micros,
+            reflection_builds: self
+                .reflection_builds
+                .saturating_sub(earlier.reflection_builds),
+            reflection_hits: self.reflection_hits.saturating_sub(earlier.reflection_hits),
+            shelf_builds: self.shelf_builds.saturating_sub(earlier.shelf_builds),
+            shelf_hits: self.shelf_hits.saturating_sub(earlier.shelf_hits),
+            config_theme_parses: self
+                .config_theme_parses
+                .saturating_sub(earlier.config_theme_parses),
+            x11_property_requests: self
+                .x11_property_requests
+                .saturating_sub(earlier.x11_property_requests),
+            x11_reconciliations: self
+                .x11_reconciliations
+                .saturating_sub(earlier.x11_reconciliations),
+            motion_events: self.motion_events.saturating_sub(earlier.motion_events),
+            frame_ticks: self.frame_ticks.saturating_sub(earlier.frame_ticks),
+            visible_layout_changes: self
+                .visible_layout_changes
+                .saturating_sub(earlier.visible_layout_changes),
+            paint_requests: self.paint_requests.saturating_sub(earlier.paint_requests),
+            window_synchronizations: self
+                .window_synchronizations
+                .saturating_sub(earlier.window_synchronizations),
+            shape_updates: self.shape_updates.saturating_sub(earlier.shape_updates),
+            animation_frames: self
+                .animation_frames
+                .saturating_sub(earlier.animation_frames),
+        }
+    }
 }
 
 pub fn snapshot() -> PerfSnapshot {
@@ -52,11 +110,19 @@ pub fn snapshot() -> PerfSnapshot {
         config_theme_parses: CONFIG_THEME_PARSES.load(Ordering::Relaxed),
         x11_property_requests: X11_PROPERTY_REQUESTS.load(Ordering::Relaxed),
         x11_reconciliations: X11_RECONCILIATIONS.load(Ordering::Relaxed),
+        motion_events: MOTION_EVENTS.load(Ordering::Relaxed),
+        frame_ticks: FRAME_TICKS.load(Ordering::Relaxed),
+        visible_layout_changes: VISIBLE_LAYOUT_CHANGES.load(Ordering::Relaxed),
+        paint_requests: PAINT_REQUESTS.load(Ordering::Relaxed),
+        window_synchronizations: WINDOW_SYNCHRONIZATIONS.load(Ordering::Relaxed),
+        shape_updates: SHAPE_UPDATES.load(Ordering::Relaxed),
+        animation_frames: ANIMATION_FRAMES.load(Ordering::Relaxed),
     }
 }
 
 pub fn record_redraw_requested() {
     REDRAWS_REQUESTED.fetch_add(1, Ordering::Relaxed);
+    PAINT_REQUESTS.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_draw_completed(elapsed: Duration) {
@@ -95,6 +161,30 @@ pub fn record_x11_reconciliation() {
     X11_RECONCILIATIONS.fetch_add(1, Ordering::Relaxed);
 }
 
+pub fn record_motion_event() {
+    MOTION_EVENTS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_frame_tick() {
+    FRAME_TICKS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_visible_layout_change() {
+    VISIBLE_LAYOUT_CHANGES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_window_synchronization() {
+    WINDOW_SYNCHRONIZATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_shape_update() {
+    SHAPE_UPDATES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_animation_frame() {
+    ANIMATION_FRAMES.fetch_add(1, Ordering::Relaxed);
+}
+
 fn maybe_log_summary() {
     let elapsed_ms = STARTED
         .get_or_init(Instant::now)
@@ -111,23 +201,65 @@ fn maybe_log_summary() {
     }
 
     let counters = snapshot();
-    let average_draw_us = counters
+    let previous = LAST_SUMMARY
+        .get_or_init(|| std::sync::Mutex::new(PerfSnapshot::default()))
+        .lock()
+        .map(|mut previous| {
+            let delta = counters.saturating_sub(*previous);
+            *previous = counters;
+            delta
+        })
+        .unwrap_or(counters);
+    let average_draw_us = previous
         .draw_micros
-        .checked_div(counters.redraws_completed)
+        .checked_div(previous.redraws_completed)
         .unwrap_or(0);
     tracing::debug!(
         target: "osdockx::perf",
-        redraws_requested = counters.redraws_requested,
-        redraws_completed = counters.redraws_completed,
+        redraws_requested = previous.redraws_requested,
+        redraws_completed = previous.redraws_completed,
         average_draw_us,
         max_draw_us = counters.draw_max_micros,
-        reflection_builds = counters.reflection_builds,
-        reflection_hits = counters.reflection_hits,
-        shelf_builds = counters.shelf_builds,
-        shelf_hits = counters.shelf_hits,
-        config_theme_parses = counters.config_theme_parses,
-        x11_property_requests = counters.x11_property_requests,
-        x11_reconciliations = counters.x11_reconciliations,
-        "aggregate dock performance"
+        reflection_builds = previous.reflection_builds,
+        reflection_hits = previous.reflection_hits,
+        shelf_builds = previous.shelf_builds,
+        shelf_hits = previous.shelf_hits,
+        config_theme_parses = previous.config_theme_parses,
+        x11_property_requests = previous.x11_property_requests,
+        x11_reconciliations = previous.x11_reconciliations,
+        motion_events = previous.motion_events,
+        frame_ticks = previous.frame_ticks,
+        visible_layout_changes = previous.visible_layout_changes,
+        paint_requests = previous.paint_requests,
+        window_synchronizations = previous.window_synchronizations,
+        shape_updates = previous.shape_updates,
+        animation_frames = previous.animation_frames,
+        "dock performance delta"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PerfSnapshot;
+
+    #[test]
+    fn snapshot_delta_saturates_each_counter() {
+        let current = PerfSnapshot {
+            motion_events: 12,
+            frame_ticks: 8,
+            paint_requests: 4,
+            ..PerfSnapshot::default()
+        };
+        let earlier = PerfSnapshot {
+            motion_events: 9,
+            frame_ticks: 10,
+            paint_requests: 1,
+            ..PerfSnapshot::default()
+        };
+
+        let delta = current.saturating_sub(earlier);
+        assert_eq!(delta.motion_events, 3);
+        assert_eq!(delta.frame_ticks, 0);
+        assert_eq!(delta.paint_requests, 3);
+    }
 }
