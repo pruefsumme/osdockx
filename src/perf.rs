@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(10);
+pub const X11_PERF_REQUEST_PROPERTY: &[u8] = b"_OSDOCKX_PERF_REQUEST";
+pub const X11_PERF_SNAPSHOT_PROPERTY: &[u8] = b"_OSDOCKX_PERF_SNAPSHOT";
+const X11_PERF_PROTOCOL_VERSION: u32 = 2;
+const X11_PERF_COUNTER_COUNT: usize = 21;
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
 static LAST_SUMMARY_MS: AtomicU64 = AtomicU64::new(0);
@@ -30,6 +34,9 @@ static PAINT_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static WINDOW_SYNCHRONIZATIONS: AtomicU64 = AtomicU64::new(0);
 static SHAPE_UPDATES: AtomicU64 = AtomicU64::new(0);
 static ANIMATION_FRAMES: AtomicU64 = AtomicU64::new(0);
+static X11_MODEL_UPDATES: AtomicU64 = AtomicU64::new(0);
+static VISUAL_MODEL_UPDATES: AtomicU64 = AtomicU64::new(0);
+static PRESENCE_MODEL_UPDATES: AtomicU64 = AtomicU64::new(0);
 static LAST_SUMMARY: OnceLock<std::sync::Mutex<PerfSnapshot>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -52,6 +59,9 @@ pub struct PerfSnapshot {
     pub window_synchronizations: u64,
     pub shape_updates: u64,
     pub animation_frames: u64,
+    pub x11_model_updates: u64,
+    pub visual_model_updates: u64,
+    pub presence_model_updates: u64,
 }
 
 impl PerfSnapshot {
@@ -93,7 +103,89 @@ impl PerfSnapshot {
             animation_frames: self
                 .animation_frames
                 .saturating_sub(earlier.animation_frames),
+            x11_model_updates: self
+                .x11_model_updates
+                .saturating_sub(earlier.x11_model_updates),
+            visual_model_updates: self
+                .visual_model_updates
+                .saturating_sub(earlier.visual_model_updates),
+            presence_model_updates: self
+                .presence_model_updates
+                .saturating_sub(earlier.presence_model_updates),
         }
+    }
+
+    pub fn encode_x11(self, nonce: u32) -> Vec<u32> {
+        let counters = [
+            self.redraws_requested,
+            self.redraws_completed,
+            self.draw_micros,
+            self.draw_max_micros,
+            self.reflection_builds,
+            self.reflection_hits,
+            self.shelf_builds,
+            self.shelf_hits,
+            self.config_theme_parses,
+            self.x11_property_requests,
+            self.x11_reconciliations,
+            self.motion_events,
+            self.frame_ticks,
+            self.visible_layout_changes,
+            self.paint_requests,
+            self.window_synchronizations,
+            self.shape_updates,
+            self.animation_frames,
+            self.x11_model_updates,
+            self.visual_model_updates,
+            self.presence_model_updates,
+        ];
+        let mut words = Vec::with_capacity(2 + counters.len() * 2);
+        words.extend([X11_PERF_PROTOCOL_VERSION, nonce]);
+        for counter in counters {
+            words.extend([counter as u32, (counter >> 32) as u32]);
+        }
+        words
+    }
+
+    pub fn decode_x11(words: &[u32]) -> Option<(u32, Self)> {
+        if words.len() != 2 + X11_PERF_COUNTER_COUNT * 2
+            || words.first().copied() != Some(X11_PERF_PROTOCOL_VERSION)
+        {
+            return None;
+        }
+        let nonce = words[1];
+        let mut cursor = 2;
+        let mut next = || {
+            let value = u64::from(words[cursor]) | (u64::from(words[cursor + 1]) << 32);
+            cursor += 2;
+            value
+        };
+        Some((
+            nonce,
+            Self {
+                redraws_requested: next(),
+                redraws_completed: next(),
+                draw_micros: next(),
+                draw_max_micros: next(),
+                reflection_builds: next(),
+                reflection_hits: next(),
+                shelf_builds: next(),
+                shelf_hits: next(),
+                config_theme_parses: next(),
+                x11_property_requests: next(),
+                x11_reconciliations: next(),
+                motion_events: next(),
+                frame_ticks: next(),
+                visible_layout_changes: next(),
+                paint_requests: next(),
+                window_synchronizations: next(),
+                shape_updates: next(),
+                animation_frames: next(),
+                x11_model_updates: next(),
+                visual_model_updates: next(),
+                presence_model_updates: next(),
+            },
+        ))
     }
 }
 
@@ -117,6 +209,9 @@ pub fn snapshot() -> PerfSnapshot {
         window_synchronizations: WINDOW_SYNCHRONIZATIONS.load(Ordering::Relaxed),
         shape_updates: SHAPE_UPDATES.load(Ordering::Relaxed),
         animation_frames: ANIMATION_FRAMES.load(Ordering::Relaxed),
+        x11_model_updates: X11_MODEL_UPDATES.load(Ordering::Relaxed),
+        visual_model_updates: VISUAL_MODEL_UPDATES.load(Ordering::Relaxed),
+        presence_model_updates: PRESENCE_MODEL_UPDATES.load(Ordering::Relaxed),
     }
 }
 
@@ -185,6 +280,18 @@ pub fn record_animation_frame() {
     ANIMATION_FRAMES.fetch_add(1, Ordering::Relaxed);
 }
 
+pub fn record_x11_model_update() {
+    X11_MODEL_UPDATES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_visual_model_update() {
+    VISUAL_MODEL_UPDATES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_presence_model_update() {
+    PRESENCE_MODEL_UPDATES.fetch_add(1, Ordering::Relaxed);
+}
+
 fn maybe_log_summary() {
     let elapsed_ms = STARTED
         .get_or_init(Instant::now)
@@ -234,6 +341,9 @@ fn maybe_log_summary() {
         window_synchronizations = previous.window_synchronizations,
         shape_updates = previous.shape_updates,
         animation_frames = previous.animation_frames,
+        x11_model_updates = previous.x11_model_updates,
+        visual_model_updates = previous.visual_model_updates,
+        presence_model_updates = previous.presence_model_updates,
         "dock performance delta"
     );
 }
@@ -261,5 +371,21 @@ mod tests {
         assert_eq!(delta.motion_events, 3);
         assert_eq!(delta.frame_ticks, 0);
         assert_eq!(delta.paint_requests, 3);
+    }
+
+    #[test]
+    fn x11_snapshot_protocol_round_trips_u64_counters() {
+        let snapshot = PerfSnapshot {
+            redraws_requested: u64::from(u32::MAX) + 17,
+            frame_ticks: 91,
+            window_synchronizations: 23,
+            animation_frames: u64::MAX - 4,
+            ..PerfSnapshot::default()
+        };
+
+        assert_eq!(
+            PerfSnapshot::decode_x11(&snapshot.encode_x11(1234)),
+            Some((1234, snapshot))
+        );
     }
 }

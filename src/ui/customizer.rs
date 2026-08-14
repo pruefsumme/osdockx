@@ -535,7 +535,6 @@ fn apply_customizer_config(
         state.last_geometry = None;
         state.last_reserved_geometry = None;
         state.last_shape_size = None;
-        state.last_shape_label = None;
         if save {
             save_runtime_config(&state);
         }

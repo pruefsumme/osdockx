@@ -104,6 +104,8 @@ struct Atoms {
     net_wm_strut_partial: Atom,
     net_wm_window_type: Atom,
     net_wm_window_type_dock: Atom,
+    osdockx_perf_request: Atom,
+    osdockx_perf_snapshot: Atom,
     utf8_string: Atom,
     wm_change_state: Atom,
     wm_class: Atom,
@@ -261,6 +263,29 @@ impl X11Backend {
                 &strut[0..4],
             )?;
         }
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    fn publish_perf_snapshot(&self) -> anyhow::Result<()> {
+        let Some(xid) = self.dock_window else {
+            return Ok(());
+        };
+        let nonce = self
+            .property_u32(
+                xid,
+                self.atoms.osdockx_perf_request,
+                AtomEnum::CARDINAL.into(),
+            )?
+            .unwrap_or(0);
+        let words = crate::perf::snapshot().encode_x11(nonce);
+        self.conn.change_property32(
+            PropMode::REPLACE,
+            xid,
+            self.atoms.osdockx_perf_snapshot,
+            AtomEnum::CARDINAL,
+            &words,
+        )?;
         self.conn.flush()?;
         Ok(())
     }
@@ -435,7 +460,13 @@ impl X11Backend {
                     }
                 }
                 Event::PropertyNotify(event) => {
-                    if let Some(field) = self.property_field(event.atom)
+                    if Some(event.window) == self.dock_window
+                        && event.atom == self.atoms.osdockx_perf_request
+                    {
+                        if let Err(error) = self.publish_perf_snapshot() {
+                            tracing::debug!("could not publish performance snapshot: {error:#}");
+                        }
+                    } else if let Some(field) = self.property_field(event.atom)
                         && self.update_window_field(event.window, field, &mut update)
                     {
                         update.changes.push(WindowCacheChange::Field {
@@ -822,6 +853,10 @@ impl PlatformBackend for X11Backend {
 
     fn set_dock_window(&mut self, xid: WindowId, geometry: DockGeometry) -> anyhow::Result<()> {
         self.dock_window = Some(xid);
+        self.conn.change_window_attributes(
+            xid,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+        )?;
         self.configure_dock(xid, geometry, true)
     }
 
@@ -931,6 +966,8 @@ impl Atoms {
             net_wm_strut_partial: intern(conn, b"_NET_WM_STRUT_PARTIAL")?,
             net_wm_window_type: intern(conn, b"_NET_WM_WINDOW_TYPE")?,
             net_wm_window_type_dock: intern(conn, b"_NET_WM_WINDOW_TYPE_DOCK")?,
+            osdockx_perf_request: intern(conn, crate::perf::X11_PERF_REQUEST_PROPERTY)?,
+            osdockx_perf_snapshot: intern(conn, crate::perf::X11_PERF_SNAPSHOT_PROPERTY)?,
             utf8_string: intern(conn, b"UTF8_STRING")?,
             wm_change_state: intern(conn, b"WM_CHANGE_STATE")?,
             wm_class: intern(conn, b"WM_CLASS")?,

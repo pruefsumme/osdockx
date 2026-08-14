@@ -159,7 +159,6 @@ struct Runtime {
     last_geometry: Option<DockGeometry>,
     last_reserved_geometry: Option<DockGeometry>,
     last_shape_size: Option<(i32, i32)>,
-    last_shape_label: Option<usize>,
     scale_factor: f64,
     context_menu: Option<Popover>,
     customizer_open: bool,
@@ -201,6 +200,12 @@ struct RootPointerSample {
     root: (i32, i32),
     geometry: DockGeometry,
     scale_bits: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ModelChange {
+    repaint: bool,
+    synchronize_window: bool,
 }
 
 impl RootPointerSample {
@@ -285,7 +290,7 @@ enum DockContextAction {
 }
 
 impl Runtime {
-    fn refresh_model(&mut self) -> bool {
+    fn refresh_model(&mut self) -> ModelChange {
         let (windows, invalidated_icons) = if let Some(backend) = self.backend.as_mut() {
             match backend.poll_window_updates() {
                 Ok(update) => (
@@ -306,29 +311,28 @@ impl Runtime {
         self.rebuild_model(windows)
     }
 
-    fn refresh_model_from_x11_events(&mut self) -> bool {
+    fn refresh_model_from_x11_events(&mut self) -> ModelChange {
         let Some(backend) = self.backend.as_mut() else {
-            return false;
+            return ModelChange::default();
         };
         let update = match backend.poll_window_updates() {
             Ok(update) => update,
             Err(error) => {
                 tracing::warn!("could not process X11 window events: {error:#}");
-                return false;
+                return ModelChange::default();
             }
         };
         for signature in update.invalidated_icon_signatures {
             self.icons.invalidate_window_icon(signature);
         }
         let Some(windows) = update.windows else {
-            return false;
+            return ModelChange::default();
         };
+        crate::perf::record_x11_model_update();
         self.rebuild_model(windows)
     }
 
-    fn rebuild_model(&mut self, windows: Vec<crate::model::WindowInfo>) -> bool {
-        let previous_layout = dock_layout_for_state(self, None);
-        let previous_rects = current_visible_icon_rects(self);
+    fn rebuild_model(&mut self, windows: Vec<crate::model::WindowInfo>) -> ModelChange {
         let mut next_model = DockModel::from_sources_with_applets(
             &self.config.pinned,
             &self.config.hidden,
@@ -338,28 +342,43 @@ impl Runtime {
         );
         next_model.apply_order(&self.config.item_order);
 
-        let icon_presence = build_icon_presence_transition(
-            &self.model,
-            &next_model,
-            previous_layout,
-            &previous_rects,
-            &self.config.dock,
-            &self.theme,
-        );
-        let indicator_animations = build_indicator_animations(
-            &self.model,
-            &next_model,
-            &self.indicator_animations,
-        );
-        let model_changed = self.model != next_model;
+        let presence_changed = !dock_model_presence_eq(&self.model, &next_model);
+        let repaint = !dock_model_visual_eq(&self.model, &next_model);
+        let icon_presence = presence_changed.then(|| {
+            let previous_layout = dock_layout_for_state(self, None);
+            let previous_rects = current_visible_icon_rects(self);
+            build_icon_presence_transition(
+                &self.model,
+                &next_model,
+                previous_layout,
+                &previous_rects,
+                &self.config.dock,
+                &self.theme,
+            )
+        });
+        if repaint {
+            self.indicator_animations = build_indicator_animations(
+                &self.model,
+                &next_model,
+                &self.indicator_animations,
+            );
+            crate::perf::record_visual_model_update();
+        }
+        if presence_changed {
+            crate::perf::record_presence_model_update();
+        }
 
         self.model = next_model;
-        if icon_presence.is_some() {
-            self.hover = None;
+        if presence_changed {
+            self.icon_presence = icon_presence.flatten();
+            if self.icon_presence.is_some() {
+                self.hover = None;
+            }
         }
-        self.icon_presence = icon_presence;
-        self.indicator_animations = indicator_animations;
-        model_changed
+        ModelChange {
+            repaint,
+            synchronize_window: presence_changed,
+        }
     }
 
     fn sync_custom_icons(&mut self) {
@@ -421,6 +440,32 @@ fn dock_layout_for_state(state: &Runtime, hover: Option<Point>) -> DockLayout {
         let config = rendered_dock_config(state);
         Renderer::layout_for(&state.model, &config, &state.theme, hover)
     })
+}
+
+fn dock_model_presence_eq(previous: &DockModel, next: &DockModel) -> bool {
+    previous.items.len() == next.items.len()
+        && previous
+            .items
+            .iter()
+            .zip(&next.items)
+            .all(|(previous, next)| previous.config_key() == next.config_key())
+}
+
+fn dock_model_visual_eq(previous: &DockModel, next: &DockModel) -> bool {
+    previous.items.len() == next.items.len()
+        && previous.items.iter().zip(&next.items).all(|(previous, next)| {
+            previous.id == next.id
+                && previous.name == next.name
+                && previous.desktop_id == next.desktop_id
+                && previous.startup_wm_class == next.startup_wm_class
+                && previous.icon_name == next.icon_name
+                && previous.window_icon == next.window_icon
+                && previous.pinned == next.pinned
+                && previous.is_running() == next.is_running()
+                && previous.active == next.active
+                && previous.urgent == next.urgent
+                && previous.badge == next.badge
+        })
 }
 
 fn rendered_dock_config(state: &Runtime) -> DockConfig {
@@ -820,7 +865,6 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         last_geometry: None,
         last_reserved_geometry: None,
         last_shape_size: None,
-        last_shape_label: None,
         scale_factor: 1.0,
         context_menu: None,
         customizer_open: false,
@@ -2210,9 +2254,8 @@ fn ensure_dock_frame_tick(
                 redraw,
                 synchronize_window,
                 keep_running,
-                pointer_consumed.then_some(
-                    state.pointer_over_separator || state.separator_resize.is_some(),
-                ),
+                pointer_consumed
+                    .then_some(state.pointer_over_separator || state.separator_resize.is_some()),
             )
         };
         if let Some(separator_hover) = separator_hover {
@@ -2291,7 +2334,6 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
     let layout = dock_layout_for_state(state, candidate_hover);
     let signature = DevicePixelLayoutSignature::new(&layout, config.icon_size, state.scale_factor);
     let visibly_changed = state.last_layout_signature.as_ref() != Some(&signature);
-    let label_or_input_region_changed = state.last_shape_label != signature.hovered_item;
     if visibly_changed {
         crate::perf::record_visible_layout_change();
     }
@@ -2299,11 +2341,7 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
         crate::perf::record_animation_frame();
     }
     let redraw = mandatory || animations_active || visibly_changed;
-    let synchronize_window = frame_requires_window_sync(
-        mandatory,
-        window_animation_frame,
-        label_or_input_region_changed,
-    );
+    let synchronize_window = frame_requires_window_sync(mandatory, window_animation_frame);
     if redraw {
         state.hover = candidate_hover;
         state.last_layout_signature = Some(signature);
@@ -2353,11 +2391,7 @@ fn root_pointer_sample_changed(
     changed
 }
 
-fn root_to_dock_point(
-    root: (i32, i32),
-    geometry: DockGeometry,
-    scale_factor: f64,
-) -> Point {
+fn root_to_dock_point(root: (i32, i32), geometry: DockGeometry, scale_factor: f64) -> Point {
     let scale_factor = scale_factor.max(1.0);
     Point {
         x: f64::from(root.0 - geometry.x) / scale_factor,
@@ -2378,12 +2412,8 @@ fn should_skip_unchanged_pointer_frame(
     input_pending && !pointer_changed && !mandatory && !animations_active
 }
 
-fn frame_requires_window_sync(
-    mandatory: bool,
-    window_animation_frame: bool,
-    label_or_input_region_changed: bool,
-) -> bool {
-    mandatory || window_animation_frame || label_or_input_region_changed
+fn frame_requires_window_sync(mandatory: bool, window_animation_frame: bool) -> bool {
+    mandatory || window_animation_frame
 }
 
 fn hover_for_latest_pointer(state: &Runtime) -> Option<Point> {
@@ -2809,7 +2839,6 @@ fn reset_runtime_defaults(
         state.last_geometry = None;
         state.last_reserved_geometry = None;
         state.last_shape_size = None;
-        state.last_shape_label = None;
         let (_, _, theme, watch_dirs) =
             resolve_runtime_theme(state.composited, &state.config.theme);
         state.theme = theme;
@@ -3134,15 +3163,17 @@ fn wire_x11_events(
     let drawing = drawing.clone();
     let gl_area = gl_area.clone();
     glib::timeout_add_local(X11_EVENT_POLL_INTERVAL, move || {
-        let changed = {
+        let change = {
             let mut state = state.borrow_mut();
             state.refresh_model_from_x11_events()
         };
-        if !changed {
+        if !change.repaint {
             return glib::ControlFlow::Continue;
         }
         ensure_icon_animation_if_needed(&state, &window, &drawing, &gl_area);
-        sync_dock_window(&state, &window, &drawing, &gl_area, true);
+        if change.synchronize_window {
+            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+        }
         queue_gl_render_if_enabled(&state, &gl_area);
         request_dock_draw(&drawing);
         glib::ControlFlow::Continue
@@ -3397,24 +3428,15 @@ fn sync_dock_window(
     let update_reserved_space = state.icon_presence.is_none();
     gl_area.set_visible(state.theme.renderer == RenderMode::Scene3d);
     move_dock(&mut state, update_reserved_space);
-    let shape_label = current_label_index(&state);
     if force_shape
         || size_changed
         || state.icon_presence.is_some()
         || state.last_shape_size != Some(size)
-        || state.last_shape_label != shape_label
     {
         shape_dock(&mut state);
         state.last_shape_size = Some(size);
-        state.last_shape_label = shape_label;
     }
     log_slow("sync-window", started.elapsed());
-}
-
-fn current_label_index(state: &Runtime) -> Option<usize> {
-    dock_layout_for_state(state, state.hover)
-        .label
-        .map(|label| label.item_index)
 }
 
 fn queue_gl_render_if_enabled(state: &Rc<RefCell<Runtime>>, gl_area: &GLArea) {
@@ -3468,6 +3490,7 @@ fn shape_dock(state: &mut Runtime) {
     let config = rendered_dock_config(state);
     let mut visual_regions =
         Renderer::visual_regions_for_layout(&state.model, &layout, &config, &state.theme);
+    visual_regions.push(stable_label_visual_region(state.desired_size(), config.icon_size));
     let mut input_regions = Renderer::input_regions_for_layout(&layout);
     if state.hidden {
         let reveal_strip = hidden_reveal_input_region(state.desired_size(), state.config.dock.edge);
@@ -3509,6 +3532,15 @@ fn shape_dock(state: &mut Runtime) {
         tracing::debug!("could not shape dock window: {error:#}");
     }
     log_slow("shape-dock", started.elapsed());
+}
+
+fn stable_label_visual_region(size: (i32, i32), icon_size: u32) -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        width: size.0.max(1) as f64,
+        height: (24.0_f64.max(icon_size as f64 * 0.34) + 8.0).min(size.1.max(1) as f64),
+    }
 }
 
 fn hidden_reveal_input_region(size: (i32, i32), edge: crate::config::DockEdge) -> Rect {
@@ -3688,6 +3720,25 @@ mod tests {
         assert!(!transition.has_insertions);
         let shared = Arc::clone(&transition.ghosts[0].item);
         assert!(Arc::ptr_eq(&shared, &transition.ghosts[0].item));
+    }
+
+    #[test]
+    fn non_visual_window_metadata_churn_does_not_change_dock_output() {
+        let previous = DockModel {
+            items: vec![item_with_state(Some("terminal.desktop"), false, true)],
+        };
+        let mut metadata_only = previous.clone();
+        metadata_only.items[0].windows[0].title = Some("CPU 37%".to_string());
+        metadata_only.items[0].windows[0].pid = Some(2000);
+        metadata_only.items[0].windows[0].minimized = true;
+
+        assert!(dock_model_presence_eq(&previous, &metadata_only));
+        assert!(dock_model_visual_eq(&previous, &metadata_only));
+
+        let mut visible_change = metadata_only;
+        visible_change.items[0].active = true;
+        assert!(dock_model_presence_eq(&previous, &visible_change));
+        assert!(!dock_model_visual_eq(&previous, &visible_change));
     }
 
     #[test]
@@ -4190,7 +4241,9 @@ mod tests {
         // A second GTK motion wake may contain different widget-relative
         // coordinates after a resize, but the root sample remains stable.
         assert!(!root_pointer_sample_changed(&mut previous, sample));
-        assert!(should_skip_unchanged_pointer_frame(true, false, false, false));
+        assert!(should_skip_unchanged_pointer_frame(
+            true, false, false, false
+        ));
     }
 
     #[test]
@@ -4215,21 +4268,37 @@ mod tests {
     #[test]
     fn paint_only_hover_does_not_request_window_management_work() {
         let visibly_changed = true;
-        let synchronize_window = frame_requires_window_sync(false, false, false);
+        let synchronize_window = frame_requires_window_sync(false, false);
 
         assert!(visibly_changed, "the hover frame still needs painting");
         assert!(
             !synchronize_window,
             "paint-only hover must not move, resize, reshape, or rewrite struts"
         );
-        assert!(frame_requires_window_sync(true, false, false));
-        assert!(frame_requires_window_sync(false, true, false));
-        assert!(frame_requires_window_sync(false, false, true));
+        assert!(frame_requires_window_sync(true, false));
+        assert!(frame_requires_window_sync(false, true));
+    }
+
+    #[test]
+    fn stable_label_envelope_covers_every_hover_label_without_input_changes() {
+        let size = (900, 180);
+        let envelope = stable_label_visual_region(size, 64);
+
+        assert_eq!(envelope.x, 0.0);
+        assert_eq!(envelope.y, 0.0);
+        assert_eq!(envelope.width, 900.0);
+        assert!(envelope.height >= 32.0);
+        assert!(!frame_requires_window_sync(false, false));
     }
 
     #[test]
     fn root_pointer_converts_to_dock_coordinates_at_every_edge_and_scale() {
-        for edge in [DockEdge::Bottom, DockEdge::Top, DockEdge::Left, DockEdge::Right] {
+        for edge in [
+            DockEdge::Bottom,
+            DockEdge::Top,
+            DockEdge::Left,
+            DockEdge::Right,
+        ] {
             for scale in [1.0, 2.0] {
                 let geometry = DockGeometry {
                     x: -300,
