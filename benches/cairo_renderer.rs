@@ -2,6 +2,7 @@ use cairo::{Context, Format, ImageSurface};
 use osdockx::config::Config;
 use osdockx::layout::Point;
 use osdockx::model::{DockItem, DockModel, WindowIcon};
+use osdockx::perf;
 use osdockx::renderer::{IconCache, Renderer};
 use osdockx::theme::Theme;
 use std::hint::black_box;
@@ -36,6 +37,20 @@ fn main() {
         let right = rest.icons.last().unwrap().rect.center_x();
         run_case(
             "sweep/reflections",
+            scale,
+            &model,
+            &config,
+            &theme,
+            |index| {
+                let progress = (index % ITERATIONS) as f64 / (ITERATIONS - 1) as f64;
+                Some(Point {
+                    x: left + (right - left) * progress,
+                    y: hover.y,
+                })
+            },
+        );
+        run_case(
+            "warm-sweep/reflections",
             scale,
             &model,
             &config,
@@ -86,7 +101,12 @@ fn run_case(
     let mut renderer = Renderer::new();
     let mut icons = IconCache::new();
 
-    for index in 0..12 {
+    let warmup_frames = if name == "warm-sweep/reflections" {
+        ITERATIONS
+    } else {
+        12
+    };
+    for index in 0..warmup_frames {
         renderer.draw(
             &cr,
             model,
@@ -97,6 +117,7 @@ fn run_case(
         );
     }
 
+    let counters_before = perf::snapshot();
     let mut samples = Vec::with_capacity(ITERATIONS);
     for index in 0..ITERATIONS {
         let started = Instant::now();
@@ -111,14 +132,38 @@ fn run_case(
         samples.push(started.elapsed());
     }
     samples.sort_unstable();
+    let counters_after = perf::snapshot();
     let total: Duration = samples.iter().copied().sum();
+    let reflection_builds = counters_after
+        .reflection_builds
+        .saturating_sub(counters_before.reflection_builds);
+    let reflection_hits = counters_after
+        .reflection_hits
+        .saturating_sub(counters_before.reflection_hits);
+    let shelf_builds = counters_after
+        .shelf_builds
+        .saturating_sub(counters_before.shelf_builds);
+    let shelf_hits = counters_after
+        .shelf_hits
+        .saturating_sub(counters_before.shelf_hits);
     println!(
-        "{name:30} {scale}x mean={:8.3}ms p50={:8.3}ms p95={:8.3}ms p99={:8.3}ms",
+        "{name:30} {scale}x mean={:8.3}ms p50={:8.3}ms p95={:8.3}ms p99={:8.3}ms reflection-hit={} shelf-hit={}",
         total.as_secs_f64() * 1_000.0 / samples.len() as f64,
         percentile(&samples, 0.50).as_secs_f64() * 1_000.0,
         percentile(&samples, 0.95).as_secs_f64() * 1_000.0,
         percentile(&samples, 0.99).as_secs_f64() * 1_000.0,
+        hit_rate(reflection_hits, reflection_builds),
+        hit_rate(shelf_hits, shelf_builds),
     );
+}
+
+fn hit_rate(hits: u64, builds: u64) -> String {
+    let lookups = hits + builds;
+    if lookups == 0 {
+        "n/a".to_string()
+    } else {
+        format!("{:.2}%", hits as f64 * 100.0 / lookups as f64)
+    }
 }
 
 fn percentile(samples: &[Duration], percentile: f64) -> Duration {
