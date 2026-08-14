@@ -1,3 +1,4 @@
+mod cache;
 mod geometry;
 mod leopard;
 mod material;
@@ -19,3 +20,4 @@ pub(super) use self::paths::{
     leopard_glass_plane_path, leopard_wedge_body_path,
 };
 pub(super) use self::separator::draw_shelf_section_separator;
+pub(super) use self::cache::ProceduralShelfCache;

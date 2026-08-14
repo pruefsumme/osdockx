@@ -26,9 +26,10 @@ use self::reflections::{draw_shelf_plane_reflections, render_icon_surface};
 #[cfg(test)]
 use self::shelf::leopard_glass_plane_path;
 use self::shelf::{
-    compute_perspective_shelf_geometry, draw_front_lip, draw_glass_highlight_overlay,
-    draw_glass_shelf_base, draw_leopard_shelf_strokes, draw_shelf_section_separator,
-    leopard_front_face_path, leopard_wedge_body_geometry, shelf_horizon_y,
+    ProceduralShelfCache, compute_perspective_shelf_geometry, draw_front_lip,
+    draw_glass_highlight_overlay, draw_glass_shelf_base, draw_leopard_shelf_strokes,
+    draw_shelf_section_separator, leopard_front_face_path, leopard_wedge_body_geometry,
+    shelf_horizon_y,
 };
 use crate::config::DockConfig;
 use crate::layout::{DockLayout, LayoutParams, Point, Rect, compute_layout, separator_hover_rect};
@@ -46,6 +47,7 @@ const ICON_HOVER_RETAIN_RATIO: f64 = 1.08;
 #[derive(Debug, Default)]
 pub struct Renderer {
     last_layout: DockLayout,
+    shelf_cache: ProceduralShelfCache,
 }
 
 impl Renderer {
@@ -273,7 +275,7 @@ impl Renderer {
         self.log_draw_time(started.elapsed(), frame.model.items.len());
     }
 
-    fn draw_layout(&self, cr: &Context, frame: DrawLayoutFrame<'_, '_>) {
+    fn draw_layout(&mut self, cr: &Context, frame: DrawLayoutFrame<'_, '_>) {
         let DrawLayoutFrame {
             model,
             layout,
@@ -283,6 +285,21 @@ impl Renderer {
             shelf_layer,
         } = frame;
         clear(cr);
+        if shelf_layer == ShelfLayer::Procedural
+            && icons.is_enabled()
+            && let Some((back, front)) =
+                self.shelf_cache
+                    .layers(layout, theme, cr.target().device_scale())
+        {
+            paint_cached_layer(cr, &back);
+            if theme.reflection_opacity > 0.0 {
+                draw_icon_reflections_on_shelf(cr, resolved_icons, layout, theme, icons);
+            }
+            paint_cached_layer(cr, &front);
+            draw_icons(cr, layout, resolved_icons, theme, icons);
+            draw_hover_label(cr, model, layout);
+            return;
+        }
         if shelf_layer != ShelfLayer::None {
             draw_glass_shelf_base(cr, &layout.shelf, theme);
             if theme.reflection_opacity > 0.0 {
@@ -332,6 +349,12 @@ impl Renderer {
         let cr = Context::new(surface).expect("cairo context");
         let mut icons = IconCache::disabled();
         self.draw(&cr, model, config, theme, None, &mut icons);
+    }
+}
+
+fn paint_cached_layer(cr: &Context, surface: &ImageSurface) {
+    if cr.set_source_surface(surface, 0.0, 0.0).is_ok() {
+        let _ = cr.paint();
     }
 }
 

@@ -257,6 +257,24 @@ fn cached_rasters_and_reflections_match_immediate_rendering() {
 }
 
 #[test]
+fn warm_frames_reuse_static_shelf_layers() {
+    let mut config = Config::default().normalized();
+    config.dock.icon_size = 64;
+    let theme = Theme::from_config(&config.theme);
+    let model = deterministic_fixture_model(4);
+    let size = Renderer::desired_size(&model, &config.dock, &theme, None);
+    let surface = ImageSurface::create(Format::ARgb32, size.0, size.1).unwrap();
+    let cr = Context::new(&surface).unwrap();
+    let mut renderer = Renderer::new();
+    let mut icons = IconCache::new();
+
+    renderer.draw(&cr, &model, &config.dock, &theme, None, &mut icons);
+    assert_eq!(renderer.shelf_cache.test_stats(), (1, 0));
+    renderer.draw(&cr, &model, &config.dock, &theme, None, &mut icons);
+    assert_eq!(renderer.shelf_cache.test_stats(), (1, 1));
+}
+
+#[test]
 fn renderer_paints_non_empty_surface() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);

@@ -130,6 +130,10 @@ impl IconCache {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    pub(super) fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub fn set_custom_icons(&mut self, custom_icons: &BTreeMap<String, String>) {
         if &self.custom_icons != custom_icons {
             self.custom_icons = custom_icons.clone();
