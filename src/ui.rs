@@ -136,7 +136,12 @@ struct Runtime {
     renderer: Renderer,
     scene3d: Scene3dRenderer,
     icons: IconCache,
+    latest_pointer: Option<Point>,
+    pointer_over_separator: bool,
     hover: Option<Point>,
+    last_layout_signature: Option<DevicePixelLayoutSignature>,
+    frame_update_pending: bool,
+    mandatory_frame_update: bool,
     dock_xid: Option<u32>,
     hidden: bool,
     last_size: Option<(i32, i32)>,
@@ -154,9 +159,65 @@ struct Runtime {
     icon_presence: Option<IconPresenceTransition>,
     indicator_animations: HashMap<String, IndicatorAnimation>,
     startup_reveal: Option<StartupReveal>,
-    animation_tick_running: bool,
-    startup_reveal_tick_running: bool,
+    frame_tick_running: bool,
     suppress_next_left_click: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DevicePixelLayoutSignature {
+    icons: Vec<DevicePixelIconSignature>,
+    hovered_item: Option<usize>,
+    label: Option<(usize, DevicePixelRect)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DevicePixelIconSignature {
+    item_index: usize,
+    rect: DevicePixelRect,
+    scale_pixels: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DevicePixelRect {
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+}
+
+impl DevicePixelLayoutSignature {
+    fn new(layout: &DockLayout, icon_size: u32, device_scale: f64) -> Self {
+        let device_scale = device_scale.max(1.0);
+        Self {
+            icons: layout
+                .icons
+                .iter()
+                .map(|icon| DevicePixelIconSignature {
+                    item_index: icon.item_index,
+                    rect: DevicePixelRect::new(icon.rect, device_scale),
+                    scale_pixels: (icon.scale * icon_size as f64 * device_scale).round() as i64,
+                })
+                .collect(),
+            hovered_item: layout.label.as_ref().map(|label| label.item_index),
+            label: layout.label.as_ref().map(|label| {
+                (
+                    label.item_index,
+                    DevicePixelRect::new(label.rect, device_scale),
+                )
+            }),
+        }
+    }
+}
+
+impl DevicePixelRect {
+    fn new(rect: Rect, device_scale: f64) -> Self {
+        Self {
+            x: (rect.x * device_scale).round() as i64,
+            y: (rect.y * device_scale).round() as i64,
+            width: (rect.width * device_scale).round() as i64,
+            height: (rect.height * device_scale).round() as i64,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -664,7 +725,12 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         renderer: Renderer::new(),
         scene3d: Scene3dRenderer::new(),
         icons: IconCache::new(),
+        latest_pointer: None,
+        pointer_over_separator: false,
         hover: None,
+        last_layout_signature: None,
+        frame_update_pending: false,
+        mandatory_frame_update: false,
         dock_xid: None,
         hidden: false,
         last_size: None,
@@ -682,8 +748,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         icon_presence: None,
         indicator_animations: HashMap::new(),
         startup_reveal: None,
-        animation_tick_running: false,
-        startup_reveal_tick_running: false,
+        frame_tick_running: false,
         suppress_next_left_click: false,
     };
     runtime.refresh_model();
@@ -754,6 +819,11 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
                 },
                 &mut icons,
             );
+            state.last_layout_signature = Some(DevicePixelLayoutSignature::new(
+                &layout,
+                config.icon_size,
+                state.scale_factor,
+            ));
             state.icons = icons;
         });
     }
@@ -1203,46 +1273,26 @@ fn wire_motion(
             let point = Point { x, y };
             let separator_hover;
             let resizing;
-            let hover_changed;
-            let label_changed;
-            let hidden_changed;
             {
                 let mut state = state.borrow_mut();
                 resizing = state.separator_resize.is_some();
                 if resizing {
                     separator_hover = false;
-                    hover_changed = false;
-                    label_changed = false;
-                    hidden_changed = false;
+                    state.latest_pointer = None;
+                    state.pointer_over_separator = false;
                     state.hover = None;
                 } else {
-                    let previous_hover = state.hover;
                     separator_hover = separator_hit_test(&state, point);
-                    let next_label = if state.context_menu.is_some()
-                        || state.drag.is_some()
-                        || state.icon_presence.is_some()
-                        || separator_hover
-                    {
-                        None
-                    } else {
-                        Renderer::hovered_item_index_for(
-                            &state.model,
-                            &state.config.dock,
-                            &state.theme,
-                            point,
-                            state.hover.is_some(),
-                        )
-                    };
-                    let next_hover = next_label.map(|_| point);
-                    hidden_changed = state.hidden;
+                    let hidden_changed = state.hidden;
                     if state.hidden {
                         state.hidden = false;
                         state.last_shape_size = None;
                         move_dock(&mut state, true);
                     }
-                    state.hover = next_hover;
-                    hover_changed = state.hover != previous_hover;
-                    label_changed = state.last_shape_label != next_label;
+                    state.latest_pointer = Some(point);
+                    state.pointer_over_separator = separator_hover;
+                    state.frame_update_pending = true;
+                    state.mandatory_frame_update |= hidden_changed;
                 }
             }
             set_separator_resize_cursor(&drawing, separator_hover || resizing);
@@ -1250,15 +1300,7 @@ fn wire_motion(
                 log_slow("motion", started.elapsed());
                 return;
             }
-            if hidden_changed || label_changed {
-                sync_dock_window(&state, &window, &drawing, &gl_area, false);
-            }
-            if !(hidden_changed || label_changed || hover_changed) {
-                log_slow("motion", started.elapsed());
-                return;
-            }
-            queue_gl_render_if_enabled(&state, &gl_area);
-            request_dock_draw(&drawing);
+            ensure_dock_frame_tick(&state, &window, &drawing, &gl_area);
             log_slow("motion", started.elapsed());
         });
     }
@@ -1274,7 +1316,10 @@ fn wire_motion(
             {
                 let mut state = state.borrow_mut();
                 resizing = state.separator_resize.is_some();
-                state.hover = None;
+                state.latest_pointer = None;
+                state.pointer_over_separator = false;
+                state.frame_update_pending = true;
+                state.mandatory_frame_update = true;
                 autohide = state.config.dock.autohide && state.context_menu.is_none() && !resizing;
                 delay = state.config.dock.hide_delay_ms;
             }
@@ -1283,8 +1328,7 @@ fn wire_motion(
                 return;
             }
             set_separator_resize_cursor(&drawing, false);
-            queue_gl_render_if_enabled(&state, &gl_area);
-            request_dock_draw(&drawing);
+            ensure_dock_frame_tick(&state, &window, &drawing, &gl_area);
 
             if autohide {
                 let state = Rc::clone(&state);
@@ -2040,44 +2084,123 @@ fn ensure_icon_animation_tick(
     drawing: &DrawingArea,
     gl_area: &GLArea,
 ) {
+    ensure_dock_frame_tick(state, window, drawing, gl_area);
+}
+
+fn ensure_dock_frame_tick(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
     {
         let mut state = state.borrow_mut();
-        if state.animation_tick_running {
+        if !claim_frame_tick(&mut state.frame_tick_running) {
             return;
         }
-        state.animation_tick_running = true;
     }
-
     let state = Rc::clone(state);
     let window = window.clone();
     let drawing = drawing.clone();
     let gl_area = gl_area.clone();
-    glib::timeout_add_local(ICON_ANIMATION_FRAME, move || {
-        let keep_running = {
+    drawing.clone().add_tick_callback(move |_, _| {
+        let (redraw, keep_running) = {
             let mut state = state.borrow_mut();
-            update_separator_resize_animation(&mut state);
-            prune_finished_icon_slide(&mut state);
-            prune_finished_icon_presence(&mut state);
-            prune_finished_indicator_animations(&mut state);
-            prune_finished_dock_size_transition(&mut state);
-            state.drag.is_some()
-                || state.separator_resize.is_some()
-                || state.icon_slide.is_some()
-                || state.icon_presence.is_some()
-                || !state.indicator_animations.is_empty()
-                || state.dock_size_transition.is_some()
+            advance_dock_frame(&mut state)
         };
-        sync_dock_window(&state, &window, &drawing, &gl_area, false);
-        queue_gl_render_if_enabled(&state, &gl_area);
-        request_dock_draw(&drawing);
+        if redraw {
+            sync_dock_window(&state, &window, &drawing, &gl_area, false);
+            queue_gl_render_if_enabled(&state, &gl_area);
+            request_dock_draw(&drawing);
+        }
 
         if keep_running {
             glib::ControlFlow::Continue
         } else {
-            state.borrow_mut().animation_tick_running = false;
+            state.borrow_mut().frame_tick_running = false;
             glib::ControlFlow::Break
         }
     });
+}
+
+fn claim_frame_tick(frame_tick_running: &mut bool) -> bool {
+    if *frame_tick_running {
+        false
+    } else {
+        *frame_tick_running = true;
+        true
+    }
+}
+
+fn advance_dock_frame(state: &mut Runtime) -> (bool, bool) {
+    let input_pending = std::mem::take(&mut state.frame_update_pending);
+    let mandatory = std::mem::take(&mut state.mandatory_frame_update);
+
+    update_separator_resize_animation(state);
+    prune_finished_icon_slide(state);
+    prune_finished_icon_presence(state);
+    prune_finished_indicator_animations(state);
+    prune_finished_dock_size_transition(state);
+    prune_finished_startup_reveal(state);
+
+    let animations_active = state.drag.is_some()
+        || state.separator_resize.is_some()
+        || state.icon_slide.is_some()
+        || state.icon_presence.is_some()
+        || !state.indicator_animations.is_empty()
+        || state.dock_size_transition.is_some()
+        || state.startup_reveal.is_some();
+    if !input_pending && !mandatory && !animations_active {
+        return (false, state.frame_update_pending);
+    }
+
+    let candidate_hover = if input_pending {
+        hover_for_latest_pointer(state)
+    } else {
+        state.hover
+    };
+    let config = rendered_dock_config(state);
+    let layout = dock_layout_for_state(state, candidate_hover);
+    let signature = DevicePixelLayoutSignature::new(&layout, config.icon_size, state.scale_factor);
+    let visibly_changed = state.last_layout_signature.as_ref() != Some(&signature);
+    let redraw = mandatory || animations_active || visibly_changed;
+    if redraw {
+        state.hover = candidate_hover;
+        state.last_layout_signature = Some(signature);
+    }
+
+    (redraw, animations_active || state.frame_update_pending)
+}
+
+fn hover_for_latest_pointer(state: &Runtime) -> Option<Point> {
+    if state.context_menu.is_some()
+        || state.drag.is_some()
+        || state.icon_presence.is_some()
+        || state.separator_resize.is_some()
+        || state.pointer_over_separator
+    {
+        return None;
+    }
+    let point = state.latest_pointer?;
+    let ratio = if state.hover.is_some() { 1.08 } else { 1.0 };
+    state
+        .renderer
+        .layout()
+        .icons
+        .iter()
+        .any(|icon| center_ratio_rect_for_ui(icon.rect, ratio).contains(point))
+        .then_some(point)
+}
+
+fn center_ratio_rect_for_ui(rect: Rect, ratio: f64) -> Rect {
+    let width = rect.width * ratio;
+    let height = rect.height * ratio;
+    Rect {
+        x: rect.x + (rect.width - width) * 0.5,
+        y: rect.y + (rect.height - height) * 0.5,
+        width,
+        height,
+    }
 }
 
 fn ensure_startup_reveal_tick(
@@ -2086,35 +2209,9 @@ fn ensure_startup_reveal_tick(
     drawing: &DrawingArea,
     gl_area: &GLArea,
 ) {
-    {
-        let mut state = state.borrow_mut();
-        if state.startup_reveal_tick_running || state.startup_reveal.is_none() {
-            return;
-        }
-        state.startup_reveal_tick_running = true;
+    if state.borrow().startup_reveal.is_some() {
+        ensure_dock_frame_tick(state, window, drawing, gl_area);
     }
-
-    let state = Rc::clone(state);
-    let window = window.clone();
-    let drawing = drawing.clone();
-    let gl_area = gl_area.clone();
-    glib::timeout_add_local(ICON_ANIMATION_FRAME, move || {
-        let keep_running = {
-            let mut state = state.borrow_mut();
-            prune_finished_startup_reveal(&mut state);
-            state.startup_reveal.is_some()
-        };
-        sync_dock_window(&state, &window, &drawing, &gl_area, false);
-        queue_gl_render_if_enabled(&state, &gl_area);
-        request_dock_draw(&drawing);
-
-        if keep_running {
-            glib::ControlFlow::Continue
-        } else {
-            state.borrow_mut().startup_reveal_tick_running = false;
-            glib::ControlFlow::Break
-        }
-    });
 }
 
 fn prune_finished_startup_reveal(state: &mut Runtime) {
@@ -3622,5 +3719,88 @@ mod tests {
 
         assert_eq!(physical_scalar(css, 2.0), css * 2);
         assert_eq!(physical_scalar(css, 1.0), css);
+    }
+
+    #[test]
+    fn repeated_frame_requests_coalesce_while_tick_is_pending() {
+        let mut running = false;
+        assert!(claim_frame_tick(&mut running));
+        assert!(!claim_frame_tick(&mut running));
+        assert!(!claim_frame_tick(&mut running));
+        running = false;
+        assert!(claim_frame_tick(&mut running));
+    }
+
+    #[test]
+    fn device_pixel_signature_ignores_invisible_subpixel_motion() {
+        let first = signature_test_layout(
+            Rect {
+                x: 10.05,
+                y: 20.05,
+                width: 64.05,
+                height: 64.05,
+            },
+            None,
+        );
+        let second = signature_test_layout(
+            Rect {
+                x: 10.10,
+                y: 20.10,
+                width: 64.10,
+                height: 64.10,
+            },
+            None,
+        );
+
+        assert_eq!(
+            DevicePixelLayoutSignature::new(&first, 64, 2.0),
+            DevicePixelLayoutSignature::new(&second, 64, 2.0)
+        );
+    }
+
+    #[test]
+    fn device_pixel_signature_detects_visible_or_hovered_item_changes() {
+        let rest = signature_test_layout(
+            Rect {
+                x: 10.0,
+                y: 20.0,
+                width: 64.0,
+                height: 64.0,
+            },
+            None,
+        );
+        let moved = signature_test_layout(
+            Rect {
+                x: 10.6,
+                ..rest.icons[0].rect
+            },
+            None,
+        );
+        let hovered = signature_test_layout(rest.icons[0].rect, Some(0));
+
+        let rest = DevicePixelLayoutSignature::new(&rest, 64, 1.0);
+        assert_ne!(rest, DevicePixelLayoutSignature::new(&moved, 64, 1.0));
+        assert_ne!(rest, DevicePixelLayoutSignature::new(&hovered, 64, 1.0));
+    }
+
+    fn signature_test_layout(rect: Rect, hovered_item: Option<usize>) -> DockLayout {
+        DockLayout {
+            icons: vec![crate::layout::IconLayout {
+                item_index: 0,
+                rect,
+                scale: rect.width / 64.0,
+            }],
+            label: hovered_item.map(|item_index| crate::layout::LabelLayout {
+                item_index,
+                rect: Rect {
+                    x: 4.0,
+                    y: 3.0,
+                    width: 80.0,
+                    height: 24.0,
+                },
+            }),
+            size: (100, 100),
+            ..DockLayout::default()
+        }
     }
 }
