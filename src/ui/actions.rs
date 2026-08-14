@@ -89,7 +89,7 @@ pub(super) fn reset_custom_icon(
             .custom_icons
             .retain(|key, _| !key.eq_ignore_ascii_case(item_key));
         save_runtime_config(&state);
-        state.icons.clear();
+        state.sync_custom_icons();
     }
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
@@ -111,7 +111,7 @@ pub(super) fn set_custom_icon_value(
             .custom_icons
             .insert(item_key.to_string(), value);
         save_runtime_config(&state);
-        state.icons.clear();
+        state.sync_custom_icons();
     }
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
@@ -235,7 +235,7 @@ pub(super) fn remove_folder_applet(
             .retain(|key, _| !key.eq_ignore_ascii_case(item_key));
         save_runtime_config(&state);
         state.refresh_model();
-        state.icons.clear();
+        state.sync_custom_icons();
     }
     ensure_icon_animation_if_needed(state, window, drawing, gl_area);
     sync_dock_window(state, window, drawing, gl_area, true);

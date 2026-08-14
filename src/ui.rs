@@ -69,6 +69,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const APP_ID: &str = autostart::APP_ID;
@@ -304,7 +305,6 @@ impl Runtime {
     }
 
     fn rebuild_model(&mut self, windows: Vec<crate::model::WindowInfo>) -> bool {
-        let previous_model = self.model.clone();
         let previous_layout = dock_layout_for_state(self, None);
         let previous_rects = current_visible_icon_rects(self);
         let mut next_model = DockModel::from_sources_with_applets(
@@ -317,16 +317,19 @@ impl Runtime {
         next_model.apply_order(&self.config.item_order);
 
         let icon_presence = build_icon_presence_transition(
-            &previous_model,
+            &self.model,
             &next_model,
             previous_layout,
             &previous_rects,
             &self.config.dock,
             &self.theme,
         );
-        let indicator_animations =
-            build_indicator_animations(&previous_model, &next_model, &self.indicator_animations);
-        let model_changed = previous_model != next_model;
+        let indicator_animations = build_indicator_animations(
+            &self.model,
+            &next_model,
+            &self.indicator_animations,
+        );
+        let model_changed = self.model != next_model;
 
         self.model = next_model;
         if icon_presence.is_some() {
@@ -335,6 +338,10 @@ impl Runtime {
         self.icon_presence = icon_presence;
         self.indicator_animations = indicator_animations;
         model_changed
+    }
+
+    fn sync_custom_icons(&mut self) {
+        self.icons.set_custom_icons(&self.config.custom_icons);
     }
 
     fn desired_size(&self) -> (i32, i32) {
@@ -480,7 +487,7 @@ fn build_icon_presence_transition(
                         .iter()
                         .find(|rect| rect.item_key.eq_ignore_ascii_case(&item_key))
                         .map(|rect| IconPresenceGhost {
-                            item: item.clone(),
+                            item: Arc::new(item.clone()),
                             rect: rect.rect,
                         })
                 })
@@ -759,6 +766,8 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         }
     };
 
+    let mut icons = IconCache::new();
+    icons.set_custom_icons(&config.custom_icons);
     let mut runtime = Runtime {
         config,
         config_path,
@@ -775,7 +784,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         model: DockModel::default(),
         renderer: Renderer::new(),
         scene3d: Scene3dRenderer::new(),
-        icons: IconCache::new(),
+        icons,
         latest_pointer: None,
         pointer_over_separator: false,
         hover: None,
@@ -843,39 +852,42 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         drawing.set_draw_func(move |_, cr, _, _| {
             let mut state = state.borrow_mut();
             let hover = state.hover;
-            let model = state.model.clone();
             let config = rendered_dock_config(&state);
-            let custom_icons = state.config.custom_icons.clone();
-            let theme = state.theme.clone();
             let layout = dock_layout_for_state(&state, hover);
             let icon_motion = icon_motion_frame(&state);
             let icon_presence = icon_presence_frame(&state);
             let indicator_animation = indicator_animation_frame(&state);
-            let mut icons = std::mem::take(&mut state.icons);
-            icons.set_custom_icons(&custom_icons);
             let shelf_layer = shelf_layer_for(&state);
-            state.renderer.draw_overlay(
-                cr,
-                RenderFrame {
-                    model: &model,
-                    config: &config,
-                    theme: &theme,
-                    hover,
-                    layout: Some(&layout),
-                    shelf_layer,
-                    icon_motion: icon_motion.as_ref(),
-                    icon_presence: icon_presence.as_ref(),
-                    indicator_animation: indicator_animation.as_ref(),
-                    container_size: None,
-                },
-                &mut icons,
-            );
+            {
+                let Runtime {
+                    model,
+                    theme,
+                    renderer,
+                    icons,
+                    ..
+                } = &mut *state;
+                renderer.draw_overlay(
+                    cr,
+                    RenderFrame {
+                        model,
+                        config: &config,
+                        theme,
+                        hover,
+                        layout: Some(&layout),
+                        shelf_layer,
+                        icon_motion: icon_motion.as_ref(),
+                        icon_presence: icon_presence.as_ref(),
+                        indicator_animation: indicator_animation.as_ref(),
+                        container_size: None,
+                    },
+                    icons,
+                );
+            }
             state.last_layout_signature = Some(DevicePixelLayoutSignature::new(
                 &layout,
                 config.icon_size,
                 state.scale_factor,
             ));
-            state.icons = icons;
         });
     }
     wire_gl_area(&state, &gl_area, &drawing);
@@ -1294,13 +1306,17 @@ fn wire_gl_area(state: &Rc<RefCell<Runtime>>, gl_area: &GLArea, drawing: &Drawin
     gl_area.connect_render(move |area, _| {
         let mut state = state.borrow_mut();
         let hover = state.hover;
-        let model = state.model.clone();
-        let theme = state.theme.clone();
         let layout = dock_layout_for_state(&state, hover);
-        let rendered = theme.renderer == RenderMode::Scene3d
-            && state
-                .scene3d
-                .render_gl_area(area, &layout, &model, &theme, hover);
+        let rendered = {
+            let Runtime {
+                scene3d,
+                model,
+                theme,
+                ..
+            } = &mut *state;
+            theme.renderer == RenderMode::Scene3d
+                && scene3d.render_gl_area(area, &layout, model, theme, hover)
+        };
         if !rendered {
             if let Some(reason) = state.scene3d.fallback_reason() {
                 tracing::debug!("using cairo shelf fallback: {reason}");
@@ -1959,7 +1975,7 @@ fn icon_presence_frame(state: &Runtime) -> Option<IconPresenceFrame> {
         .ghosts
         .iter()
         .map(|ghost| GhostIcon {
-            item: ghost.item.clone(),
+            item: Arc::clone(&ghost.item),
             rect: translate_rect(
                 ghost.rect,
                 0.0,
@@ -2674,7 +2690,7 @@ fn reset_runtime_custom_icons(
     {
         let mut state = state.borrow_mut();
         state.config.custom_icons.clear();
-        state.icons.clear();
+        state.sync_custom_icons();
         save_runtime_config(&state);
     }
 
@@ -3045,7 +3061,7 @@ fn refresh_config_and_theme(state: &mut Runtime, force_theme_assets: bool) -> bo
                     ));
                 }
                 if custom_icons_changed {
-                    state.icons.set_custom_icons(&state.config.custom_icons);
+                    state.sync_custom_icons();
                 }
                 if startup_changed && state.config.startup.prompt_seen {
                     apply_autostart_enabled(state.config.startup.autostart);
@@ -3486,6 +3502,47 @@ mod tests {
             urgent: false,
             badge: None,
         }
+    }
+
+    #[test]
+    fn presence_transition_retains_only_removed_items_as_shared_ghosts() {
+        let previous = DockModel {
+            items: vec![
+                item_with_state(Some("keep.desktop"), false, false),
+                item_with_state(Some("remove.desktop"), false, false),
+            ],
+        };
+        let next = DockModel {
+            items: vec![item_with_state(Some("keep.desktop"), false, false)],
+        };
+        let config = Config::default().normalized();
+        let theme = Theme::default();
+        let layout = Renderer::layout_for(&previous, &config.dock, &theme, None);
+        let rects = layout
+            .icons
+            .iter()
+            .map(|icon| IconMotionRect {
+                item_key: previous.items[icon.item_index].config_key(),
+                rect: icon.rect,
+            })
+            .collect::<Vec<_>>();
+
+        let transition = build_icon_presence_transition(
+            &previous,
+            &next,
+            layout,
+            &rects,
+            &config.dock,
+            &theme,
+        )
+        .expect("removal transition");
+
+        assert_eq!(transition.ghosts.len(), 1);
+        assert_eq!(transition.ghosts[0].item.config_key(), "remove.desktop");
+        assert!(transition.has_removals);
+        assert!(!transition.has_insertions);
+        let shared = Arc::clone(&transition.ghosts[0].item);
+        assert!(Arc::ptr_eq(&shared, &transition.ghosts[0].item));
     }
 
     #[test]

@@ -2,6 +2,7 @@ use super::STARTUP_REVEAL_DURATION;
 use crate::layout::{DockLayout, Point, Rect};
 use crate::model::DockItem;
 use crate::renderer::IconMotionRect;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -63,7 +64,7 @@ pub(super) struct IndicatorAnimation {
 
 #[derive(Debug, Clone)]
 pub(super) struct IconPresenceGhost {
-    pub(super) item: DockItem,
+    pub(super) item: Arc<DockItem>,
     pub(super) rect: Rect,
 }
 

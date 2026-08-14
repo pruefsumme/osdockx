@@ -37,6 +37,7 @@ use crate::model::{DockItem, DockModel};
 use crate::theme::{Color, Theme};
 use gtk::cairo::{Context, FontSlant, FontWeight, ImageSurface, LinearGradient};
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const SLOW_DRAW: Duration = Duration::from_millis(8);
@@ -421,7 +422,7 @@ pub struct IndicatorAnimationState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GhostIcon {
-    pub item: DockItem,
+    pub item: Arc<DockItem>,
     pub rect: Rect,
     pub alpha: f64,
 }
@@ -594,7 +595,7 @@ fn resolve_icons<'a>(
     if let Some(presence) = presence {
         resolved.extend(presence.ghosts.iter().map(|ghost| ResolvedIcon {
             item_key: ghost.item.config_key(),
-            item: Cow::Borrowed(&ghost.item),
+            item: Cow::Borrowed(ghost.item.as_ref()),
             rect: ghost.rect,
             alpha: ghost.alpha,
             indicator_visibility: if ghost.item.active || ghost.item.is_running() {
