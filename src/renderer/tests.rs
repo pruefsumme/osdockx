@@ -131,6 +131,132 @@ fn deterministic_rest_and_hover_renders_match_golden_hashes() {
 }
 
 #[test]
+fn warm_frames_reuse_completed_reflection_composites() {
+    let mut config = Config::default().normalized();
+    config.dock.icon_size = 64;
+    let theme = Theme::from_config(&config.theme);
+    let model = deterministic_fixture_model(15);
+    let size = Renderer::desired_size(&model, &config.dock, &theme, None);
+    let surface = ImageSurface::create(Format::ARgb32, size.0, size.1).unwrap();
+    let cr = Context::new(&surface).unwrap();
+    let mut renderer = Renderer::new();
+    let mut icons = IconCache::new();
+
+    renderer.draw(&cr, &model, &config.dock, &theme, None, &mut icons);
+    let first = icons.test_surface_counts();
+    renderer.draw(&cr, &model, &config.dock, &theme, None, &mut icons);
+    let second = icons.test_surface_counts();
+
+    assert!(first.1 >= model.items.len());
+    assert_eq!(first.1, second.1);
+}
+
+#[test]
+fn reflection_theme_changes_build_distinct_composites() {
+    let mut config = Config::default().normalized();
+    config.dock.icon_size = 64;
+    let theme = Theme::from_config(&config.theme);
+    let mut changed_theme = theme.clone();
+    changed_theme.reflection_blur += 0.05;
+    let model = deterministic_fixture_model(1);
+    let size = Renderer::desired_size(&model, &config.dock, &theme, None);
+    let surface = ImageSurface::create(Format::ARgb32, size.0, size.1).unwrap();
+    let cr = Context::new(&surface).unwrap();
+    let mut renderer = Renderer::new();
+    let mut icons = IconCache::new();
+
+    renderer.draw(&cr, &model, &config.dock, &theme, None, &mut icons);
+    let initial = icons.test_surface_counts().1;
+    renderer.draw(
+        &cr,
+        &model,
+        &config.dock,
+        &changed_theme,
+        None,
+        &mut icons,
+    );
+
+    assert!(icons.test_surface_counts().1 > initial);
+}
+
+#[test]
+fn translucent_presence_icons_bypass_reflection_composites() {
+    let mut config = Config::default().normalized();
+    config.dock.icon_size = 64;
+    let theme = Theme::from_config(&config.theme);
+    let model = deterministic_fixture_model(1);
+    let layout = Renderer::layout_for(&model, &config.dock, &theme, None);
+    let mut resolved = resolve_icons(&model, &layout, None, None, None);
+    resolved[0].alpha = 0.5;
+    let surface = ImageSurface::create(Format::ARgb32, layout.size.0, layout.size.1).unwrap();
+    let cr = Context::new(&surface).unwrap();
+    let mut icons = IconCache::new();
+
+    draw_icon_reflections_on_shelf(&cr, &resolved, &layout, &theme, &mut icons);
+
+    assert_eq!(icons.test_surface_counts().1, 0);
+}
+
+#[test]
+fn cached_rasters_and_reflections_match_immediate_rendering() {
+    let mut config = Config::default().normalized();
+    config.dock.icon_size = 64;
+    let theme = Theme::from_config(&config.theme);
+    let model = deterministic_fixture_model(4);
+    let size = Renderer::desired_size(&model, &config.dock, &theme, None);
+    let mut immediate = ImageSurface::create(Format::ARgb32, size.0, size.1).unwrap();
+    let mut cached = ImageSurface::create(Format::ARgb32, size.0, size.1).unwrap();
+
+    let immediate_cr = Context::new(&immediate).unwrap();
+    let mut renderer = Renderer::new();
+    renderer.draw(
+        &immediate_cr,
+        &model,
+        &config.dock,
+        &theme,
+        None,
+        &mut IconCache::disabled(),
+    );
+    drop(immediate_cr);
+    immediate.flush();
+
+    let cached_cr = Context::new(&cached).unwrap();
+    let mut renderer = Renderer::new();
+    renderer.draw(
+        &cached_cr,
+        &model,
+        &config.dock,
+        &theme,
+        None,
+        &mut IconCache::new(),
+    );
+    drop(cached_cr);
+    cached.flush();
+
+    let immediate_data = immediate.data().unwrap();
+    let cached_data = cached.data().unwrap();
+    let (max_index, max_difference) = immediate_data
+        .iter()
+        .zip(cached_data.iter())
+        .enumerate()
+        .map(|(index, (left, right))| (index, left.abs_diff(*right)))
+        .max_by_key(|(_, difference)| *difference)
+        .unwrap_or_default();
+    let signed_range = immediate_data
+        .iter()
+        .zip(cached_data.iter())
+        .map(|(left, right)| i16::from(*right) - i16::from(*left))
+        .fold((0_i16, 0_i16), |(min, max), value| {
+            (min.min(value), max.max(value))
+        });
+    assert!(
+        max_difference <= 4,
+        "maximum channel delta was {max_difference} at byte {max_index}: {} versus {}; signed range {signed_range:?}",
+        immediate_data[max_index], cached_data[max_index]
+    );
+}
+
+#[test]
 fn renderer_paints_non_empty_surface() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);

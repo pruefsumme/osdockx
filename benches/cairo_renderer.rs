@@ -84,7 +84,7 @@ fn run_case(
     surface.set_device_scale(scale as f64, scale as f64);
     let cr = Context::new(&surface).expect("benchmark context");
     let mut renderer = Renderer::new();
-    let mut icons = IconCache::disabled();
+    let mut icons = IconCache::new();
 
     for index in 0..12 {
         renderer.draw(

@@ -1218,6 +1218,7 @@ fn wire_scale_factor_changes(
                 false
             } else {
                 state.scale_factor = new_scale;
+                state.icons.invalidate_surfaces();
                 state.last_size = None;
                 state.last_geometry = None;
                 state.last_reserved_geometry = None;

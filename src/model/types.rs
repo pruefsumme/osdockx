@@ -34,6 +34,10 @@ impl WindowIcon {
             signature: hasher.finish(),
         }
     }
+
+    pub(crate) fn signature(&self) -> u64 {
+        self.signature
+    }
 }
 
 impl PartialEq for WindowIcon {
