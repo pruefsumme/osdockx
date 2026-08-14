@@ -1455,7 +1455,6 @@ fn wire_motion(
                     }
                 });
             }
-            sync_dock_window(&state, &window, &drawing, &gl_area, false);
         });
     }
     drawing.add_controller(motion);
@@ -2203,11 +2202,13 @@ fn ensure_dock_frame_tick(
     let gl_area = gl_area.clone();
     drawing.clone().add_tick_callback(move |_, _| {
         crate::perf::record_frame_tick();
-        let (redraw, keep_running, separator_hover) = {
+        let (redraw, synchronize_window, keep_running, separator_hover) = {
             let mut state = state.borrow_mut();
-            let (redraw, keep_running, pointer_consumed) = advance_dock_frame(&mut state);
+            let (redraw, synchronize_window, keep_running, pointer_consumed) =
+                advance_dock_frame(&mut state);
             (
                 redraw,
+                synchronize_window,
                 keep_running,
                 pointer_consumed.then_some(
                     state.pointer_over_separator || state.separator_resize.is_some(),
@@ -2218,7 +2219,9 @@ fn ensure_dock_frame_tick(
             set_separator_resize_cursor(&drawing, separator_hover);
         }
         if redraw {
-            sync_dock_window(&state, &window, &drawing, &gl_area, false);
+            if synchronize_window {
+                sync_dock_window(&state, &window, &drawing, &gl_area, false);
+            }
             queue_gl_render_if_enabled(&state, &gl_area);
             request_dock_draw(&drawing);
         }
@@ -2241,9 +2244,10 @@ fn claim_frame_tick(frame_tick_running: &mut bool) -> bool {
     }
 }
 
-fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool) {
+fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
     let input_pending = std::mem::take(&mut state.frame_update_pending);
     let mandatory = std::mem::take(&mut state.mandatory_frame_update);
+    let window_animation_was_active = window_animation_active(state);
 
     update_separator_resize_animation(state);
     prune_finished_icon_slide(state);
@@ -2259,6 +2263,7 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool) {
         || !state.indicator_animations.is_empty()
         || state.dock_size_transition.is_some()
         || state.startup_reveal.is_some();
+    let window_animation_frame = window_animation_was_active || window_animation_active(state);
     let pointer_changed = input_pending && refresh_pointer_from_root(state);
     if pointer_changed {
         state.pointer_over_separator = state
@@ -2266,7 +2271,7 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool) {
             .is_some_and(|point| separator_hit_test(state, point));
     }
     if !input_pending && !mandatory && !animations_active {
-        return (false, state.frame_update_pending, false);
+        return (false, false, state.frame_update_pending, false);
     }
     if should_skip_unchanged_pointer_frame(
         input_pending,
@@ -2274,7 +2279,7 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool) {
         mandatory,
         animations_active,
     ) {
-        return (false, state.frame_update_pending, true);
+        return (false, false, state.frame_update_pending, true);
     }
 
     let candidate_hover = if pointer_changed {
@@ -2286,6 +2291,7 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool) {
     let layout = dock_layout_for_state(state, candidate_hover);
     let signature = DevicePixelLayoutSignature::new(&layout, config.icon_size, state.scale_factor);
     let visibly_changed = state.last_layout_signature.as_ref() != Some(&signature);
+    let label_or_input_region_changed = state.last_shape_label != signature.hovered_item;
     if visibly_changed {
         crate::perf::record_visible_layout_change();
     }
@@ -2293,6 +2299,11 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool) {
         crate::perf::record_animation_frame();
     }
     let redraw = mandatory || animations_active || visibly_changed;
+    let synchronize_window = frame_requires_window_sync(
+        mandatory,
+        window_animation_frame,
+        label_or_input_region_changed,
+    );
     if redraw {
         state.hover = candidate_hover;
         state.last_layout_signature = Some(signature);
@@ -2300,9 +2311,19 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool) {
 
     (
         redraw,
+        synchronize_window,
         frame_should_continue(animations_active, state.frame_update_pending),
         input_pending,
     )
+}
+
+fn window_animation_active(state: &Runtime) -> bool {
+    state.drag.is_some()
+        || state.separator_resize.is_some()
+        || state.icon_slide.is_some()
+        || state.icon_presence.is_some()
+        || state.dock_size_transition.is_some()
+        || state.startup_reveal.is_some()
 }
 
 fn refresh_pointer_from_root(state: &mut Runtime) -> bool {
@@ -2355,6 +2376,14 @@ fn should_skip_unchanged_pointer_frame(
     animations_active: bool,
 ) -> bool {
     input_pending && !pointer_changed && !mandatory && !animations_active
+}
+
+fn frame_requires_window_sync(
+    mandatory: bool,
+    window_animation_frame: bool,
+    label_or_input_region_changed: bool,
+) -> bool {
+    mandatory || window_animation_frame || label_or_input_region_changed
 }
 
 fn hover_for_latest_pointer(state: &Runtime) -> Option<Point> {
@@ -4181,6 +4210,21 @@ mod tests {
         assert!(root_pointer_sample_changed(&mut previous, sample));
         assert!(!root_pointer_sample_changed(&mut previous, sample));
         assert!(!frame_should_continue(false, false));
+    }
+
+    #[test]
+    fn paint_only_hover_does_not_request_window_management_work() {
+        let visibly_changed = true;
+        let synchronize_window = frame_requires_window_sync(false, false, false);
+
+        assert!(visibly_changed, "the hover frame still needs painting");
+        assert!(
+            !synchronize_window,
+            "paint-only hover must not move, resize, reshape, or rewrite struts"
+        );
+        assert!(frame_requires_window_sync(true, false, false));
+        assert!(frame_requires_window_sync(false, true, false));
+        assert!(frame_requires_window_sync(false, false, true));
     }
 
     #[test]
