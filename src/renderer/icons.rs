@@ -137,6 +137,48 @@ impl IconCache {
         self.reflection_cache.clear();
     }
 
+    pub fn invalidate_window_icon(&mut self, signature: u64) {
+        let raster_keys = self
+            .raster_cache
+            .keys()
+            .filter(|key| {
+                matches!(
+                    key.source,
+                    IconSourceIdentity::Window {
+                        signature: cached
+                    } if cached == signature
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in raster_keys {
+            if let Some(entry) = self.raster_cache.remove(&key) {
+                self.surface_bytes = self.surface_bytes.saturating_sub(entry.bytes);
+            }
+        }
+        let reflection_keys = self
+            .reflection_cache
+            .keys()
+            .filter(|key| {
+                matches!(
+                    key.raster.source,
+                    IconSourceIdentity::Window {
+                        signature: cached
+                    } if cached == signature
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in reflection_keys {
+            if let Some(entry) = self.reflection_cache.remove(&key) {
+                self.surface_bytes = self.surface_bytes.saturating_sub(entry.bytes);
+            }
+        }
+        if let Some(entry) = self.window_surfaces.remove(&signature) {
+            self.surface_bytes = self.surface_bytes.saturating_sub(entry.bytes);
+        }
+    }
+
     pub(super) fn is_enabled(&self) -> bool {
         self.enabled
     }
@@ -916,5 +958,19 @@ mod tests {
         assert_eq!(cache.test_surface_bytes(), 0);
         let _ = cache.raster_surface(&item, 64, (1.0, 1.0)).unwrap();
         assert_eq!(cache.test_surface_counts(), (1, 0, 1));
+    }
+
+    #[test]
+    fn window_icon_invalidation_removes_only_matching_surfaces() {
+        let mut cache = IconCache::new();
+        let item = window_icon_item();
+        let signature = item.window_icon.as_ref().unwrap().signature();
+        let _ = cache.raster_surface(&item, 64, (1.0, 1.0)).unwrap();
+        assert_eq!(cache.test_surface_counts(), (1, 0, 1));
+
+        cache.invalidate_window_icon(signature);
+
+        assert_eq!(cache.test_surface_counts(), (0, 0, 0));
+        assert_eq!(cache.test_surface_bytes(), 0);
     }
 }

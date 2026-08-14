@@ -88,6 +88,7 @@ const CUSTOMIZER_HEIGHT: i32 = 620;
 const CUSTOMIZER_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(120);
 const FILE_RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
 const FILE_MONITOR_RECOVERY: Duration = Duration::from_secs(5);
+const X11_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const ADD_APPLICATION_MENU_WIDTH: i32 = 292;
 const ADD_APPLICATION_MENU_VISIBLE_ROWS: usize = 12;
 const APPLET_FAN_WIDTH: i32 = 390;
@@ -262,20 +263,50 @@ enum DockContextAction {
 
 impl Runtime {
     fn refresh_model(&mut self) -> bool {
+        let (windows, invalidated_icons) = if let Some(backend) = self.backend.as_mut() {
+            match backend.poll_window_updates() {
+                Ok(update) => (
+                    update.windows.unwrap_or_else(|| backend.cached_windows()),
+                    update.invalidated_icon_signatures,
+                ),
+                Err(error) => {
+                    tracing::warn!("could not refresh X11 windows: {error:#}");
+                    (backend.cached_windows(), Vec::new())
+                }
+            }
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        for signature in invalidated_icons {
+            self.icons.invalidate_window_icon(signature);
+        }
+        self.rebuild_model(windows)
+    }
+
+    fn refresh_model_from_x11_events(&mut self) -> bool {
+        let Some(backend) = self.backend.as_mut() else {
+            return false;
+        };
+        let update = match backend.poll_window_updates() {
+            Ok(update) => update,
+            Err(error) => {
+                tracing::warn!("could not process X11 window events: {error:#}");
+                return false;
+            }
+        };
+        for signature in update.invalidated_icon_signatures {
+            self.icons.invalidate_window_icon(signature);
+        }
+        let Some(windows) = update.windows else {
+            return false;
+        };
+        self.rebuild_model(windows)
+    }
+
+    fn rebuild_model(&mut self, windows: Vec<crate::model::WindowInfo>) -> bool {
         let previous_model = self.model.clone();
         let previous_layout = dock_layout_for_state(self, None);
         let previous_rects = current_visible_icon_rects(self);
-        let windows = self
-            .backend
-            .as_mut()
-            .and_then(|backend| match backend.poll_windows() {
-                Ok(windows) => Some(windows),
-                Err(error) => {
-                    tracing::warn!("could not refresh X11 windows: {error:#}");
-                    None
-                }
-            })
-            .unwrap_or_default();
         let mut next_model = DockModel::from_sources_with_applets(
             &self.config.pinned,
             &self.config.hidden,
@@ -716,7 +747,12 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     }
     let desktop_index = DesktopIndex::load();
     let backend = match X11Backend::new() {
-        Ok(backend) => Some(backend),
+        Ok(mut backend) => {
+            backend.set_reconciliation_interval(Duration::from_millis(
+                config.dock.refresh_ms as u64,
+            ));
+            Some(backend)
+        }
         Err(error) => {
             tracing::warn!("X11 backend unavailable; running as a plain GTK window: {error:#}");
             None
@@ -849,7 +885,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_icon_drag(&state, &window, &drawing, &gl_area);
     wire_separator_resize_drag(&state, &window, &drawing, &gl_area);
     wire_realize(&state, &window, &drawing, &gl_area);
-    wire_refresh(&state, &window, &drawing, &gl_area);
+    wire_x11_events(&state, &window, &drawing, &gl_area);
     install_file_monitors(&state, &window, &drawing, &gl_area);
     wire_file_monitor_recovery(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
@@ -2928,27 +2964,20 @@ fn log_monitor_fallback_once(state: &mut Runtime) {
     }
 }
 
-fn wire_refresh(
+fn wire_x11_events(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
     drawing: &DrawingArea,
     gl_area: &GLArea,
 ) {
-    let refresh = state.borrow().config.dock.refresh_ms;
     let state = Rc::clone(state);
     let window = window.clone();
     let drawing = drawing.clone();
     let gl_area = gl_area.clone();
-    glib::timeout_add_local(Duration::from_millis(refresh as u64), move || {
+    glib::timeout_add_local(X11_EVENT_POLL_INTERVAL, move || {
         let changed = {
             let mut state = state.borrow_mut();
-            prune_finished_icon_slide(&mut state);
-            prune_finished_icon_presence(&mut state);
-            if !should_run_periodic_refresh(&state) {
-                false
-            } else {
-                state.refresh_model()
-            }
+            state.refresh_model_from_x11_events()
         };
         if !changed {
             return glib::ControlFlow::Continue;
@@ -2976,18 +3005,6 @@ fn ensure_icon_animation_if_needed(
     if needs_tick {
         ensure_icon_animation_tick(state, window, drawing, gl_area);
     }
-}
-
-fn should_run_periodic_refresh(state: &Runtime) -> bool {
-    state.context_menu.is_none()
-        && state.drag.is_none()
-        && state.separator_resize.is_none()
-        && state.icon_slide.is_none()
-        && state.icon_presence.is_none()
-        && state.indicator_animations.is_empty()
-        && state.dock_size_transition.is_none()
-        && state.startup_reveal.is_none()
-        && !state.customizer_open
 }
 
 fn wire_icon_theme_changes(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea, gl_area: &GLArea) {
@@ -3022,6 +3039,11 @@ fn refresh_config_and_theme(state: &mut Runtime, force_theme_assets: bool) -> bo
                 let startup_changed = state.config.startup != config.startup;
                 let custom_icons_changed = state.config.custom_icons != config.custom_icons;
                 state.config = config;
+                if let Some(backend) = state.backend.as_mut() {
+                    backend.set_reconciliation_interval(Duration::from_millis(
+                        state.config.dock.refresh_ms as u64,
+                    ));
+                }
                 if custom_icons_changed {
                     state.icons.set_custom_icons(&state.config.custom_icons);
                 }

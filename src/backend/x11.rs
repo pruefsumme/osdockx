@@ -6,8 +6,10 @@ use anyhow::Context;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection;
+use x11rb::protocol::Event;
 use x11rb::protocol::randr::{ConnectionExt as RandrConnectionExt, MonitorInfo};
 use x11rb::protocol::shape::{ConnectionExt as ShapeConnectionExt, SK, SO};
 use x11rb::protocol::xproto::{
@@ -25,7 +27,61 @@ pub struct X11Backend {
     root: Window,
     atoms: Atoms,
     dock_window: Option<WindowId>,
-    window_icon_cache: HashMap<WindowId, WindowIcon>,
+    metadata: WindowMetadataCache,
+    reconciliation_interval: Duration,
+}
+
+const FULL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Default)]
+struct WindowMetadataCache {
+    client_ids: Vec<WindowId>,
+    active_window: Option<WindowId>,
+    windows: HashMap<WindowId, CachedWindowMetadata>,
+    initialized: bool,
+    last_reconciliation: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct CachedWindowMetadata {
+    net_title: Option<String>,
+    legacy_title: Option<String>,
+    class: Option<String>,
+    pid: Option<u32>,
+    executable: Option<String>,
+    workspace: Option<u32>,
+    icon: Option<WindowIcon>,
+    urgent: bool,
+    minimized: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowMetadataField {
+    State,
+    NetTitle,
+    LegacyTitle,
+    Class,
+    Pid,
+    Workspace,
+    Icon,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WindowCacheChange {
+    ClientList,
+    ActiveWindow,
+    Field {
+        xid: WindowId,
+        field: WindowMetadataField,
+    },
+    Destroyed(WindowId),
+}
+
+#[derive(Debug, Default)]
+pub struct X11WindowUpdate {
+    pub windows: Option<Vec<WindowInfo>>,
+    pub invalidated_icon_signatures: Vec<u64>,
+    changes: Vec<WindowCacheChange>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +112,68 @@ struct Atoms {
     wm_protocols: Atom,
 }
 
+impl CachedWindowMetadata {
+    fn title(&self) -> Option<String> {
+        self.net_title
+            .clone()
+            .or_else(|| self.legacy_title.clone())
+    }
+
+    fn as_window_info(&self, xid: WindowId, active_window: Option<WindowId>) -> Option<WindowInfo> {
+        let title = self.title();
+        if title.is_none() && self.class.is_none() {
+            return None;
+        }
+        Some(WindowInfo {
+            xid,
+            title,
+            class: self.class.clone(),
+            pid: self.pid,
+            executable: self.executable.clone(),
+            workspace: self.workspace,
+            icon: self.icon.clone(),
+            active: active_window == Some(xid),
+            urgent: self.urgent,
+            minimized: self.minimized,
+        })
+    }
+}
+
+impl WindowMetadataCache {
+    fn visible_windows(&self, dock_window: Option<WindowId>) -> Vec<WindowInfo> {
+        self.client_ids
+            .iter()
+            .filter(|xid| Some(**xid) != dock_window)
+            .filter_map(|xid| {
+                self.windows
+                    .get(xid)
+                    .and_then(|metadata| metadata.as_window_info(*xid, self.active_window))
+            })
+            .collect()
+    }
+
+    fn icon_signature(&self, xid: WindowId) -> Option<u64> {
+        self.windows
+            .get(&xid)
+            .and_then(|metadata| metadata.icon.as_ref())
+            .map(WindowIcon::signature)
+    }
+
+    fn replace_from_reconciliation(
+        &mut self,
+        client_ids: Vec<WindowId>,
+        active_window: Option<WindowId>,
+        windows: HashMap<WindowId, CachedWindowMetadata>,
+        reconciled_at: Instant,
+    ) {
+        self.client_ids = client_ids;
+        self.active_window = active_window;
+        self.windows = windows;
+        self.initialized = true;
+        self.last_reconciliation = Some(reconciled_at);
+    }
+}
+
 impl X11Backend {
     pub fn new() -> anyhow::Result<Self> {
         let (conn, screen_num) = x11rb::connect(None).context("connect to X11")?;
@@ -74,8 +192,13 @@ impl X11Backend {
             root,
             atoms,
             dock_window: None,
-            window_icon_cache: HashMap::new(),
+            metadata: WindowMetadataCache::default(),
+            reconciliation_interval: FULL_RECONCILIATION_INTERVAL,
         })
+    }
+
+    pub fn set_reconciliation_interval(&mut self, interval: Duration) {
+        self.reconciliation_interval = interval.max(FULL_RECONCILIATION_INTERVAL);
     }
 
     fn configure_dock(
@@ -200,65 +323,49 @@ impl X11Backend {
         })
     }
 
-    fn window_info(
-        &mut self,
-        xid: WindowId,
-        active_window: Option<WindowId>,
-    ) -> anyhow::Result<Option<WindowInfo>> {
-        if Some(xid) == self.dock_window {
-            return Ok(None);
+    fn window_list_for_property(&self, property: Atom) -> anyhow::Result<Vec<WindowId>> {
+        if property == self.atoms.net_client_list {
+            self.property_u32_list(self.root, property, AtomEnum::WINDOW.into())
+        } else {
+            self.window_list()
         }
+    }
 
+    fn fetch_window_metadata(&self, xid: WindowId) -> CachedWindowMetadata {
         let states = self
             .property_u32_list(xid, self.atoms.net_wm_state, AtomEnum::ATOM.into())
             .unwrap_or_default()
             .into_iter()
             .collect::<HashSet<_>>();
-        let title = self.window_title(xid);
-        let class = self.window_class(xid);
-        if title.is_none() && class.is_none() {
-            return Ok(None);
-        }
-
         let pid = self
             .property_u32(xid, self.atoms.net_wm_pid, AtomEnum::CARDINAL.into())
             .ok()
             .flatten();
-
-        Ok(Some(WindowInfo {
-            xid,
-            title,
-            class,
+        CachedWindowMetadata {
+            net_title: self
+                .property_string(xid, self.atoms.net_wm_name, self.atoms.utf8_string)
+                .ok()
+                .flatten(),
+            legacy_title: self
+                .property_string(xid, self.atoms.wm_name, AtomEnum::STRING.into())
+                .ok()
+                .flatten(),
+            class: self.window_class(xid),
             pid,
             executable: pid.and_then(executable_for_pid),
             workspace: self
                 .property_u32(xid, self.atoms.net_wm_desktop, AtomEnum::CARDINAL.into())
                 .ok()
                 .flatten(),
-            icon: self.window_icon(xid),
-            active: active_window == Some(xid),
+            icon: self.fetch_window_icon(xid),
             urgent: states.contains(&self.atoms.net_wm_state_demands_attention),
             minimized: states.contains(&self.atoms.net_wm_state_hidden),
-        }))
-    }
-
-    fn window_title(&self, xid: WindowId) -> Option<String> {
-        self.property_string(xid, self.atoms.net_wm_name, self.atoms.utf8_string)
-            .ok()
-            .flatten()
-            .or_else(|| {
-                self.property_string(xid, self.atoms.wm_name, AtomEnum::STRING.into())
-                    .ok()
-                    .flatten()
-            })
+        }
     }
 
     fn window_class(&self, xid: WindowId) -> Option<String> {
         let reply = self
-            .conn
-            .get_property(false, xid, self.atoms.wm_class, AtomEnum::STRING, 0, 1024)
-            .ok()?
-            .reply()
+            .get_property(xid, self.atoms.wm_class, AtomEnum::STRING.into(), 1024)
             .ok()?;
         let bytes = reply.value;
         let mut parts = bytes
@@ -269,16 +376,265 @@ impl X11Backend {
         String::from_utf8(class.to_vec()).ok()
     }
 
-    fn window_icon(&mut self, xid: WindowId) -> Option<WindowIcon> {
-        if let Some(icon) = self.window_icon_cache.get(&xid) {
-            return Some(icon.clone());
-        }
+    fn fetch_window_icon(&self, xid: WindowId) -> Option<WindowIcon> {
         let values = self
             .property_u32_list(xid, self.atoms.net_wm_icon, AtomEnum::CARDINAL.into())
             .ok()?;
-        let icon = parse_window_icon(&values)?;
-        self.window_icon_cache.insert(xid, icon.clone());
-        Some(icon)
+        parse_window_icon(&values)
+    }
+
+    fn select_client_events(&self, xid: WindowId) {
+        let _ = self.conn.change_window_attributes(
+            xid,
+            &ChangeWindowAttributesAux::new()
+                .event_mask(EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY),
+        );
+    }
+
+    pub fn poll_window_updates(&mut self) -> anyhow::Result<X11WindowUpdate> {
+        let mut update = self.drain_window_events()?;
+        let needs_reconciliation = !self.metadata.initialized
+            || self
+                .metadata
+                .last_reconciliation
+                .is_none_or(|last| last.elapsed() >= self.reconciliation_interval);
+        if needs_reconciliation {
+            let reconciliation = self.reconcile_window_metadata()?;
+            merge_window_updates(&mut update, reconciliation);
+        }
+        Ok(update)
+    }
+
+    pub fn cached_windows(&self) -> Vec<WindowInfo> {
+        self.metadata.visible_windows(self.dock_window)
+    }
+
+    fn drain_window_events(&mut self) -> anyhow::Result<X11WindowUpdate> {
+        let mut update = X11WindowUpdate::default();
+        while let Some(event) = self.conn.poll_for_event()? {
+            match event {
+                Event::PropertyNotify(event) if event.window == self.root => {
+                    if event.atom == self.atoms.net_client_list
+                        || event.atom == self.atoms.net_client_list_stacking
+                    {
+                        let changed = self.update_client_list(event.atom, &mut update)?;
+                        if changed {
+                            update.changes.push(WindowCacheChange::ClientList);
+                        }
+                    } else if event.atom == self.atoms.net_active_window
+                        && self.update_active_window()
+                    {
+                        update.changes.push(WindowCacheChange::ActiveWindow);
+                    }
+                }
+                Event::PropertyNotify(event) => {
+                    if let Some(field) = self.property_field(event.atom)
+                        && self.update_window_field(event.window, field, &mut update)
+                    {
+                        update.changes.push(WindowCacheChange::Field {
+                            xid: event.window,
+                            field,
+                        });
+                    }
+                }
+                Event::DestroyNotify(event) => {
+                    if self.remove_destroyed_window(event.window, &mut update) {
+                        update
+                            .changes
+                            .push(WindowCacheChange::Destroyed(event.window));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !update.changes.is_empty() {
+            update.windows = Some(self.cached_windows());
+        }
+        Ok(update)
+    }
+
+    fn reconcile_window_metadata(&mut self) -> anyhow::Result<X11WindowUpdate> {
+        crate::perf::record_x11_reconciliation();
+        let was_initialized = self.metadata.initialized;
+        let before = self.cached_windows();
+        let old_icons = self
+            .metadata
+            .windows
+            .iter()
+            .filter_map(|(xid, metadata)| {
+                metadata
+                    .icon
+                    .as_ref()
+                    .map(|icon| (*xid, icon.signature()))
+            })
+            .collect::<HashMap<_, _>>();
+        let active_window = self.active_window();
+        let client_ids = self.window_list()?;
+        let mut windows = HashMap::with_capacity(client_ids.len());
+        for xid in &client_ids {
+            if Some(*xid) == self.dock_window {
+                continue;
+            }
+            self.select_client_events(*xid);
+            windows.insert(*xid, self.fetch_window_metadata(*xid));
+        }
+        let _ = self.conn.flush();
+
+        let mut invalidated_icon_signatures = Vec::new();
+        for (xid, signature) in old_icons {
+            let current = windows
+                .get(&xid)
+                .and_then(|metadata| metadata.icon.as_ref())
+                .map(WindowIcon::signature);
+            if current != Some(signature) {
+                push_unique_signature(&mut invalidated_icon_signatures, signature);
+            }
+        }
+        self.metadata.replace_from_reconciliation(
+            client_ids,
+            active_window,
+            windows,
+            Instant::now(),
+        );
+        let after = self.cached_windows();
+        let changed = !was_initialized || before != after;
+        Ok(X11WindowUpdate {
+            windows: changed.then_some(after),
+            invalidated_icon_signatures,
+            changes: changed.then_some(WindowCacheChange::ClientList).into_iter().collect(),
+        })
+    }
+
+    fn update_client_list(
+        &mut self,
+        property: Atom,
+        update: &mut X11WindowUpdate,
+    ) -> anyhow::Result<bool> {
+        let before = self.cached_windows();
+        let previous_ids = self.metadata.client_ids.clone();
+        let client_ids = self.window_list_for_property(property)?;
+        let current_ids = client_ids.iter().copied().collect::<HashSet<_>>();
+        for xid in previous_ids {
+            if !current_ids.contains(&xid) {
+                if let Some(signature) = self.metadata.icon_signature(xid) {
+                    push_unique_signature(&mut update.invalidated_icon_signatures, signature);
+                }
+                self.metadata.windows.remove(&xid);
+            }
+        }
+        for xid in &client_ids {
+            if Some(*xid) == self.dock_window || self.metadata.windows.contains_key(xid) {
+                continue;
+            }
+            self.select_client_events(*xid);
+            self.metadata
+                .windows
+                .insert(*xid, self.fetch_window_metadata(*xid));
+        }
+        self.metadata.client_ids = client_ids;
+        let _ = self.conn.flush();
+        Ok(before != self.cached_windows())
+    }
+
+    fn update_active_window(&mut self) -> bool {
+        let active_window = self.active_window();
+        if active_window == self.metadata.active_window {
+            return false;
+        }
+        self.metadata.active_window = active_window;
+        true
+    }
+
+    fn update_window_field(
+        &mut self,
+        xid: WindowId,
+        field: WindowMetadataField,
+        update: &mut X11WindowUpdate,
+    ) -> bool {
+        let Some(before) = self.metadata.windows.get(&xid).cloned() else {
+            return false;
+        };
+        let mut after = before.clone();
+        match field {
+            WindowMetadataField::State => {
+                let states = self
+                    .property_u32_list(xid, self.atoms.net_wm_state, AtomEnum::ATOM.into())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                after.urgent = states.contains(&self.atoms.net_wm_state_demands_attention);
+                after.minimized = states.contains(&self.atoms.net_wm_state_hidden);
+            }
+            WindowMetadataField::NetTitle => {
+                after.net_title = self
+                    .property_string(xid, self.atoms.net_wm_name, self.atoms.utf8_string)
+                    .ok()
+                    .flatten();
+            }
+            WindowMetadataField::LegacyTitle => {
+                after.legacy_title = self
+                    .property_string(xid, self.atoms.wm_name, AtomEnum::STRING.into())
+                    .ok()
+                    .flatten();
+            }
+            WindowMetadataField::Class => after.class = self.window_class(xid),
+            WindowMetadataField::Pid => {
+                after.pid = self
+                    .property_u32(xid, self.atoms.net_wm_pid, AtomEnum::CARDINAL.into())
+                    .ok()
+                    .flatten();
+                after.executable = after.pid.and_then(executable_for_pid);
+            }
+            WindowMetadataField::Workspace => {
+                after.workspace = self
+                    .property_u32(xid, self.atoms.net_wm_desktop, AtomEnum::CARDINAL.into())
+                    .ok()
+                    .flatten();
+            }
+            WindowMetadataField::Icon => {
+                after.icon = self.fetch_window_icon(xid);
+                if before.icon != after.icon
+                    && let Some(signature) = before.icon.as_ref().map(WindowIcon::signature)
+                {
+                    push_unique_signature(&mut update.invalidated_icon_signatures, signature);
+                }
+            }
+        }
+        if before == after {
+            return false;
+        }
+        self.metadata.windows.insert(xid, after);
+        true
+    }
+
+    fn remove_destroyed_window(
+        &mut self,
+        xid: WindowId,
+        update: &mut X11WindowUpdate,
+    ) -> bool {
+        let Some(removed) = self.metadata.windows.remove(&xid) else {
+            return false;
+        };
+        if let Some(signature) = removed.icon.as_ref().map(WindowIcon::signature) {
+            push_unique_signature(&mut update.invalidated_icon_signatures, signature);
+        }
+        self.metadata.client_ids.retain(|candidate| *candidate != xid);
+        true
+    }
+
+    fn property_field(&self, atom: Atom) -> Option<WindowMetadataField> {
+        metadata_field_for_atom(
+            atom,
+            [
+                (self.atoms.net_wm_state, WindowMetadataField::State),
+                (self.atoms.net_wm_name, WindowMetadataField::NetTitle),
+                (self.atoms.wm_name, WindowMetadataField::LegacyTitle),
+                (self.atoms.wm_class, WindowMetadataField::Class),
+                (self.atoms.net_wm_pid, WindowMetadataField::Pid),
+                (self.atoms.net_wm_desktop, WindowMetadataField::Workspace),
+                (self.atoms.net_wm_icon, WindowMetadataField::Icon),
+            ],
+        )
     }
 
     fn randr_monitor_geometry(&self, preferred: Option<&str>) -> anyhow::Result<MonitorGeometry> {
@@ -488,21 +844,8 @@ impl PlatformBackend for X11Backend {
     }
 
     fn poll_windows(&mut self) -> anyhow::Result<Vec<WindowInfo>> {
-        crate::perf::record_x11_reconciliation();
-        while self.conn.poll_for_event()?.is_some() {}
-
-        let active_window = self.active_window();
-        let window_ids = self.window_list()?;
-        self.window_icon_cache
-            .retain(|xid, _| window_ids.iter().any(|candidate| candidate == xid));
-
-        let mut windows = Vec::with_capacity(window_ids.len());
-        for xid in window_ids {
-            if let Some(info) = self.window_info(xid, active_window)? {
-                windows.push(info);
-            }
-        }
-        Ok(windows)
+        let update = self.poll_window_updates()?;
+        Ok(update.windows.unwrap_or_else(|| self.cached_windows()))
     }
 
     fn focus_window(&self, xid: WindowId) -> anyhow::Result<()> {
@@ -533,6 +876,31 @@ impl PlatformBackend for X11Backend {
             [self.atoms.wm_delete_window, CURRENT_TIME, 0, 0, 0],
         )
     }
+}
+
+fn merge_window_updates(target: &mut X11WindowUpdate, source: X11WindowUpdate) {
+    if source.windows.is_some() {
+        target.windows = source.windows;
+    }
+    for signature in source.invalidated_icon_signatures {
+        push_unique_signature(&mut target.invalidated_icon_signatures, signature);
+    }
+    target.changes.extend(source.changes);
+}
+
+fn push_unique_signature(signatures: &mut Vec<u64>, signature: u64) {
+    if !signatures.contains(&signature) {
+        signatures.push(signature);
+    }
+}
+
+fn metadata_field_for_atom<const N: usize>(
+    atom: Atom,
+    mappings: [(Atom, WindowMetadataField); N],
+) -> Option<WindowMetadataField> {
+    mappings
+        .into_iter()
+        .find_map(|(candidate, field)| (atom == candidate).then_some(field))
 }
 
 impl Atoms {
@@ -683,5 +1051,128 @@ mod tests {
         assert_eq!(rectangles[0].y, 4);
         assert_eq!(rectangles[0].width, 20);
         assert_eq!(rectangles[0].height, 36);
+    }
+
+    #[test]
+    fn property_atoms_map_to_only_their_cached_field() {
+        let mappings = [
+            (10, WindowMetadataField::State),
+            (11, WindowMetadataField::NetTitle),
+            (12, WindowMetadataField::LegacyTitle),
+            (13, WindowMetadataField::Class),
+            (14, WindowMetadataField::Pid),
+            (15, WindowMetadataField::Workspace),
+            (16, WindowMetadataField::Icon),
+        ];
+        for (atom, expected) in mappings {
+            assert_eq!(metadata_field_for_atom(atom, mappings), Some(expected));
+        }
+        assert_eq!(metadata_field_for_atom(99, mappings), None);
+    }
+
+    #[test]
+    fn metadata_cache_tracks_order_focus_destroy_and_reused_xids() {
+        let mut cache = WindowMetadataCache::default();
+        cache.client_ids = vec![41, 42];
+        cache.active_window = Some(42);
+        cache.windows.insert(
+            41,
+            CachedWindowMetadata {
+                net_title: Some("First".to_string()),
+                class: Some("first".to_string()),
+                ..CachedWindowMetadata::default()
+            },
+        );
+        cache.windows.insert(
+            42,
+            CachedWindowMetadata {
+                net_title: Some("Second".to_string()),
+                class: Some("second".to_string()),
+                ..CachedWindowMetadata::default()
+            },
+        );
+
+        let visible = cache.visible_windows(None);
+        assert_eq!(visible.iter().map(|window| window.xid).collect::<Vec<_>>(), vec![41, 42]);
+        assert!(!visible[0].active);
+        assert!(visible[1].active);
+
+        cache.client_ids.retain(|xid| *xid != 41);
+        cache.windows.remove(&41);
+        assert_eq!(cache.visible_windows(None).len(), 1);
+
+        cache.client_ids.insert(0, 41);
+        cache.windows.insert(
+            41,
+            CachedWindowMetadata {
+                net_title: Some("Reused".to_string()),
+                class: Some("replacement".to_string()),
+                ..CachedWindowMetadata::default()
+            },
+        );
+        assert_eq!(cache.visible_windows(None)[0].title.as_deref(), Some("Reused"));
+    }
+
+    #[test]
+    fn update_merging_preserves_reconciliation_and_icon_invalidations() {
+        let mut target = X11WindowUpdate {
+            invalidated_icon_signatures: vec![7],
+            ..X11WindowUpdate::default()
+        };
+        let windows = vec![WindowInfo {
+            xid: 1,
+            title: Some("Window".to_string()),
+            class: Some("class".to_string()),
+            pid: None,
+            executable: None,
+            workspace: None,
+            icon: None,
+            active: false,
+            urgent: false,
+            minimized: false,
+        }];
+        merge_window_updates(
+            &mut target,
+            X11WindowUpdate {
+                windows: Some(windows.clone()),
+                invalidated_icon_signatures: vec![7, 8],
+                changes: vec![WindowCacheChange::ClientList],
+            },
+        );
+
+        assert_eq!(target.windows, Some(windows));
+        assert_eq!(target.invalidated_icon_signatures, vec![7, 8]);
+        assert_eq!(target.changes, vec![WindowCacheChange::ClientList]);
+    }
+
+    #[test]
+    fn full_reconciliation_replaces_intentionally_stale_cache_state() {
+        let mut cache = WindowMetadataCache::default();
+        cache.client_ids = vec![70];
+        cache.windows.insert(
+            70,
+            CachedWindowMetadata {
+                net_title: Some("Stale".to_string()),
+                ..CachedWindowMetadata::default()
+            },
+        );
+        let mut repaired = HashMap::new();
+        repaired.insert(
+            71,
+            CachedWindowMetadata {
+                net_title: Some("Repaired".to_string()),
+                class: Some("app".to_string()),
+                ..CachedWindowMetadata::default()
+            },
+        );
+
+        cache.replace_from_reconciliation(vec![71], Some(71), repaired, Instant::now());
+
+        let visible = cache.visible_windows(None);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].xid, 71);
+        assert_eq!(visible[0].title.as_deref(), Some("Repaired"));
+        assert!(visible[0].active);
+        assert!(cache.initialized);
     }
 }
