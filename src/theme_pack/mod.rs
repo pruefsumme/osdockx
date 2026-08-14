@@ -41,6 +41,31 @@ struct ThemePackToml {
 }
 
 impl ThemePack {
+    pub fn watch_directories(&self) -> Vec<PathBuf> {
+        let mut directories = Vec::new();
+        if let Some(root) = self.root.as_ref() {
+            directories.push(root.clone());
+        }
+        for path in [
+            self.assets.shelf_texture.as_ref(),
+            self.assets.shelf_overlay.as_ref(),
+            self.assets.noise_texture.as_ref(),
+            self.assets.normal_map.as_ref(),
+            self.assets.fallback_texture.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(parent) = path.parent() {
+                let parent = parent.to_path_buf();
+                if !directories.contains(&parent) {
+                    directories.push(parent);
+                }
+            }
+        }
+        directories
+    }
+
     pub fn export_builtin_theme_packs() -> anyhow::Result<()> {
         for (id, contents) in REPO_THEME_PACKS {
             let path = config_dir()?.join("themes").join(id).join("theme.toml");

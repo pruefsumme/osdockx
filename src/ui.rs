@@ -86,6 +86,8 @@ const HOVER_SETTINGS_MENU_WIDTH: i32 = 272;
 const CUSTOMIZER_WIDTH: i32 = 420;
 const CUSTOMIZER_HEIGHT: i32 = 620;
 const CUSTOMIZER_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(120);
+const FILE_RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
+const FILE_MONITOR_RECOVERY: Duration = Duration::from_secs(5);
 const ADD_APPLICATION_MENU_WIDTH: i32 = 292;
 const ADD_APPLICATION_MENU_VISIBLE_ROWS: usize = 12;
 const APPLET_FAN_WIDTH: i32 = 390;
@@ -128,6 +130,12 @@ pub fn run() -> anyhow::Result<()> {
 struct Runtime {
     config: Config,
     config_path: PathBuf,
+    theme_watch_dirs: Vec<PathBuf>,
+    file_monitors: Vec<gio::FileMonitor>,
+    reload_debounce: Option<glib::SourceId>,
+    pending_theme_asset_reload: bool,
+    monitor_recovery: bool,
+    monitor_fallback_logged: bool,
     composited: bool,
     theme: Theme,
     desktop_index: DesktopIndex,
@@ -700,7 +708,8 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     install_css();
 
     let composited = gdk::Display::default().is_some_and(|display| display.is_composited());
-    let (theme_id, theme_renderer, theme) = resolve_runtime_theme(composited, &config.theme);
+    let (theme_id, theme_renderer, theme, theme_watch_dirs) =
+        resolve_runtime_theme(composited, &config.theme);
     tracing::info!("using theme {} ({:?})", theme_id, theme_renderer);
     if !composited {
         tracing::warn!("display is not composited; using opaque shelf fallback");
@@ -717,6 +726,12 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     let mut runtime = Runtime {
         config,
         config_path,
+        theme_watch_dirs,
+        file_monitors: Vec::new(),
+        reload_debounce: None,
+        pending_theme_asset_reload: false,
+        monitor_recovery: false,
+        monitor_fallback_logged: false,
         composited,
         theme,
         desktop_index,
@@ -835,6 +850,8 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_separator_resize_drag(&state, &window, &drawing, &gl_area);
     wire_realize(&state, &window, &drawing, &gl_area);
     wire_refresh(&state, &window, &drawing, &gl_area);
+    install_file_monitors(&state, &window, &drawing, &gl_area);
+    wire_file_monitor_recovery(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
 
     window.present();
@@ -935,15 +952,16 @@ fn apply_autostart_enabled(enabled: bool) {
 fn resolve_runtime_theme(
     composited: bool,
     config: &crate::config::ThemeConfig,
-) -> (String, RenderMode, Theme) {
+) -> (String, RenderMode, Theme, Vec<PathBuf>) {
     let pack = ThemePack::load(config);
+    let watch_directories = pack.watch_directories();
     let theme = pack.theme;
     let id = pack.id;
     let renderer = pack.renderer;
     if composited {
-        (id, renderer, theme)
+        (id, renderer, theme, watch_directories)
     } else {
-        (id, renderer, theme.opaque_fallback())
+        (id, renderer, theme.opaque_fallback(), watch_directories)
     }
 }
 
@@ -2544,7 +2562,7 @@ fn run_dock_context_action(
         DockContextAction::ReloadTheme => {
             {
                 let mut state = state.borrow_mut();
-                refresh_config_and_theme(&mut state);
+                refresh_config_and_theme(&mut state, true);
                 state.refresh_model();
                 state.icons.clear();
             }
@@ -2597,8 +2615,10 @@ fn reset_runtime_defaults(
         state.last_reserved_geometry = None;
         state.last_shape_size = None;
         state.last_shape_label = None;
-        let (_, _, theme) = resolve_runtime_theme(state.composited, &state.config.theme);
+        let (_, _, theme, watch_dirs) =
+            resolve_runtime_theme(state.composited, &state.config.theme);
         state.theme = theme;
+        state.theme_watch_dirs = watch_dirs;
         save_runtime_config(&state);
         state.refresh_model();
     }
@@ -2717,6 +2737,197 @@ fn save_runtime_config(state: &Runtime) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileWatchKind {
+    Config,
+    Theme,
+}
+
+fn install_file_monitors(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let watched = {
+        let state = state.borrow();
+        let mut watched = Vec::new();
+        if let Some(config_dir) = state.config_path.parent() {
+            watched.push((config_dir.to_path_buf(), FileWatchKind::Config));
+        }
+        for directory in &state.theme_watch_dirs {
+            if !watched
+                .iter()
+                .any(|(existing, kind)| existing == directory && *kind == FileWatchKind::Theme)
+            {
+                watched.push((directory.clone(), FileWatchKind::Theme));
+            }
+        }
+        watched
+    };
+
+    let mut monitors = Vec::new();
+    let mut failed = false;
+    for (directory, kind) in watched {
+        let file = gio::File::for_path(&directory);
+        let monitor = match file.monitor_directory(
+            gio::FileMonitorFlags::WATCH_MOVES,
+            None::<&gio::Cancellable>,
+        ) {
+            Ok(monitor) => monitor,
+            Err(error) => {
+                failed = true;
+                tracing::debug!(
+                    "could not monitor {} for live reload: {error}",
+                    directory.display()
+                );
+                continue;
+            }
+        };
+        monitor.set_rate_limit(0);
+        let state_for_event = Rc::clone(state);
+        let window = window.clone();
+        let drawing = drawing.clone();
+        let gl_area = gl_area.clone();
+        monitor.connect_changed(move |_, file, other_file, event| {
+            if matches!(
+                event,
+                gio::FileMonitorEvent::PreUnmount | gio::FileMonitorEvent::Unmounted
+            ) {
+                let mut state = state_for_event.borrow_mut();
+                state.monitor_recovery = true;
+                log_monitor_fallback_once(&mut state);
+                return;
+            }
+            if !file_event_matches(kind, file, other_file) {
+                return;
+            }
+            schedule_file_reload(
+                &state_for_event,
+                &window,
+                &drawing,
+                &gl_area,
+                kind == FileWatchKind::Theme,
+            );
+        });
+        monitors.push(monitor);
+    }
+
+    let mut state = state.borrow_mut();
+    for monitor in state.file_monitors.drain(..) {
+        monitor.cancel();
+    }
+    state.file_monitors = monitors;
+    state.monitor_recovery = failed;
+    if failed {
+        log_monitor_fallback_once(&mut state);
+    }
+}
+
+fn file_event_matches(
+    kind: FileWatchKind,
+    file: &gio::File,
+    other_file: Option<&gio::File>,
+) -> bool {
+    if kind == FileWatchKind::Theme {
+        return true;
+    }
+    [Some(file), other_file]
+        .into_iter()
+        .flatten()
+        .filter_map(gio::File::path)
+        .any(|path| path.file_name().is_some_and(|name| name == "config.toml"))
+}
+
+fn schedule_file_reload(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+    theme_assets_changed: bool,
+) {
+    {
+        let mut state = state.borrow_mut();
+        state.pending_theme_asset_reload |= theme_assets_changed;
+        if let Some(source) = state.reload_debounce.take() {
+            source.remove();
+        }
+    }
+
+    let state_for_reload = Rc::clone(state);
+    let state_for_source = Rc::clone(state);
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    let source = glib::timeout_add_local_once(FILE_RELOAD_DEBOUNCE, move || {
+        let previous_watch_dirs = state_for_reload.borrow().theme_watch_dirs.clone();
+        let changed = {
+            let mut state = state_for_reload.borrow_mut();
+            state.reload_debounce = None;
+            let force_theme_assets = std::mem::take(&mut state.pending_theme_asset_reload);
+            let changed = refresh_config_and_theme(&mut state, force_theme_assets);
+            if changed {
+                state.refresh_model();
+            }
+            changed
+        };
+        let monitor_paths_changed =
+            state_for_reload.borrow().theme_watch_dirs != previous_watch_dirs;
+        if monitor_paths_changed {
+            install_file_monitors(&state_for_reload, &window, &drawing, &gl_area);
+        }
+        if changed {
+            ensure_icon_animation_if_needed(&state_for_reload, &window, &drawing, &gl_area);
+            sync_dock_window(&state_for_reload, &window, &drawing, &gl_area, true);
+            queue_gl_render_if_enabled(&state_for_reload, &gl_area);
+            request_dock_draw(&drawing);
+        }
+    });
+    state_for_source.borrow_mut().reload_debounce = Some(source);
+}
+
+fn wire_file_monitor_recovery(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    let state = Rc::clone(state);
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    glib::timeout_add_local(FILE_MONITOR_RECOVERY, move || {
+        if !state.borrow().monitor_recovery {
+            return glib::ControlFlow::Continue;
+        }
+        let changed = {
+            let mut state = state.borrow_mut();
+            let changed = refresh_config_and_theme(&mut state, true);
+            if changed {
+                state.refresh_model();
+            }
+            changed
+        };
+        install_file_monitors(&state, &window, &drawing, &gl_area);
+        if changed {
+            ensure_icon_animation_if_needed(&state, &window, &drawing, &gl_area);
+            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+            queue_gl_render_if_enabled(&state, &gl_area);
+            request_dock_draw(&drawing);
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn log_monitor_fallback_once(state: &mut Runtime) {
+    if !state.monitor_fallback_logged {
+        tracing::warn!(
+            "file monitoring unavailable; using five-second configuration recovery polling"
+        );
+        state.monitor_fallback_logged = true;
+    }
+}
+
 fn wire_refresh(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
@@ -2736,9 +2947,7 @@ fn wire_refresh(
             if !should_run_periodic_refresh(&state) {
                 false
             } else {
-                let config_or_theme_changed = refresh_config_and_theme(&mut state);
-                let model_changed = state.refresh_model();
-                config_or_theme_changed || model_changed
+                state.refresh_model()
             }
         };
         if !changed {
@@ -2802,7 +3011,7 @@ fn wire_icon_theme_changes(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea, 
     });
 }
 
-fn refresh_config_and_theme(state: &mut Runtime) -> bool {
+fn refresh_config_and_theme(state: &mut Runtime, force_theme_assets: bool) -> bool {
     let mut changed = false;
     match Config::load_from_path(&state.config_path) {
         Ok(config) => {
@@ -2811,7 +3020,11 @@ fn refresh_config_and_theme(state: &mut Runtime) -> bool {
                 let previous_render_icon_size = rendered_dock_config(state).icon_size as f64;
                 let next_icon_size = config.dock.icon_size as f64;
                 let startup_changed = state.config.startup != config.startup;
+                let custom_icons_changed = state.config.custom_icons != config.custom_icons;
                 state.config = config;
+                if custom_icons_changed {
+                    state.icons.set_custom_icons(&state.config.custom_icons);
+                }
                 if startup_changed && state.config.startup.prompt_seen {
                     apply_autostart_enabled(state.config.startup.autostart);
                 }
@@ -2840,11 +3053,14 @@ fn refresh_config_and_theme(state: &mut Runtime) -> bool {
         }
     }
 
-    let (theme_id, theme_renderer, theme) =
+    let (theme_id, theme_renderer, theme, watch_dirs) =
         resolve_runtime_theme(state.composited, &state.config.theme);
-    if theme != state.theme {
+    state.theme_watch_dirs = watch_dirs;
+    if theme != state.theme || force_theme_assets {
         tracing::info!("reloaded theme {} ({:?})", theme_id, theme_renderer);
         state.theme = theme;
+        state.icons.invalidate_reflections();
+        state.renderer.invalidate_shelf_cache();
         state.last_size = None;
         state.last_geometry = None;
         state.last_reserved_geometry = None;
@@ -3803,5 +4019,33 @@ mod tests {
             size: (100, 100),
             ..DockLayout::default()
         }
+    }
+
+    #[test]
+    fn config_directory_filter_accepts_atomic_replacements_only_for_config() {
+        let temporary = gio::File::for_path("/tmp/.config.toml.swap");
+        let config = gio::File::for_path("/tmp/config.toml");
+        let unrelated = gio::File::for_path("/tmp/notes.txt");
+
+        assert!(file_event_matches(
+            FileWatchKind::Config,
+            &temporary,
+            Some(&config)
+        ));
+        assert!(file_event_matches(
+            FileWatchKind::Config,
+            &config,
+            None
+        ));
+        assert!(!file_event_matches(
+            FileWatchKind::Config,
+            &unrelated,
+            None
+        ));
+        assert!(file_event_matches(
+            FileWatchKind::Theme,
+            &unrelated,
+            None
+        ));
     }
 }

@@ -527,7 +527,7 @@ fn apply_customizer_config(
     {
         let mut state = state.borrow_mut();
         state.config = config.normalized();
-        let (_, _, theme) = resolve_runtime_theme(state.composited, &state.config.theme);
+        let (_, _, theme, _) = resolve_runtime_theme(state.composited, &state.config.theme);
         state.theme = theme;
         state.hidden = false;
         state.hover = None;

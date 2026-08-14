@@ -130,6 +130,13 @@ impl IconCache {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    pub fn invalidate_reflections(&mut self) {
+        for entry in self.reflection_cache.values() {
+            self.surface_bytes = self.surface_bytes.saturating_sub(entry.bytes);
+        }
+        self.reflection_cache.clear();
+    }
+
     pub(super) fn is_enabled(&self) -> bool {
         self.enabled
     }

@@ -144,7 +144,7 @@ impl Default for DockConfig {
             hide_delay_ms: 350,
             unhide_delay_ms: 40,
             reserve_space: true,
-            refresh_ms: 500,
+            refresh_ms: 5_000,
         }
     }
 }
@@ -254,7 +254,7 @@ impl Config {
         self.dock.edge = DockEdge::Bottom;
         self.dock.icon_size = self.dock.icon_size.clamp(24, 160);
         self.dock.zoom_strength = self.dock.zoom_strength.clamp(0.0, 1.6);
-        self.dock.refresh_ms = self.dock.refresh_ms.clamp(100, 5_000);
+        self.dock.refresh_ms = self.dock.refresh_ms.clamp(5_000, 60_000);
 
         self.theme.preset = self.theme.preset.trim().to_string();
         if self.theme.preset.is_empty() {
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(config.dock.edge, DockEdge::Bottom);
         assert_eq!(config.dock.icon_size, 24);
         assert_eq!(config.dock.zoom_strength, 1.6);
-        assert_eq!(config.dock.refresh_ms, 100);
+        assert_eq!(config.dock.refresh_ms, 5_000);
         assert_eq!(config.startup, StartupConfig::default());
         assert_eq!(config.pinned, vec!["xfce4-terminal.desktop"]);
         assert_eq!(config.hidden, vec!["xfce4-terminal.desktop"]);
@@ -487,6 +487,19 @@ mod tests {
         let encoded = toml::to_string(&config).unwrap();
         let decoded = toml::from_str::<Config>(&encoded).unwrap().normalized();
         assert_eq!(decoded, config);
+    }
+
+    #[test]
+    fn legacy_refresh_intervals_migrate_to_recovery_minimum() {
+        for legacy in [100, 500, 4_999] {
+            let mut config = Config::default();
+            config.dock.refresh_ms = legacy;
+            assert_eq!(config.normalized().dock.refresh_ms, 5_000);
+        }
+
+        let mut config = Config::default();
+        config.dock.refresh_ms = 90_000;
+        assert_eq!(config.normalized().dock.refresh_ms, 60_000);
     }
 
     #[test]

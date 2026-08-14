@@ -59,6 +59,10 @@ impl Renderer {
         &self.last_layout
     }
 
+    pub fn invalidate_shelf_cache(&mut self) {
+        self.shelf_cache = ProceduralShelfCache::default();
+    }
+
     pub fn desired_size(
         model: &DockModel,
         config: &DockConfig,

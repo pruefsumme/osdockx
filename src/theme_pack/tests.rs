@@ -63,4 +63,8 @@ icon_gap_ratio = 0.1
         pack.assets.fallback_texture,
         Some(dir.path().join("assets/shelf.png"))
     );
+    assert_eq!(
+        pack.watch_directories(),
+        vec![dir.path().to_path_buf(), dir.path().join("assets")]
+    );
 }
