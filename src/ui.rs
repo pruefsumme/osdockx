@@ -109,6 +109,11 @@ const SEPARATOR_RESIZE_PIXELS_PER_ICON: f64 = 2.0;
 const SEPARATOR_RESIZE_MIN_ICON_SIZE: u32 = 32;
 const SEPARATOR_RESIZE_MAX_ICON_SIZE: u32 = 128;
 
+fn request_dock_draw(drawing: &DrawingArea) {
+    crate::perf::record_redraw_requested();
+    drawing.queue_draw();
+}
+
 pub fn run() -> anyhow::Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(|app| {
@@ -1153,7 +1158,7 @@ fn wire_scale_factor_changes(
         if changed {
             sync_dock_window(&state, &window, &drawing, &gl_area, true);
             queue_gl_render_if_enabled(&state, &gl_area);
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
         }
     });
 }
@@ -1175,7 +1180,7 @@ fn wire_gl_area(state: &Rc<RefCell<Runtime>>, gl_area: &GLArea, drawing: &Drawin
             if let Some(reason) = state.scene3d.fallback_reason() {
                 tracing::debug!("using cairo shelf fallback: {reason}");
             }
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
         }
         Propagation::Stop
     });
@@ -1253,7 +1258,7 @@ fn wire_motion(
                 return;
             }
             queue_gl_render_if_enabled(&state, &gl_area);
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
             log_slow("motion", started.elapsed());
         });
     }
@@ -1279,7 +1284,7 @@ fn wire_motion(
             }
             set_separator_resize_cursor(&drawing, false);
             queue_gl_render_if_enabled(&state, &gl_area);
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
 
             if autohide {
                 let state = Rc::clone(&state);
@@ -1304,7 +1309,7 @@ fn wire_motion(
                     if changed {
                         sync_dock_window(&state, &window, &drawing, &gl_area, true);
                         queue_gl_render_if_enabled(&state, &gl_area);
-                        drawing.queue_draw();
+                        request_dock_draw(&drawing);
                     }
                 });
             }
@@ -1331,14 +1336,14 @@ fn wire_clicks(
             let button = gesture.current_button();
             if button == 1 && state.borrow().suppress_next_left_click {
                 state.borrow_mut().suppress_next_left_click = false;
-                drawing.queue_draw();
+                request_dock_draw(&drawing);
                 return;
             }
             if button == 1 && state.borrow().context_menu.is_some() {
                 let dismissed = dismiss_context_menu(&state);
                 if dismissed {
                     sync_dock_window(&state, &window, &drawing, &gl_area, true);
-                    drawing.queue_draw();
+                    request_dock_draw(&drawing);
                 }
                 return;
             }
@@ -1352,7 +1357,7 @@ fn wire_clicks(
                     state.model.items.get(index).cloned()
                 };
                 let Some(item) = item else {
-                    drawing.queue_draw();
+                    request_dock_draw(&drawing);
                     return;
                 };
                 if button == 3 {
@@ -1387,7 +1392,7 @@ fn wire_clicks(
                     sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 }
             }
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
         });
     }
     drawing.add_controller(click);
@@ -1465,7 +1470,7 @@ fn wire_icon_drag(
             }
             ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
             queue_gl_render_if_enabled(&state, &gl_area);
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
         });
     }
     {
@@ -1482,7 +1487,7 @@ fn wire_icon_drag(
                 ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
                 sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 queue_gl_render_if_enabled(&state, &gl_area);
-                drawing.queue_draw();
+                request_dock_draw(&drawing);
             }
         });
     }
@@ -1500,7 +1505,7 @@ fn wire_icon_drag(
                 ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
                 sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 queue_gl_render_if_enabled(&state, &gl_area);
-                drawing.queue_draw();
+                request_dock_draw(&drawing);
             }
         });
     }
@@ -1546,7 +1551,7 @@ fn wire_separator_resize_drag(
             };
             dismiss_popover_menu(menu);
             set_separator_resize_cursor(&drawing, true);
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
         });
     }
     {
@@ -1563,7 +1568,7 @@ fn wire_separator_resize_drag(
                 ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
                 sync_dock_window(&state, &window, &drawing, &gl_area, true);
                 queue_gl_render_if_enabled(&state, &gl_area);
-                drawing.queue_draw();
+                request_dock_draw(&drawing);
             }
         });
     }
@@ -1585,7 +1590,7 @@ fn wire_separator_resize_drag(
             set_separator_resize_cursor(&drawing, false);
             sync_dock_window(&state, &window, &drawing, &gl_area, true);
             queue_gl_render_if_enabled(&state, &gl_area);
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
         });
     }
     drawing.add_controller(drag);
@@ -2064,7 +2069,7 @@ fn ensure_icon_animation_tick(
         };
         sync_dock_window(&state, &window, &drawing, &gl_area, false);
         queue_gl_render_if_enabled(&state, &gl_area);
-        drawing.queue_draw();
+        request_dock_draw(&drawing);
 
         if keep_running {
             glib::ControlFlow::Continue
@@ -2101,7 +2106,7 @@ fn ensure_startup_reveal_tick(
         };
         sync_dock_window(&state, &window, &drawing, &gl_area, false);
         queue_gl_render_if_enabled(&state, &gl_area);
-        drawing.queue_draw();
+        request_dock_draw(&drawing);
 
         if keep_running {
             glib::ControlFlow::Continue
@@ -2313,7 +2318,7 @@ fn show_applet_fan(
             run_applet_fan_action(action);
             sync_dock_window(&state, &window, &drawing, &gl_area, true);
             queue_gl_render_if_enabled(&state, &gl_area);
-            drawing.queue_draw();
+            request_dock_draw(&drawing);
         });
     }
     fan.add_controller(click);
@@ -2395,7 +2400,7 @@ fn run_application_context_action(
 
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
-    drawing.queue_draw();
+    request_dock_draw(drawing);
 }
 
 fn run_dock_context_action(
@@ -2448,7 +2453,7 @@ fn run_dock_context_action(
             ensure_icon_animation_if_needed(state, window, drawing, gl_area);
             sync_dock_window(state, window, drawing, gl_area, true);
             queue_gl_render_if_enabled(state, gl_area);
-            drawing.queue_draw();
+            request_dock_draw(drawing);
         }
         DockContextAction::ResetDefaults => {
             reset_runtime_defaults(state, window, drawing, gl_area);
@@ -2503,7 +2508,7 @@ fn reset_runtime_defaults(
     ensure_icon_animation_if_needed(state, window, drawing, gl_area);
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
-    drawing.queue_draw();
+    request_dock_draw(drawing);
 }
 
 fn reset_runtime_custom_icons(
@@ -2521,7 +2526,7 @@ fn reset_runtime_custom_icons(
 
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
-    drawing.queue_draw();
+    request_dock_draw(drawing);
 }
 
 fn toggle_runtime_autostart(state: &Rc<RefCell<Runtime>>) {
@@ -2565,7 +2570,7 @@ fn update_dock_config(
     ensure_icon_animation_if_needed(state, window, drawing, gl_area);
     sync_dock_window(state, window, drawing, gl_area, true);
     queue_gl_render_if_enabled(state, gl_area);
-    drawing.queue_draw();
+    request_dock_draw(drawing);
 }
 
 fn change_icon_size(
@@ -2644,7 +2649,7 @@ fn wire_refresh(
         ensure_icon_animation_if_needed(&state, &window, &drawing, &gl_area);
         sync_dock_window(&state, &window, &drawing, &gl_area, true);
         queue_gl_render_if_enabled(&state, &gl_area);
-        drawing.queue_draw();
+        request_dock_draw(&drawing);
         glib::ControlFlow::Continue
     });
 }
@@ -2695,7 +2700,7 @@ fn wire_icon_theme_changes(state: &Rc<RefCell<Runtime>>, drawing: &DrawingArea, 
         }
         tracing::info!("reloaded icon theme {}", icon_theme.theme_name());
         queue_gl_render_if_enabled(&state, &gl_area);
-        drawing.queue_draw();
+        request_dock_draw(&drawing);
     });
 }
 

@@ -304,6 +304,7 @@ impl Renderer {
     }
 
     fn log_draw_time(&self, elapsed: Duration, icon_count: usize) {
+        crate::perf::record_draw_completed(elapsed);
         if elapsed >= SLOW_DRAW {
             tracing::debug!(
                 target: "osdockx::perf",

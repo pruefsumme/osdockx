@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::{Config, DockConfig};
 use crate::model::{DockItem, DockModel};
+use crate::model::WindowIcon;
 use crate::theme::Theme;
 use gtk::cairo::Format;
 use std::fs::File;
@@ -21,6 +22,112 @@ fn single_item_model() -> DockModel {
             badge: None,
         }],
     }
+}
+
+fn deterministic_fixture_model(count: usize) -> DockModel {
+    DockModel {
+        items: (0..count)
+            .map(|index| DockItem {
+                id: format!("fixture-{index}.desktop"),
+                name: format!("Fixture {index}"),
+                desktop_id: Some(format!("fixture-{index}.desktop")),
+                startup_wm_class: None,
+                icon_name: None,
+                window_icon: Some(deterministic_fixture_icon(index)),
+                pinned: true,
+                windows: Vec::new(),
+                active: index % 4 == 0,
+                urgent: index == 11,
+                badge: (index == 7).then_some(3),
+            })
+            .collect(),
+    }
+}
+
+fn deterministic_fixture_icon(seed: usize) -> WindowIcon {
+    let size = 16_u32;
+    let pixels = (0..size * size)
+        .map(|offset| {
+            let x = offset % size;
+            let y = offset / size;
+            let red = ((x * 13 + seed as u32 * 29) & 0xff) as u8;
+            let green = ((y * 17 + seed as u32 * 11) & 0xff) as u8;
+            let blue = (((x + y) * 9 + seed as u32 * 7) & 0xff) as u8;
+            0xff00_0000 | u32::from(red) << 16 | u32::from(green) << 8 | u32::from(blue)
+        })
+        .collect();
+    WindowIcon::from_argb(size, size, pixels)
+}
+
+fn deterministic_render_hash(hover_index: Option<usize>, scale: i32) -> u64 {
+    let mut config = Config::default().normalized();
+    config.dock.icon_size = 64;
+    let theme = Theme::from_config(&config.theme);
+    let model = deterministic_fixture_model(15);
+    let rest = Renderer::layout_for(&model, &config.dock, &theme, None);
+    let hover = hover_index.map(|index| Point {
+        x: rest.icons[index].rect.center_x(),
+        y: rest.icons[index].rect.y + rest.icons[index].rect.height * 0.5,
+    });
+    let layout = Renderer::layout_for(&model, &config.dock, &theme, hover);
+    let mut surface = ImageSurface::create(
+        Format::ARgb32,
+        layout.size.0 * scale,
+        layout.size.1 * scale,
+    )
+    .unwrap();
+    surface.set_device_scale(scale as f64, scale as f64);
+    let cr = Context::new(&surface).unwrap();
+    let mut renderer = Renderer::new();
+    let mut icons = IconCache::disabled();
+    renderer.draw(&cr, &model, &config.dock, &theme, hover, &mut icons);
+    drop(cr);
+    surface.flush();
+
+    let label = layout.label.map(|label| label.rect);
+    let stride = surface.stride() as usize;
+    let width = surface.width() as usize;
+    let height = surface.height() as usize;
+    let data = surface.data().unwrap();
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for y in 0..height {
+        for x in 0..width {
+            let css_x = x as f64 / scale as f64;
+            let css_y = y as f64 / scale as f64;
+            if label.is_some_and(|rect| {
+                css_x >= rect.x - 3.0
+                    && css_x <= rect.x + rect.width + 3.0
+                    && css_y >= rect.y - 3.0
+                    && css_y <= rect.y + rect.height + 3.0
+            }) {
+                continue;
+            }
+            for byte in &data[y * stride + x * 4..y * stride + x * 4 + 4] {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+    hash
+}
+
+#[test]
+fn deterministic_rest_and_hover_renders_match_golden_hashes() {
+    let hashes = [
+        deterministic_render_hash(None, 1),
+        deterministic_render_hash(Some(7), 1),
+        deterministic_render_hash(None, 2),
+        deterministic_render_hash(Some(7), 2),
+    ];
+    assert_eq!(
+        hashes,
+        [
+            16_098_008_435_556_604_288,
+            2_165_020_988_576_021_856,
+            9_880_531_414_050_164_059,
+            10_299_436_036_222_587_131,
+        ]
+    );
 }
 
 #[test]

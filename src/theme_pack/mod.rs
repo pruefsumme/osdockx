@@ -104,6 +104,7 @@ impl ThemePack {
 
     pub fn from_path(path: &Path, overrides: &ThemeConfig) -> anyhow::Result<Self> {
         let raw = fs::read_to_string(path)?;
+        crate::perf::record_config_theme_parse();
         let mut parsed = toml::from_str::<ThemePackToml>(&raw)?;
         let root = path.parent().map(Path::to_path_buf);
         if parsed.id.trim().is_empty() {

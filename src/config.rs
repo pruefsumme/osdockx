@@ -327,6 +327,7 @@ impl Config {
     }
 
     fn from_toml_str(raw: &str) -> anyhow::Result<Self> {
+        crate::perf::record_config_theme_parse();
         let has_startup = toml::from_str::<toml::Value>(raw)
             .ok()
             .and_then(|value| value.as_table().map(|table| table.contains_key("startup")))

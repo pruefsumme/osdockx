@@ -172,6 +172,7 @@ fn draw_icon_reflection(
     let Ok(icon_surface) = ImageSurface::create(Format::ARgb32, icon_size, icon_size) else {
         return;
     };
+    crate::perf::record_reflection_build();
     let Ok(icon_cr) = Context::new(&icon_surface) else {
         return;
     };

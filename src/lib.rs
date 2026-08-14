@@ -4,6 +4,7 @@ pub mod config;
 pub mod desktop;
 pub mod layout;
 pub mod model;
+pub mod perf;
 pub mod renderer;
 pub mod scene3d;
 pub mod shelf;

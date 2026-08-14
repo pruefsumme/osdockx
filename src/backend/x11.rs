@@ -390,6 +390,7 @@ impl X11Backend {
         ty: Atom,
         len: u32,
     ) -> anyhow::Result<GetPropertyReply> {
+        crate::perf::record_x11_property_request();
         Ok(self
             .conn
             .get_property(false, window, property, ty, 0, len)?
@@ -487,6 +488,7 @@ impl PlatformBackend for X11Backend {
     }
 
     fn poll_windows(&mut self) -> anyhow::Result<Vec<WindowInfo>> {
+        crate::perf::record_x11_reconciliation();
         while self.conn.poll_for_event()?.is_some() {}
 
         let active_window = self.active_window();
