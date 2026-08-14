@@ -14,6 +14,14 @@ struct ProcessSample {
     private_kib: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RootWindowGeometry {
+    x: i32,
+    y: i32,
+    width: u16,
+    height: u16,
+}
+
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let pid = args
@@ -33,7 +41,7 @@ fn main() -> anyhow::Result<()> {
     let (conn, screen_num) = x11rb::connect(None).context("connect to X11")?;
     let root = conn.setup().roots[screen_num].root;
     let dock = find_dock_window(&conn, root, pid)?;
-    let geometry = conn.get_geometry(dock)?.reply()?;
+    let geometry = window_geometry_on_root(&conn, root, dock)?;
 
     let steps = seconds.saturating_mul(60).max(1);
     for step in 0..steps {
@@ -78,14 +86,95 @@ fn find_dock_window(conn: &impl Connection, root: Window, pid: u32) -> anyhow::R
     let pid_atom = intern(conn, b"_NET_WM_PID")?;
     let type_atom = intern(conn, b"_NET_WM_WINDOW_TYPE")?;
     let dock_atom = intern(conn, b"_NET_WM_WINDOW_TYPE_DOCK")?;
-    for window in conn.query_tree(root)?.reply()?.children {
-        let window_pid = property_u32(conn, window, pid_atom, AtomEnum::CARDINAL.into());
-        let window_types = property_list(conn, window, type_atom, AtomEnum::ATOM.into());
-        if window_pid == Some(pid) && window_types.contains(&dock_atom) {
-            return Ok(window);
+
+    let mut ewmh_available = false;
+    for property_name in [b"_NET_CLIENT_LIST_STACKING".as_slice(), b"_NET_CLIENT_LIST"] {
+        let property = intern(conn, property_name)?;
+        if let Some(clients) = optional_property_list(
+            conn,
+            root,
+            property,
+            AtomEnum::WINDOW.into(),
+        )? {
+            ewmh_available = true;
+            if let Some(window) = find_matching_dock(
+                &clients,
+                pid,
+                dock_atom,
+                |window| {
+                    (
+                        property_u32(conn, window, pid_atom, AtomEnum::CARDINAL.into()),
+                        property_list(conn, window, type_atom, AtomEnum::ATOM.into()),
+                    )
+                },
+            ) {
+                return Ok(window);
+            }
         }
     }
+
+    if !ewmh_available
+        && let Some(window) = find_dock_in_tree(conn, root, pid, pid_atom, type_atom, dock_atom)?
+    {
+        return Ok(window);
+    }
     anyhow::bail!("could not find an X11 dock window for PID {pid}")
+}
+
+fn find_matching_dock(
+    candidates: &[Window],
+    pid: u32,
+    dock_atom: Atom,
+    mut metadata: impl FnMut(Window) -> (Option<u32>, Vec<u32>),
+) -> Option<Window> {
+    candidates.iter().copied().find(|window| {
+        let (window_pid, window_types) = metadata(*window);
+        window_pid == Some(pid) && window_types.contains(&dock_atom)
+    })
+}
+
+fn find_dock_in_tree(
+    conn: &impl Connection,
+    root: Window,
+    pid: u32,
+    pid_atom: Atom,
+    type_atom: Atom,
+    dock_atom: Atom,
+) -> anyhow::Result<Option<Window>> {
+    let mut pending = conn.query_tree(root)?.reply()?.children;
+    while let Some(window) = pending.pop() {
+        if find_matching_dock(&[window], pid, dock_atom, |window| {
+            (
+                property_u32(conn, window, pid_atom, AtomEnum::CARDINAL.into()),
+                property_list(conn, window, type_atom, AtomEnum::ATOM.into()),
+            )
+        })
+        .is_some()
+        {
+            return Ok(Some(window));
+        }
+        if let Ok(cookie) = conn.query_tree(window)
+            && let Ok(tree) = cookie.reply()
+        {
+            pending.extend(tree.children);
+        }
+    }
+    Ok(None)
+}
+
+fn window_geometry_on_root(
+    conn: &impl Connection,
+    root: Window,
+    window: Window,
+) -> anyhow::Result<RootWindowGeometry> {
+    let geometry = conn.get_geometry(window)?.reply()?;
+    let translated = conn.translate_coordinates(window, root, 0, 0)?.reply()?;
+    Ok(RootWindowGeometry {
+        x: i32::from(translated.dst_x),
+        y: i32::from(translated.dst_y),
+        width: geometry.width,
+        height: geometry.height,
+    })
 }
 
 fn intern(conn: &impl Connection, name: &[u8]) -> anyhow::Result<Atom> {
@@ -102,6 +191,26 @@ fn property_list(conn: &impl Connection, window: Window, property: Atom, ty: Ato
         .and_then(|cookie| cookie.reply().ok())
         .and_then(|reply| reply.value32().map(Iterator::collect))
         .unwrap_or_default()
+}
+
+fn optional_property_list(
+    conn: &impl Connection,
+    window: Window,
+    property: Atom,
+    ty: Atom,
+) -> anyhow::Result<Option<Vec<u32>>> {
+    let reply = conn
+        .get_property(false, window, property, ty, 0, u32::MAX)?
+        .reply()?;
+    if reply.type_ == AtomEnum::NONE.into() || reply.format == 0 {
+        return Ok(None);
+    }
+    Ok(Some(
+        reply
+            .value32()
+            .map(Iterator::collect)
+            .unwrap_or_default(),
+    ))
 }
 
 fn sample_process(pid: u32) -> anyhow::Result<ProcessSample> {
@@ -149,4 +258,27 @@ fn clock_ticks_per_second() -> f64 {
 
 fn cpu_percent(before: ProcessSample, after: ProcessSample, seconds: u64, ticks: f64) -> f64 {
     after.ticks.saturating_sub(before.ticks) as f64 / ticks / seconds.max(1) as f64 * 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ewmh_discovery_finds_client_hidden_under_reparenting_frame() {
+        let pid = 4242;
+        let dock_atom = 91;
+        let frame = 100;
+        let client = 101;
+        let metadata = |window| match window {
+            101 => (Some(pid), vec![dock_atom]),
+            _ => (None, Vec::new()),
+        };
+
+        assert_eq!(find_matching_dock(&[frame], pid, dock_atom, metadata), None);
+        assert_eq!(
+            find_matching_dock(&[client], pid, dock_atom, metadata),
+            Some(client)
+        );
+    }
 }
