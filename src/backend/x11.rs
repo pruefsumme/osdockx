@@ -201,6 +201,13 @@ impl X11Backend {
         self.reconciliation_interval = interval.max(FULL_RECONCILIATION_INTERVAL);
     }
 
+    pub(crate) fn root_pointer_position(&self) -> anyhow::Result<Option<(i32, i32)>> {
+        let pointer = self.conn.query_pointer(self.root)?.reply()?;
+        Ok(pointer
+            .same_screen
+            .then_some((i32::from(pointer.root_x), i32::from(pointer.root_y))))
+    }
+
     fn configure_dock(
         &self,
         xid: WindowId,

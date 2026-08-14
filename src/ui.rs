@@ -147,6 +147,7 @@ struct Runtime {
     scene3d: Scene3dRenderer,
     icons: IconCache,
     latest_pointer: Option<Point>,
+    last_root_pointer_sample: Option<RootPointerSample>,
     pointer_over_separator: bool,
     hover: Option<Point>,
     last_layout_signature: Option<DevicePixelLayoutSignature>,
@@ -193,6 +194,27 @@ struct DevicePixelRect {
     y: i64,
     width: i64,
     height: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RootPointerSample {
+    root: (i32, i32),
+    geometry: DockGeometry,
+    scale_bits: u64,
+}
+
+impl RootPointerSample {
+    fn new(root: (i32, i32), geometry: DockGeometry, scale_factor: f64) -> Self {
+        Self {
+            root,
+            geometry,
+            scale_bits: scale_factor.max(1.0).to_bits(),
+        }
+    }
+
+    fn dock_point(self) -> Point {
+        root_to_dock_point(self.root, self.geometry, f64::from_bits(self.scale_bits))
+    }
 }
 
 impl DevicePixelLayoutSignature {
@@ -786,6 +808,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         scene3d: Scene3dRenderer::new(),
         icons,
         latest_pointer: None,
+        last_root_pointer_sample: None,
         pointer_over_separator: false,
         hover: None,
         last_layout_signature: None,
@@ -1342,32 +1365,34 @@ fn wire_motion(
         motion.connect_motion(move |_, x, y| {
             crate::perf::record_motion_event();
             let started = Instant::now();
-            let point = Point { x, y };
-            let separator_hover;
             let resizing;
             {
                 let mut state = state.borrow_mut();
                 resizing = state.separator_resize.is_some();
                 if resizing {
-                    separator_hover = false;
                     state.latest_pointer = None;
+                    state.last_root_pointer_sample = None;
                     state.pointer_over_separator = false;
                     state.hover = None;
                 } else {
-                    separator_hover = separator_hit_test(&state, point);
                     let hidden_changed = state.hidden;
                     if state.hidden {
                         state.hidden = false;
                         state.last_shape_size = None;
                         move_dock(&mut state, true);
                     }
-                    state.latest_pointer = Some(point);
-                    state.pointer_over_separator = separator_hover;
+                    // GTK coordinates are retained only for the plain-window
+                    // fallback. On X11 the next dock frame replaces them with
+                    // a root-coordinate sample that cannot feed back when the
+                    // dock window itself moves.
+                    state.latest_pointer = Some(Point { x, y });
                     state.frame_update_pending = true;
                     state.mandatory_frame_update |= hidden_changed;
                 }
             }
-            set_separator_resize_cursor(&drawing, separator_hover || resizing);
+            if resizing {
+                set_separator_resize_cursor(&drawing, true);
+            }
             if resizing {
                 log_slow("motion", started.elapsed());
                 return;
@@ -1389,6 +1414,7 @@ fn wire_motion(
                 let mut state = state.borrow_mut();
                 resizing = state.separator_resize.is_some();
                 state.latest_pointer = None;
+                state.last_root_pointer_sample = None;
                 state.pointer_over_separator = false;
                 state.frame_update_pending = true;
                 state.mandatory_frame_update = true;
@@ -2177,10 +2203,20 @@ fn ensure_dock_frame_tick(
     let gl_area = gl_area.clone();
     drawing.clone().add_tick_callback(move |_, _| {
         crate::perf::record_frame_tick();
-        let (redraw, keep_running) = {
+        let (redraw, keep_running, separator_hover) = {
             let mut state = state.borrow_mut();
-            advance_dock_frame(&mut state)
+            let (redraw, keep_running, pointer_consumed) = advance_dock_frame(&mut state);
+            (
+                redraw,
+                keep_running,
+                pointer_consumed.then_some(
+                    state.pointer_over_separator || state.separator_resize.is_some(),
+                ),
+            )
         };
+        if let Some(separator_hover) = separator_hover {
+            set_separator_resize_cursor(&drawing, separator_hover);
+        }
         if redraw {
             sync_dock_window(&state, &window, &drawing, &gl_area, false);
             queue_gl_render_if_enabled(&state, &gl_area);
@@ -2205,7 +2241,7 @@ fn claim_frame_tick(frame_tick_running: &mut bool) -> bool {
     }
 }
 
-fn advance_dock_frame(state: &mut Runtime) -> (bool, bool) {
+fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool) {
     let input_pending = std::mem::take(&mut state.frame_update_pending);
     let mandatory = std::mem::take(&mut state.mandatory_frame_update);
 
@@ -2223,11 +2259,25 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool) {
         || !state.indicator_animations.is_empty()
         || state.dock_size_transition.is_some()
         || state.startup_reveal.is_some();
+    let pointer_changed = input_pending && refresh_pointer_from_root(state);
+    if pointer_changed {
+        state.pointer_over_separator = state
+            .latest_pointer
+            .is_some_and(|point| separator_hit_test(state, point));
+    }
     if !input_pending && !mandatory && !animations_active {
-        return (false, state.frame_update_pending);
+        return (false, state.frame_update_pending, false);
+    }
+    if should_skip_unchanged_pointer_frame(
+        input_pending,
+        pointer_changed,
+        mandatory,
+        animations_active,
+    ) {
+        return (false, state.frame_update_pending, true);
     }
 
-    let candidate_hover = if input_pending {
+    let candidate_hover = if pointer_changed {
         hover_for_latest_pointer(state)
     } else {
         state.hover
@@ -2248,7 +2298,63 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool) {
         state.last_layout_signature = Some(signature);
     }
 
-    (redraw, animations_active || state.frame_update_pending)
+    (
+        redraw,
+        frame_should_continue(animations_active, state.frame_update_pending),
+        input_pending,
+    )
+}
+
+fn refresh_pointer_from_root(state: &mut Runtime) -> bool {
+    let sample = state
+        .backend
+        .as_ref()
+        .and_then(|backend| backend.root_pointer_position().ok().flatten())
+        .zip(state.last_geometry)
+        .map(|(root, geometry)| RootPointerSample::new(root, geometry, state.scale_factor));
+    let Some(sample) = sample else {
+        // With no X11 backend, the latest GTK coordinate remains the fallback
+        // and every real motion event is considered fresh input.
+        state.last_root_pointer_sample = None;
+        return true;
+    };
+    let changed = root_pointer_sample_changed(&mut state.last_root_pointer_sample, sample);
+    state.latest_pointer = Some(sample.dock_point());
+    changed
+}
+
+fn root_pointer_sample_changed(
+    previous: &mut Option<RootPointerSample>,
+    current: RootPointerSample,
+) -> bool {
+    let changed = previous.as_ref() != Some(&current);
+    *previous = Some(current);
+    changed
+}
+
+fn root_to_dock_point(
+    root: (i32, i32),
+    geometry: DockGeometry,
+    scale_factor: f64,
+) -> Point {
+    let scale_factor = scale_factor.max(1.0);
+    Point {
+        x: f64::from(root.0 - geometry.x) / scale_factor,
+        y: f64::from(root.1 - geometry.y) / scale_factor,
+    }
+}
+
+fn frame_should_continue(animations_active: bool, frame_update_pending: bool) -> bool {
+    animations_active || frame_update_pending
+}
+
+fn should_skip_unchanged_pointer_frame(
+    input_pending: bool,
+    pointer_changed: bool,
+    mandatory: bool,
+    animations_active: bool,
+) -> bool {
+    input_pending && !pointer_changed && !mandatory && !animations_active
 }
 
 fn hover_for_latest_pointer(state: &Runtime) -> Option<Point> {
@@ -4035,6 +4141,73 @@ mod tests {
         assert!(!claim_frame_tick(&mut running));
         running = false;
         assert!(claim_frame_tick(&mut running));
+    }
+
+    #[test]
+    fn repeated_widget_motion_with_stationary_root_pointer_does_not_redraw() {
+        let geometry = DockGeometry {
+            x: 500,
+            y: 900,
+            width: 800,
+            height: 160,
+            edge: DockEdge::Bottom,
+            reserve_space: false,
+            reserved_thickness: 0,
+        };
+        let sample = RootPointerSample::new((700, 960), geometry, 2.0);
+        let mut previous = None;
+
+        assert!(root_pointer_sample_changed(&mut previous, sample));
+        // A second GTK motion wake may contain different widget-relative
+        // coordinates after a resize, but the root sample remains stable.
+        assert!(!root_pointer_sample_changed(&mut previous, sample));
+        assert!(should_skip_unchanged_pointer_frame(true, false, false, false));
+    }
+
+    #[test]
+    fn stationary_hover_frame_callback_stops_within_two_frames() {
+        let geometry = DockGeometry {
+            x: 500,
+            y: 900,
+            width: 800,
+            height: 160,
+            edge: DockEdge::Bottom,
+            reserve_space: false,
+            reserved_thickness: 0,
+        };
+        let sample = RootPointerSample::new((700, 960), geometry, 1.0);
+        let mut previous = None;
+
+        assert!(root_pointer_sample_changed(&mut previous, sample));
+        assert!(!root_pointer_sample_changed(&mut previous, sample));
+        assert!(!frame_should_continue(false, false));
+    }
+
+    #[test]
+    fn root_pointer_converts_to_dock_coordinates_at_every_edge_and_scale() {
+        for edge in [DockEdge::Bottom, DockEdge::Top, DockEdge::Left, DockEdge::Right] {
+            for scale in [1.0, 2.0] {
+                let geometry = DockGeometry {
+                    x: -300,
+                    y: 400,
+                    width: 1200,
+                    height: 240,
+                    edge,
+                    reserve_space: false,
+                    reserved_thickness: 0,
+                };
+                let point = root_to_dock_point(
+                    (
+                        geometry.x + (120.0 * scale) as i32,
+                        geometry.y + (45.0 * scale) as i32,
+                    ),
+                    geometry,
+                    scale,
+                );
+
+                assert_eq!(point, Point { x: 120.0, y: 45.0 }, "{edge:?} at {scale}x");
+            }
+        }
     }
 
     #[test]
