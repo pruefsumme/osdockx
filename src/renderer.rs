@@ -74,6 +74,48 @@ impl Renderer {
         compute_layout(model, hover, params).size
     }
 
+    /// Returns the largest icon size at or below the configured size whose
+    /// complete dock layout fits inside `available_size`.
+    ///
+    /// The item count and theme both affect the dock dimensions, so a fixed
+    /// global icon-size limit cannot keep the window on-screen. The layout is
+    /// monotonic with icon size, which lets us find the per-monitor limit with
+    /// a small binary search.
+    pub fn fitted_icon_size(
+        model: &DockModel,
+        config: &DockConfig,
+        theme: &Theme,
+        available_size: (i32, i32),
+    ) -> u32 {
+        let available_size = (available_size.0.max(1), available_size.1.max(1));
+        let requested = config.icon_size.max(1);
+        let fits = |icon_size| {
+            let mut candidate = config.clone();
+            candidate.icon_size = icon_size;
+            let size = Self::desired_size(model, &candidate, theme, None);
+            size.0 <= available_size.0 && size.1 <= available_size.1
+        };
+
+        if fits(requested) {
+            return requested;
+        }
+        if !fits(1) {
+            return 1;
+        }
+
+        let mut low = 1;
+        let mut high = requested - 1;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if fits(middle) {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        low
+    }
+
     /// Height of the dock area the WM should keep clear.
     ///
     /// Covers from the top of the (non-magnified) icons down to the bottom

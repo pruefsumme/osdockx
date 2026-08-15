@@ -39,7 +39,7 @@ use self::state::{
 
 use crate::autostart;
 use crate::backend::x11::X11Backend;
-use crate::backend::{DockGeometry, PlatformBackend};
+use crate::backend::{DockGeometry, MonitorGeometry, PlatformBackend};
 use crate::config::{Config, DockConfig, RenderMode};
 use crate::desktop::DesktopIndex;
 use crate::layout::{DockLayout, Point, Rect, separator_hover_rect};
@@ -90,6 +90,7 @@ const CUSTOMIZER_PREVIEW_DEBOUNCE: Duration = Duration::from_millis(120);
 const FILE_RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
 const FILE_MONITOR_RECOVERY: Duration = Duration::from_secs(5);
 const X11_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MONITOR_GEOMETRY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const ADD_APPLICATION_MENU_WIDTH: i32 = 292;
 const ADD_APPLICATION_MENU_VISIBLE_ROWS: usize = 12;
 const APPLET_FAN_WIDTH: i32 = 390;
@@ -112,6 +113,9 @@ const SEPARATOR_RESIZE_CURSOR: &str = "ns-resize";
 const SEPARATOR_RESIZE_PIXELS_PER_ICON: f64 = 2.0;
 const SEPARATOR_RESIZE_MIN_ICON_SIZE: u32 = 32;
 const SEPARATOR_RESIZE_MAX_ICON_SIZE: u32 = 128;
+const DOCK_MAX_MONITOR_WIDTH_RATIO: f64 = 0.90;
+const DOCK_MAX_MONITOR_HEIGHT_RATIO: f64 = 0.40;
+const DOCK_MAX_BASE_ICON_HEIGHT_RATIO: f64 = 1.0 / 12.0;
 
 fn request_dock_draw(drawing: &DrawingArea) {
     crate::perf::record_redraw_requested();
@@ -142,6 +146,7 @@ struct Runtime {
     theme: Theme,
     desktop_index: DesktopIndex,
     backend: Option<X11Backend>,
+    monitor_geometry: Option<MonitorGeometry>,
     model: DockModel,
     renderer: Renderer,
     scene3d: Scene3dRenderer,
@@ -347,12 +352,14 @@ impl Runtime {
         let icon_presence = presence_changed.then(|| {
             let previous_layout = dock_layout_for_state(self, None);
             let previous_rects = current_visible_icon_rects(self);
+            let next_config =
+                fitted_dock_config_for_model(self, &next_model, animated_dock_config(self));
             build_icon_presence_transition(
                 &self.model,
                 &next_model,
                 previous_layout,
                 &previous_rects,
-                &self.config.dock,
+                &next_config,
                 &self.theme,
             )
         });
@@ -396,6 +403,9 @@ impl Runtime {
 
     fn desired_geometry(&self) -> Option<DockGeometry> {
         let backend = self.backend.as_ref()?;
+        let monitor = self
+            .monitor_geometry
+            .unwrap_or_else(|| backend.monitor_geometry(self.config.dock.monitor.as_deref()));
         let size = physical_size(self.desired_size(), self.scale_factor);
         // Reserve the magnified-icon band, icons, visible shelf, and bottom
         // padding. The label band and top padding stay outside the reserved
@@ -412,14 +422,12 @@ impl Runtime {
                 physical_scalar(reserved_edge, self.scale_factor)
             }
         };
-        let mut geometry = backend
-            .monitor_geometry(self.config.dock.monitor.as_deref())
-            .dock_geometry(
-                size,
-                self.config.dock.edge,
-                self.config.dock.reserve_space && !self.config.dock.autohide,
-                reserved_thickness,
-            );
+        let mut geometry = monitor.dock_geometry(
+            size,
+            self.config.dock.edge,
+            self.config.dock.reserve_space && !self.config.dock.autohide,
+            reserved_thickness,
+        );
 
         if self.hidden {
             let hidden_offset = hidden_edge_offset(&geometry, self.config.dock.edge);
@@ -432,6 +440,28 @@ impl Runtime {
             apply_edge_offset(&mut geometry, self.config.dock.edge, startup_offset);
         }
         Some(geometry)
+    }
+
+    fn refresh_monitor_geometry(&mut self) -> bool {
+        let Some(backend) = self.backend.as_ref() else {
+            return false;
+        };
+        let geometry = backend.monitor_geometry(self.config.dock.monitor.as_deref());
+        if self.monitor_geometry == Some(geometry) {
+            return false;
+        }
+
+        self.monitor_geometry = Some(geometry);
+        self.icon_presence = None;
+        self.hover = None;
+        self.latest_pointer = None;
+        self.last_root_pointer_sample = None;
+        self.last_layout_signature = None;
+        self.last_size = None;
+        self.last_geometry = None;
+        self.last_reserved_geometry = None;
+        self.last_shape_size = None;
+        true
     }
 }
 
@@ -468,7 +498,7 @@ fn dock_model_visual_eq(previous: &DockModel, next: &DockModel) -> bool {
         })
 }
 
-fn rendered_dock_config(state: &Runtime) -> DockConfig {
+fn animated_dock_config(state: &Runtime) -> DockConfig {
     let mut config = state.config.dock.clone();
     if let Some(resize) = state.separator_resize.as_ref() {
         config.icon_size = resize.render_icon_size.round() as u32;
@@ -476,6 +506,64 @@ fn rendered_dock_config(state: &Runtime) -> DockConfig {
         config.icon_size = transition_icon_size(transition).round() as u32;
     }
     config
+}
+
+fn rendered_dock_config(state: &Runtime) -> DockConfig {
+    fitted_dock_config_for_model(state, &state.model, animated_dock_config(state))
+}
+
+fn fitted_dock_config_for_model(
+    state: &Runtime,
+    model: &DockModel,
+    config: DockConfig,
+) -> DockConfig {
+    fit_dock_config_to_monitor(
+        model,
+        config,
+        &state.theme,
+        state.monitor_geometry,
+        state.scale_factor,
+    )
+}
+
+fn fit_dock_config_to_monitor(
+    model: &DockModel,
+    mut config: DockConfig,
+    theme: &Theme,
+    monitor: Option<MonitorGeometry>,
+    scale_factor: f64,
+) -> DockConfig {
+    let Some(monitor) = monitor else {
+        return config;
+    };
+    let monitor_size = logical_monitor_size(monitor, scale_factor);
+    let resolution_icon_limit =
+        (monitor_size.1 as f64 * DOCK_MAX_BASE_ICON_HEIGHT_RATIO).floor().max(1.0) as u32;
+    config.icon_size = config.icon_size.min(resolution_icon_limit);
+    let available_size = (
+        (monitor_size.0 as f64 * DOCK_MAX_MONITOR_WIDTH_RATIO)
+            .floor()
+            .max(1.0) as i32,
+        (monitor_size.1 as f64 * DOCK_MAX_MONITOR_HEIGHT_RATIO)
+            .floor()
+            .max(1.0) as i32,
+    );
+    config.icon_size = Renderer::fitted_icon_size(model, &config, theme, available_size);
+    config
+}
+
+fn logical_monitor_size(monitor: MonitorGeometry, scale_factor: f64) -> (i32, i32) {
+    let scale_factor = scale_factor.max(1.0);
+    (
+        (monitor.width as f64 / scale_factor).floor().max(1.0) as i32,
+        (monitor.height as f64 / scale_factor).floor().max(1.0) as i32,
+    )
+}
+
+fn maximum_fitting_icon_size(state: &Runtime) -> u32 {
+    let mut config = state.config.dock.clone();
+    config.icon_size = SEPARATOR_RESIZE_MAX_ICON_SIZE;
+    fitted_dock_config_for_model(state, &state.model, config).icon_size
 }
 
 fn active_dock_size_transition(state: &Runtime) -> Option<&DockSizeTransition> {
@@ -792,12 +880,11 @@ fn separator_resize_drag_delta(
     (current_window_y - resize.start_window_y) as f64 + offset_y
 }
 
-fn resize_icon_size_for_drag(start_icon_size: u32, offset_y: f64) -> u32 {
+fn resize_icon_size_for_drag(start_icon_size: u32, offset_y: f64, max_icon_size: u32) -> u32 {
     let size_delta = (-offset_y / SEPARATOR_RESIZE_PIXELS_PER_ICON).round() as i32;
-    (start_icon_size as i32 + size_delta).clamp(
-        SEPARATOR_RESIZE_MIN_ICON_SIZE as i32,
-        SEPARATOR_RESIZE_MAX_ICON_SIZE as i32,
-    ) as u32
+    let max_icon_size = max_icon_size.max(1);
+    let min_icon_size = SEPARATOR_RESIZE_MIN_ICON_SIZE.min(max_icon_size);
+    (start_icon_size as i32 + size_delta).clamp(min_icon_size as i32, max_icon_size as i32) as u32
 }
 
 fn set_separator_resize_cursor(drawing: &DrawingArea, enabled: bool) {
@@ -832,6 +919,9 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
             None
         }
     };
+    let monitor_geometry = backend
+        .as_ref()
+        .map(|backend| backend.monitor_geometry(config.dock.monitor.as_deref()));
 
     let mut icons = IconCache::new();
     icons.set_custom_icons(&config.custom_icons);
@@ -848,6 +938,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         theme,
         desktop_index,
         backend,
+        monitor_geometry,
         model: DockModel::default(),
         renderer: Renderer::new(),
         scene3d: Scene3dRenderer::new(),
@@ -965,6 +1056,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
     wire_separator_resize_drag(&state, &window, &drawing, &gl_area);
     wire_realize(&state, &window, &drawing, &gl_area);
     wire_x11_events(&state, &window, &drawing, &gl_area);
+    wire_monitor_geometry_changes(&state, &window, &drawing, &gl_area);
     install_file_monitors(&state, &window, &drawing, &gl_area);
     wire_file_monitor_recovery(&state, &window, &drawing, &gl_area);
     wire_icon_theme_changes(&state, &drawing, &gl_area);
@@ -1305,7 +1397,20 @@ fn wire_realize(
         {
             let mut runtime = state.borrow_mut();
             runtime.dock_xid = Some(xid);
-            runtime.scale_factor = surface.scale_factor().max(1) as f64;
+            let scale_factor = surface.scale_factor().max(1) as f64;
+            if (runtime.scale_factor - scale_factor).abs() >= f64::EPSILON {
+                runtime.scale_factor = scale_factor;
+                runtime.icons.invalidate_surfaces();
+                runtime.icon_presence = None;
+                runtime.hover = None;
+                runtime.latest_pointer = None;
+                runtime.last_root_pointer_sample = None;
+                runtime.last_layout_signature = None;
+                runtime.last_size = None;
+                runtime.last_geometry = None;
+                runtime.last_reserved_geometry = None;
+                runtime.last_shape_size = None;
+            }
         }
         wire_scale_factor_changes(&state, &surface, window, &drawing, &gl_area);
         let mut runtime = state.borrow_mut();
@@ -1317,6 +1422,12 @@ fn wire_realize(
             reveal();
             return;
         };
+        let size = runtime.desired_size();
+        drawing.set_content_width(size.0);
+        drawing.set_content_height(size.1);
+        gl_area.set_size_request(size.0, size.1);
+        window.set_default_size(size.0, size.1);
+        runtime.last_size = Some(size);
         if let Some(backend) = runtime.backend.as_mut()
             && let Err(error) = backend.set_dock_window(xid, geometry)
         {
@@ -1352,6 +1463,11 @@ fn wire_scale_factor_changes(
             } else {
                 state.scale_factor = new_scale;
                 state.icons.invalidate_surfaces();
+                state.icon_presence = None;
+                state.hover = None;
+                state.latest_pointer = None;
+                state.last_root_pointer_sample = None;
+                state.last_layout_signature = None;
                 state.last_size = None;
                 state.last_geometry = None;
                 state.last_reserved_geometry = None;
@@ -1721,7 +1837,8 @@ fn wire_separator_resize_drag(
                     .or_else(|| state.desired_geometry())
                     .map(|geometry| geometry.y)
                     .unwrap_or_default();
-                begin_separator_resize(&layout, point, start_window_y, state.config.dock.icon_size)
+                let start_icon_size = rendered_dock_config(&state).icon_size;
+                begin_separator_resize(&layout, point, start_window_y, start_icon_size)
             };
             let Some(resize) = resize else {
                 return;
@@ -1793,6 +1910,7 @@ fn update_separator_resize(state: &mut Runtime, offset_y: f64) -> bool {
                 .map(|resize| resize.start_window_y)
                 .unwrap_or_default()
         });
+    let max_icon_size = maximum_fitting_icon_size(state);
     let Some(resize) = state.separator_resize.as_mut() else {
         return false;
     };
@@ -1800,6 +1918,7 @@ fn update_separator_resize(state: &mut Runtime, offset_y: f64) -> bool {
     let new_size = resize_icon_size_for_drag(
         resize.start_icon_size,
         separator_resize_drag_delta(resize, current_window_y, offset_y),
+        max_icon_size,
     );
     if resize.target_icon_size == new_size {
         return false;
@@ -2923,10 +3042,11 @@ fn change_icon_size(
     delta: i32,
 ) {
     update_dock_config(state, window, drawing, gl_area, |state| {
-        let icon_size = (state.config.dock.icon_size as i32 + delta).clamp(
-            SEPARATOR_RESIZE_MIN_ICON_SIZE as i32,
-            SEPARATOR_RESIZE_MAX_ICON_SIZE as i32,
-        );
+        let max_icon_size = maximum_fitting_icon_size(state).max(1);
+        let min_icon_size = SEPARATOR_RESIZE_MIN_ICON_SIZE.min(max_icon_size);
+        let current_icon_size = rendered_dock_config(state).icon_size;
+        let icon_size =
+            (current_icon_size as i32 + delta).clamp(min_icon_size as i32, max_icon_size as i32);
         state.config.dock.icon_size = icon_size as u32;
         state.hover = None;
     });
@@ -3180,6 +3300,31 @@ fn wire_x11_events(
     });
 }
 
+fn wire_monitor_geometry_changes(
+    state: &Rc<RefCell<Runtime>>,
+    window: &ApplicationWindow,
+    drawing: &DrawingArea,
+    gl_area: &GLArea,
+) {
+    if state.borrow().backend.is_none() {
+        return;
+    }
+
+    let state = Rc::clone(state);
+    let window = window.clone();
+    let drawing = drawing.clone();
+    let gl_area = gl_area.clone();
+    glib::timeout_add_local(MONITOR_GEOMETRY_POLL_INTERVAL, move || {
+        let changed = state.borrow_mut().refresh_monitor_geometry();
+        if changed {
+            sync_dock_window(&state, &window, &drawing, &gl_area, true);
+            queue_gl_render_if_enabled(&state, &gl_area);
+            request_dock_draw(&drawing);
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 fn ensure_icon_animation_if_needed(
     state: &Rc<RefCell<Runtime>>,
     window: &ApplicationWindow,
@@ -3409,6 +3554,7 @@ fn sync_dock_window(
     let mut size_changed = false;
     let size = {
         let mut state = state.borrow_mut();
+        state.refresh_monitor_geometry();
         let size = state.desired_size();
         if state.last_size != Some(size) {
             state.last_size = Some(size);
@@ -3907,30 +4053,35 @@ mod tests {
 
     #[test]
     fn dragging_upward_increases_icon_size() {
-        assert!(resize_icon_size_for_drag(64, -7.5) > 64);
+        assert!(resize_icon_size_for_drag(64, -7.5, 128) > 64);
     }
 
     #[test]
     fn dragging_downward_decreases_icon_size() {
-        assert!(resize_icon_size_for_drag(64, 7.5) < 64);
+        assert!(resize_icon_size_for_drag(64, 7.5, 128) < 64);
     }
 
     #[test]
     fn separator_resize_clamps_icon_size() {
         assert_eq!(
-            resize_icon_size_for_drag(64, -500.0),
+            resize_icon_size_for_drag(64, -500.0, SEPARATOR_RESIZE_MAX_ICON_SIZE),
             SEPARATOR_RESIZE_MAX_ICON_SIZE
         );
         assert_eq!(
-            resize_icon_size_for_drag(64, 500.0),
+            resize_icon_size_for_drag(64, 500.0, SEPARATOR_RESIZE_MAX_ICON_SIZE),
             SEPARATOR_RESIZE_MIN_ICON_SIZE
         );
     }
 
     #[test]
+    fn separator_resize_obeys_resolution_dependent_maximum() {
+        assert_eq!(resize_icon_size_for_drag(64, -500.0, 96), 96);
+    }
+
+    #[test]
     fn small_drag_deltas_keep_same_effective_icon_size() {
-        assert_eq!(resize_icon_size_for_drag(64, 0.8), 64);
-        assert_eq!(resize_icon_size_for_drag(64, -0.8), 64);
+        assert_eq!(resize_icon_size_for_drag(64, 0.8, 128), 64);
+        assert_eq!(resize_icon_size_for_drag(64, -0.8, 128), 64);
     }
 
     #[test]
@@ -4057,6 +4208,95 @@ mod tests {
     #[test]
     fn physical_size_doubles_under_2x() {
         assert_eq!(physical_size((800, 100), 2.0), (1600, 200));
+    }
+
+    #[test]
+    fn hidpi_dock_uses_ergonomic_resolution_ceiling() {
+        let mut items = (0..12)
+            .map(|index| separator_test_item(&format!("app-{index}")))
+            .collect::<Vec<_>>();
+        items.extend([DockItem::downloads_applet(), DockItem::trash_applet()]);
+        let model = DockModel { items };
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let monitor = MonitorGeometry {
+            x: 0,
+            y: 0,
+            width: 2880,
+            height: 1800,
+        };
+
+        let fitted =
+            fit_dock_config_to_monitor(&model, config.dock.clone(), &theme, Some(monitor), 2.0);
+        let fitted_size = physical_size(Renderer::desired_size(&model, &fitted, &theme, None), 2.0);
+        let safe_physical_width =
+            (monitor.width as f64 * DOCK_MAX_MONITOR_WIDTH_RATIO).floor() as i32;
+        let safe_physical_height =
+            (monitor.height as f64 * DOCK_MAX_MONITOR_HEIGHT_RATIO).floor() as i32;
+
+        assert!(fitted.icon_size < config.dock.icon_size);
+        assert_eq!(fitted.icon_size, 75);
+        assert!(fitted_size.0 <= safe_physical_width);
+        assert!(fitted_size.1 <= safe_physical_height);
+    }
+
+    #[test]
+    fn crowded_dock_shrinks_further_to_preserve_horizontal_margin() {
+        let mut items = (0..20)
+            .map(|index| separator_test_item(&format!("app-{index}")))
+            .collect::<Vec<_>>();
+        items.extend([DockItem::downloads_applet(), DockItem::trash_applet()]);
+        let model = DockModel { items };
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let monitor = MonitorGeometry {
+            x: 0,
+            y: 0,
+            width: 2880,
+            height: 1800,
+        };
+
+        let fitted =
+            fit_dock_config_to_monitor(&model, config.dock, &theme, Some(monitor), 2.0);
+        let safe_width =
+            (monitor.width as f64 * DOCK_MAX_MONITOR_WIDTH_RATIO).floor() as i32;
+        let fitted_size = physical_size(Renderer::desired_size(&model, &fitted, &theme, None), 2.0);
+
+        assert!(fitted.icon_size < 75);
+        assert!(fitted_size.0 <= safe_width);
+
+        let mut one_pixel_larger = fitted.clone();
+        one_pixel_larger.icon_size += 1;
+        let larger_size = physical_size(
+            Renderer::desired_size(&model, &one_pixel_larger, &theme, None),
+            2.0,
+        );
+        assert!(larger_size.0 > safe_width);
+    }
+
+    #[test]
+    fn fitting_preserves_requested_size_when_resolution_limit_has_room() {
+        let model = DockModel {
+            items: (0..4)
+                .map(|index| separator_test_item(&format!("app-{index}")))
+                .collect(),
+        };
+        let config = Config::default().normalized();
+        let theme = Theme::from_config(&config.theme);
+        let fitted = fit_dock_config_to_monitor(
+            &model,
+            config.dock.clone(),
+            &theme,
+            Some(MonitorGeometry {
+                x: 0,
+                y: 0,
+                width: 3840,
+                height: 3072,
+            }),
+            2.0,
+        );
+
+        assert_eq!(fitted.icon_size, config.dock.icon_size);
     }
 
     #[test]
