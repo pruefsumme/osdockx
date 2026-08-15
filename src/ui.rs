@@ -156,7 +156,7 @@ struct Runtime {
     pointer_over_separator: bool,
     hover: Option<Point>,
     last_layout_signature: Option<DevicePixelLayoutSignature>,
-    frame_update_pending: bool,
+    pointer_update_pending: PointerUpdate,
     mandatory_frame_update: bool,
     dock_xid: Option<u32>,
     hidden: bool,
@@ -211,6 +211,14 @@ struct RootPointerSample {
 struct ModelChange {
     repaint: bool,
     synchronize_window: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PointerUpdate {
+    #[default]
+    None,
+    Motion,
+    Leave,
 }
 
 impl RootPointerSample {
@@ -948,7 +956,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         pointer_over_separator: false,
         hover: None,
         last_layout_signature: None,
-        frame_update_pending: false,
+        pointer_update_pending: PointerUpdate::None,
         mandatory_frame_update: false,
         dock_xid: None,
         hidden: false,
@@ -1546,7 +1554,7 @@ fn wire_motion(
                     // a root-coordinate sample that cannot feed back when the
                     // dock window itself moves.
                     state.latest_pointer = Some(Point { x, y });
-                    state.frame_update_pending = true;
+                    state.pointer_update_pending = PointerUpdate::Motion;
                     state.mandatory_frame_update |= hidden_changed;
                 }
             }
@@ -1576,7 +1584,8 @@ fn wire_motion(
                 state.latest_pointer = None;
                 state.last_root_pointer_sample = None;
                 state.pointer_over_separator = false;
-                state.frame_update_pending = true;
+                state.hover = None;
+                state.pointer_update_pending = PointerUpdate::Leave;
                 state.mandatory_frame_update = true;
                 autohide = state.config.dock.autohide && state.context_menu.is_none() && !resizing;
                 delay = state.config.dock.hide_delay_ms;
@@ -2407,7 +2416,8 @@ fn claim_frame_tick(frame_tick_running: &mut bool) -> bool {
 }
 
 fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
-    let input_pending = std::mem::take(&mut state.frame_update_pending);
+    let pointer_update = std::mem::take(&mut state.pointer_update_pending);
+    let input_pending = pointer_update != PointerUpdate::None;
     let mandatory = std::mem::take(&mut state.mandatory_frame_update);
     let window_animation_was_active = window_animation_active(state);
 
@@ -2426,14 +2436,26 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
         || state.dock_size_transition.is_some()
         || state.startup_reveal.is_some();
     let window_animation_frame = window_animation_was_active || window_animation_active(state);
-    let pointer_changed = input_pending && refresh_pointer_from_root(state);
+    let pointer_changed = match pointer_update {
+        PointerUpdate::Motion => refresh_pointer_from_root(state),
+        // A GTK leave is authoritative. Re-sampling the root pointer here can
+        // land on the magnified icon outside the dock's stable input shape,
+        // retain hover, and leave the zoom stuck with no more motion events.
+        PointerUpdate::Leave => true,
+        PointerUpdate::None => false,
+    };
     if pointer_changed {
         state.pointer_over_separator = state
             .latest_pointer
             .is_some_and(|point| separator_hit_test(state, point));
     }
     if !input_pending && !mandatory && !animations_active {
-        return (false, false, state.frame_update_pending, false);
+        return (
+            false,
+            false,
+            state.pointer_update_pending != PointerUpdate::None,
+            false,
+        );
     }
     if should_skip_unchanged_pointer_frame(
         input_pending,
@@ -2441,14 +2463,25 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
         mandatory,
         animations_active,
     ) {
-        return (false, false, state.frame_update_pending, true);
+        return (
+            false,
+            false,
+            state.pointer_update_pending != PointerUpdate::None,
+            true,
+        );
     }
 
-    let candidate_hover = if pointer_changed {
+    let refreshed_hover = if pointer_changed {
         hover_for_latest_pointer(state)
     } else {
-        state.hover
+        None
     };
+    let candidate_hover = hover_for_pointer_update(
+        pointer_update,
+        pointer_changed,
+        state.hover,
+        refreshed_hover,
+    );
     let config = rendered_dock_config(state);
     let layout = dock_layout_for_state(state, candidate_hover);
     let signature = DevicePixelLayoutSignature::new(&layout, config.icon_size, state.scale_factor);
@@ -2469,9 +2502,25 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
     (
         redraw,
         synchronize_window,
-        frame_should_continue(animations_active, state.frame_update_pending),
+        frame_should_continue(
+            animations_active,
+            state.pointer_update_pending != PointerUpdate::None,
+        ),
         input_pending,
     )
+}
+
+fn hover_for_pointer_update(
+    update: PointerUpdate,
+    pointer_changed: bool,
+    current_hover: Option<Point>,
+    refreshed_hover: Option<Point>,
+) -> Option<Point> {
+    match update {
+        PointerUpdate::Leave => None,
+        PointerUpdate::Motion if pointer_changed => refreshed_hover,
+        PointerUpdate::None | PointerUpdate::Motion => current_hover,
+    }
 }
 
 fn window_animation_active(state: &Runtime) -> bool {
@@ -4484,6 +4533,21 @@ mod tests {
         assert!(should_skip_unchanged_pointer_frame(
             true, false, false, false
         ));
+    }
+
+    #[test]
+    fn pointer_leave_clears_hover_instead_of_reusing_a_root_hit() {
+        let current = Some(Point { x: 120.0, y: 80.0 });
+        let stale_root_hit = Some(Point { x: 120.0, y: 42.0 });
+
+        assert_eq!(
+            hover_for_pointer_update(PointerUpdate::Leave, true, current, stale_root_hit),
+            None
+        );
+        assert_eq!(
+            hover_for_pointer_update(PointerUpdate::Motion, true, current, stale_root_hit),
+            stale_root_hit
+        );
     }
 
     #[test]
