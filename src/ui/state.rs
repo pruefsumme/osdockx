@@ -63,6 +63,21 @@ pub(super) struct IndicatorAnimation {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct LaunchAnimation {
+    pub(super) started: Instant,
+    pub(super) ready_landing: Option<Duration>,
+}
+
+impl LaunchAnimation {
+    pub(super) fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            ready_landing: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct IconPresenceGhost {
     pub(super) item: Arc<DockItem>,
     pub(super) rect: Rect,

@@ -34,7 +34,7 @@ use self::menus::{
 use self::pickers::{show_add_application_menu, show_theme_icon_menu};
 use self::state::{
     DockSizeTransition, IconDrag, IconPresenceGhost, IconPresenceTransition, IconSlide,
-    IndicatorAnimation, IndicatorVisual, SeparatorResize, StartupReveal,
+    IndicatorAnimation, IndicatorVisual, LaunchAnimation, SeparatorResize, StartupReveal,
 };
 
 use crate::autostart;
@@ -107,6 +107,7 @@ const ICON_SLIDE_DURATION: Duration = Duration::from_millis(150);
 const ICON_PRESENCE_DURATION: Duration = Duration::from_millis(460);
 const DOCK_SIZE_TRANSITION_DURATION: Duration = Duration::from_millis(260);
 const INDICATOR_ANIMATION_DURATION: Duration = Duration::from_millis(180);
+const LAUNCH_BOUNCE_TIMEOUT: Duration = Duration::from_secs(30);
 const ICON_ANIMATION_FRAME: Duration = Duration::from_millis(16);
 const STARTUP_REVEAL_DURATION: Duration = Duration::from_millis(480);
 const SEPARATOR_RESIZE_CURSOR: &str = "ns-resize";
@@ -173,6 +174,7 @@ struct Runtime {
     icon_slide: Option<IconSlide>,
     icon_presence: Option<IconPresenceTransition>,
     indicator_animations: HashMap<String, IndicatorAnimation>,
+    launch_animations: HashMap<String, LaunchAnimation>,
     startup_reveal: Option<StartupReveal>,
     frame_tick_running: bool,
     suppress_next_left_click: bool,
@@ -379,6 +381,8 @@ impl Runtime {
             );
             crate::perf::record_visual_model_update();
         }
+        let launch_cycle = launch_bounce_cycle(&self.config.dock);
+        update_launch_animations(&mut self.launch_animations, &next_model, launch_cycle);
         if presence_changed {
             crate::perf::record_presence_model_update();
         }
@@ -973,6 +977,7 @@ fn build_ui(app: &Application) -> anyhow::Result<()> {
         icon_slide: None,
         icon_presence: None,
         indicator_animations: HashMap::new(),
+        launch_animations: HashMap::new(),
         startup_reveal: None,
         frame_tick_running: false,
         suppress_next_left_click: false,
@@ -1678,7 +1683,9 @@ fn wire_clicks(
                         sync_dock_window(&state, &window, &drawing, &gl_area, true);
                     }
                     if item.is_application() {
-                        activate_item(&state, index, button);
+                        if activate_item(&state, index, button) {
+                            ensure_icon_animation_tick(&state, &window, &drawing, &gl_area);
+                        }
                     } else {
                         activate_applet(
                             &state,
@@ -2070,7 +2077,7 @@ fn icon_motion_frame(state: &Runtime) -> Option<IconMotionFrame> {
         .icon_slide
         .as_ref()
         .filter(|slide| slide.started.elapsed() < ICON_SLIDE_DURATION);
-    if drag.is_none() && slide.is_none() {
+    if drag.is_none() && slide.is_none() && state.launch_animations.is_empty() {
         return None;
     }
 
@@ -2099,6 +2106,15 @@ fn icon_motion_frame(state: &Runtime) -> Option<IconMotionFrame> {
                     width: icon.rect.width,
                     height: icon.rect.height,
                 };
+            } else if let Some(animation) = state
+                .launch_animations
+                .get(&item_key.to_ascii_lowercase())
+            {
+                rect = translate_rect(
+                    rect,
+                    0.0,
+                    -launch_bounce_height(animation, rect.height, &state.config.dock),
+                );
             }
             Some(IconMotionRect { item_key, rect })
         })
@@ -2108,6 +2124,80 @@ fn icon_motion_frame(state: &Runtime) -> Option<IconMotionFrame> {
         rects,
         floating_item_key: drag.map(|drag| drag.item_key.clone()),
     })
+}
+
+fn launch_bounce_cycle(config: &DockConfig) -> Duration {
+    Duration::from_millis(config.launch_bounce_cycle_ms as u64)
+}
+
+fn launch_bounce_height(
+    animation: &LaunchAnimation,
+    icon_height: f64,
+    config: &DockConfig,
+) -> f64 {
+    launch_bounce_height_at(
+        animation.started.elapsed(),
+        icon_height,
+        launch_bounce_cycle(config),
+        config.launch_bounce_height_ratio,
+    )
+}
+
+fn launch_bounce_height_at(
+    elapsed: Duration,
+    icon_height: f64,
+    cycle: Duration,
+    height_ratio: f64,
+) -> f64 {
+    let cycle_progress = (elapsed.as_secs_f64() / cycle.as_secs_f64()).fract();
+    (std::f64::consts::PI * cycle_progress).sin().max(0.0)
+        * icon_height
+        * height_ratio
+}
+
+fn update_launch_animations(
+    animations: &mut HashMap<String, LaunchAnimation>,
+    model: &DockModel,
+    cycle: Duration,
+) {
+    animations.retain(|item_key, animation| {
+        let elapsed = animation.started.elapsed();
+        let running = model.items.iter().any(|item| {
+            item.config_key().eq_ignore_ascii_case(item_key) && item.is_running()
+        });
+        if running && animation.ready_landing.is_none() {
+            animation.ready_landing = Some(next_launch_landing(elapsed, cycle));
+        }
+        launch_animation_continues_at(animation, elapsed)
+    });
+}
+
+fn next_launch_landing(elapsed: Duration, cycle: Duration) -> Duration {
+    let completed_cycles = elapsed
+        .as_nanos()
+        .div_ceil(cycle.as_nanos())
+        .max(1);
+    cycle.mul_f64(completed_cycles as f64)
+}
+
+fn launch_animation_continues_at(animation: &LaunchAnimation, elapsed: Duration) -> bool {
+    elapsed
+        < animation
+            .ready_landing
+            .unwrap_or(LAUNCH_BOUNCE_TIMEOUT)
+}
+
+fn start_launch_animation(
+    animations: &mut HashMap<String, LaunchAnimation>,
+    item_key: String,
+    enabled: bool,
+) -> bool {
+    if !enabled {
+        animations.remove(&item_key);
+        return false;
+    }
+    animations.insert(item_key, LaunchAnimation::new());
+    true
 }
 
 fn current_icon_motion_rects(state: &Runtime) -> Vec<IconMotionRect> {
@@ -2285,7 +2375,7 @@ fn build_indicator_animations(
 }
 
 fn indicator_animation_frame(state: &Runtime) -> Option<IndicatorAnimationFrame> {
-    let states = state
+    let mut states = state
         .indicator_animations
         .iter()
         .filter(|(_, animation)| animation.started.elapsed() < INDICATOR_ANIMATION_DURATION)
@@ -2298,6 +2388,22 @@ fn indicator_animation_frame(state: &Runtime) -> Option<IndicatorAnimationFrame>
             }
         })
         .collect::<Vec<_>>();
+
+    for item_key in state.launch_animations.keys() {
+        if let Some(indicator) = states
+            .iter_mut()
+            .find(|indicator| indicator.item_key.eq_ignore_ascii_case(item_key))
+        {
+            indicator.visibility = 0.0;
+            indicator.emphasis = 0.0;
+        } else {
+            states.push(IndicatorAnimationState {
+                item_key: item_key.clone(),
+                visibility: 0.0,
+                emphasis: 0.0,
+            });
+        }
+    }
 
     (!states.is_empty()).then_some(IndicatorAnimationFrame { states })
 }
@@ -2425,6 +2531,7 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
     prune_finished_icon_slide(state);
     prune_finished_icon_presence(state);
     prune_finished_indicator_animations(state);
+    prune_finished_launch_animations(state);
     prune_finished_dock_size_transition(state);
     prune_finished_startup_reveal(state);
 
@@ -2433,6 +2540,7 @@ fn advance_dock_frame(state: &mut Runtime) -> (bool, bool, bool, bool) {
         || state.icon_slide.is_some()
         || state.icon_presence.is_some()
         || !state.indicator_animations.is_empty()
+        || !state.launch_animations.is_empty()
         || state.dock_size_transition.is_some()
         || state.startup_reveal.is_some();
     let window_animation_frame = window_animation_was_active || window_animation_active(state);
@@ -2651,6 +2759,12 @@ fn prune_finished_indicator_animations(state: &mut Runtime) {
     state
         .indicator_animations
         .retain(|_, animation| animation.started.elapsed() < INDICATOR_ANIMATION_DURATION);
+}
+
+fn prune_finished_launch_animations(state: &mut Runtime) {
+    state.launch_animations.retain(|_, animation| {
+        launch_animation_continues_at(animation, animation.started.elapsed())
+    });
 }
 
 fn prune_finished_dock_size_transition(state: &mut Runtime) {
@@ -2900,11 +3014,23 @@ fn run_application_context_action(
     item: &DockItem,
     action: ApplicationContextAction,
 ) {
-    match action {
+    let launched = match action {
         ApplicationContextAction::Launch => launch_item(state, item),
-        ApplicationContextAction::Focus => focus_item_window(state, item),
-        ApplicationContextAction::Minimize => minimize_item_window(state, item),
-        ApplicationContextAction::Close => close_item_application(state, item),
+        ApplicationContextAction::Focus => {
+            focus_item_window(state, item);
+            false
+        }
+        ApplicationContextAction::Minimize => {
+            minimize_item_window(state, item);
+            false
+        }
+        ApplicationContextAction::Close => {
+            close_item_application(state, item);
+            false
+        }
+    };
+    if launched {
+        ensure_icon_animation_tick(state, window, drawing, gl_area);
     }
 
     sync_dock_window(state, window, drawing, gl_area, true);
@@ -3384,6 +3510,7 @@ fn ensure_icon_animation_if_needed(
         let state = state.borrow();
         state.icon_presence.is_some()
             || !state.indicator_animations.is_empty()
+            || !state.launch_animations.is_empty()
             || state.dock_size_transition.is_some()
     };
     if needs_tick {
@@ -3422,7 +3549,12 @@ fn refresh_config_and_theme(state: &mut Runtime, force_theme_assets: bool) -> bo
                 let next_icon_size = config.dock.icon_size as f64;
                 let startup_changed = state.config.startup != config.startup;
                 let custom_icons_changed = state.config.custom_icons != config.custom_icons;
+                let launch_bounce_disabled =
+                    state.config.dock.launch_bounce && !config.dock.launch_bounce;
                 state.config = config;
+                if launch_bounce_disabled {
+                    state.launch_animations.clear();
+                }
                 if let Some(backend) = state.backend.as_mut() {
                     backend.set_reconciliation_interval(Duration::from_millis(
                         state.config.dock.refresh_ms as u64,
@@ -3477,21 +3609,21 @@ fn refresh_config_and_theme(state: &mut Runtime, force_theme_assets: bool) -> bo
     changed
 }
 
-fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {
+fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) -> bool {
     let item = {
         let state = state.borrow();
         state.model.items.get(index).cloned()
     };
     let Some(item) = item else {
-        return;
+        return false;
     };
     if !item.is_application() {
-        return;
+        return false;
     }
 
     if button == 2 {
         close_item_window(state, &item);
-        return;
+        return false;
     }
 
     if item.primary_window().is_some() {
@@ -3500,10 +3632,10 @@ fn activate_item(state: &Rc<RefCell<Runtime>>, index: usize, button: u32) {
         } else {
             focus_item_window(state, &item);
         }
-        return;
+        return false;
     }
 
-    launch_item(state, &item);
+    launch_item(state, &item)
 }
 
 fn activate_applet(
@@ -3521,16 +3653,27 @@ fn activate_applet(
     }
 }
 
-fn launch_item(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
+fn launch_item(state: &Rc<RefCell<Runtime>>, item: &DockItem) -> bool {
     if !item.is_application() {
-        return;
+        return false;
     }
 
-    if let Some(desktop_id) = item.desktop_id.as_deref()
-        && let Err(error) = state.borrow().desktop_index.launch(desktop_id)
-    {
+    let Some(desktop_id) = item.desktop_id.as_deref() else {
+        return false;
+    };
+    let launch_result = state.borrow().desktop_index.launch(desktop_id);
+    if let Err(error) = launch_result {
         tracing::warn!("could not launch {desktop_id}: {error:#}");
+        return false;
     }
+
+    let mut state = state.borrow_mut();
+    let enabled = state.config.dock.launch_bounce;
+    start_launch_animation(
+        &mut state.launch_animations,
+        item.config_key().to_ascii_lowercase(),
+        enabled,
+    )
 }
 
 fn focus_item_window(state: &Rc<RefCell<Runtime>>, item: &DockItem) {
@@ -4149,6 +4292,81 @@ mod tests {
         assert!((ease_in_out_cubic(0.5) - 0.5).abs() < 0.001);
         assert!(ease_in_out_cubic(0.25) < 0.25);
         assert!(ease_in_out_cubic(0.75) > 0.75);
+    }
+
+    #[test]
+    fn launch_bounce_returns_to_ground_after_900_ms() {
+        let icon_height = 64.0;
+        let cycle = Duration::from_millis(900);
+        let height_ratio = 0.52;
+
+        assert_eq!(
+            launch_bounce_height_at(Duration::ZERO, icon_height, cycle, height_ratio),
+            0.0
+        );
+        assert!(
+            (launch_bounce_height_at(
+                Duration::from_millis(450),
+                icon_height,
+                cycle,
+                height_ratio,
+            ) - icon_height * height_ratio)
+                .abs()
+                < 0.001
+        );
+        assert!(
+            launch_bounce_height_at(Duration::from_millis(900), icon_height, cycle, height_ratio)
+                .abs()
+                < 0.001
+        );
+    }
+
+    #[test]
+    fn quick_application_launch_still_completes_one_bounce() {
+        let mut animations = HashMap::from([(
+            "terminal.desktop".to_string(),
+            LaunchAnimation::new(),
+        )]);
+        let running_model = DockModel {
+            items: vec![item_with_state(Some("terminal.desktop"), false, true)],
+        };
+
+        let cycle = Duration::from_millis(900);
+        update_launch_animations(&mut animations, &running_model, cycle);
+        let animation = animations.get("terminal.desktop").unwrap();
+
+        assert_eq!(animation.ready_landing, Some(cycle));
+        assert!(launch_animation_continues_at(
+            animation,
+            Duration::from_millis(899)
+        ));
+        assert!(!launch_animation_continues_at(
+            animation,
+            Duration::from_millis(900)
+        ));
+    }
+
+    #[test]
+    fn ready_application_lands_at_next_complete_cycle() {
+        assert_eq!(
+            next_launch_landing(
+                Duration::from_millis(1_100),
+                Duration::from_millis(900),
+            ),
+            Duration::from_millis(1_800)
+        );
+    }
+
+    #[test]
+    fn disabled_launch_bounce_does_not_start_animation() {
+        let mut animations = HashMap::new();
+
+        assert!(!start_launch_animation(
+            &mut animations,
+            "terminal.desktop".to_string(),
+            false,
+        ));
+        assert!(animations.is_empty());
     }
 
     #[test]
