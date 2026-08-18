@@ -32,6 +32,21 @@ To remove a user-local install later:
 ./install.sh --uninstall
 ```
 
+## Launch bounce
+
+The startup bounce can be tuned in `~/.config/osdockx/config.toml`. These values live in the
+`[dock]` section and are reloaded while OSDockX is running:
+
+```toml
+[dock]
+launch_bounce = true
+launch_bounce_cycle_ms = 900
+launch_bounce_height_ratio = 0.52
+```
+
+`launch_bounce_cycle_ms` is the time from ground to apex and back to ground. The height ratio is
+relative to the icon height. Set `launch_bounce = false` to disable the animation entirely.
+
 ## A closer look
 
 The default Leopard-style theme brings icon magnification, reflections, running indicators, and notification badges to the shelf.

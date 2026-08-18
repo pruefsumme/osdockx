@@ -29,6 +29,9 @@ pub struct DockConfig {
     pub unhide_delay_ms: u32,
     pub reserve_space: bool,
     pub refresh_ms: u32,
+    pub launch_bounce: bool,
+    pub launch_bounce_cycle_ms: u32,
+    pub launch_bounce_height_ratio: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -145,6 +148,9 @@ impl Default for DockConfig {
             unhide_delay_ms: 40,
             reserve_space: true,
             refresh_ms: 5_000,
+            launch_bounce: true,
+            launch_bounce_cycle_ms: 900,
+            launch_bounce_height_ratio: 0.52,
         }
     }
 }
@@ -255,6 +261,9 @@ impl Config {
         self.dock.icon_size = self.dock.icon_size.clamp(24, 160);
         self.dock.zoom_strength = self.dock.zoom_strength.clamp(0.0, 1.6);
         self.dock.refresh_ms = self.dock.refresh_ms.clamp(5_000, 60_000);
+        self.dock.launch_bounce_cycle_ms = self.dock.launch_bounce_cycle_ms.clamp(200, 3_000);
+        self.dock.launch_bounce_height_ratio =
+            self.dock.launch_bounce_height_ratio.clamp(0.05, 1.0);
 
         self.theme.preset = self.theme.preset.trim().to_string();
         if self.theme.preset.is_empty() {
@@ -422,6 +431,8 @@ mod tests {
         config.dock.icon_size = 8;
         config.dock.zoom_strength = 9.0;
         config.dock.refresh_ms = 1;
+        config.dock.launch_bounce_cycle_ms = 1;
+        config.dock.launch_bounce_height_ratio = 9.0;
         config.pinned = vec!["org.xfce.Terminal.desktop".to_string()];
         config.hidden = vec![
             " org.xfce.Terminal.desktop ".to_string(),
@@ -467,6 +478,8 @@ mod tests {
         assert_eq!(config.dock.icon_size, 24);
         assert_eq!(config.dock.zoom_strength, 1.6);
         assert_eq!(config.dock.refresh_ms, 5_000);
+        assert_eq!(config.dock.launch_bounce_cycle_ms, 200);
+        assert_eq!(config.dock.launch_bounce_height_ratio, 1.0);
         assert_eq!(config.startup, StartupConfig::default());
         assert_eq!(config.pinned, vec!["xfce4-terminal.desktop"]);
         assert_eq!(config.hidden, vec!["xfce4-terminal.desktop"]);
@@ -500,6 +513,25 @@ mod tests {
         let mut config = Config::default();
         config.dock.refresh_ms = 90_000;
         assert_eq!(config.normalized().dock.refresh_ms, 60_000);
+    }
+
+    #[test]
+    fn old_config_files_receive_launch_bounce_defaults() {
+        let config = Config::from_toml_str(
+            r#"
+            [dock]
+            icon_size = 64
+
+            [startup]
+            autostart = false
+            prompt_seen = true
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.dock.launch_bounce);
+        assert_eq!(config.dock.launch_bounce_cycle_ms, 900);
+        assert_eq!(config.dock.launch_bounce_height_ratio, 0.52);
     }
 
     #[test]
