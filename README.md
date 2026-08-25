@@ -12,6 +12,16 @@ X11 is currently only supported, maybe I will do Wayland one day
 
 ## Get started
 
+OSDockX requires Rust 1.92 or newer, `pkg-config`, and GTK4 development files.
+On Debian, Ubuntu, Mint, or LMDE, install the system dependencies with:
+
+```sh
+sudo apt install cargo pkg-config libgtk-4-dev
+```
+
+If the distribution's Rust package is older than 1.92, install a current stable
+toolchain with [rustup](https://rustup.rs/) instead.
+
 From this folder, run:
 
 ```sh

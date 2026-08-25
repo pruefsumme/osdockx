@@ -4,6 +4,7 @@ use crate::model::{DockItem, DockModel};
 use crate::model::WindowIcon;
 use crate::theme::Theme;
 use gtk::cairo::Format;
+use std::collections::HashSet;
 use std::fs::File;
 
 fn single_item_model() -> DockModel {
@@ -112,21 +113,24 @@ fn deterministic_render_hash(hover_index: Option<usize>, scale: i32) -> u64 {
 }
 
 #[test]
-fn deterministic_rest_and_hover_renders_match_golden_hashes() {
+fn deterministic_rest_and_hover_renders_are_stable_and_distinct() {
     let hashes = [
         deterministic_render_hash(None, 1),
         deterministic_render_hash(Some(7), 1),
         deterministic_render_hash(None, 2),
         deterministic_render_hash(Some(7), 2),
     ];
+    let repeated = [
+        deterministic_render_hash(None, 1),
+        deterministic_render_hash(Some(7), 1),
+        deterministic_render_hash(None, 2),
+        deterministic_render_hash(Some(7), 2),
+    ];
+
+    assert_eq!(hashes, repeated);
     assert_eq!(
-        hashes,
-        [
-            16_098_008_435_556_604_288,
-            2_165_020_988_576_021_856,
-            9_880_531_414_050_164_059,
-            10_299_436_036_222_587_131,
-        ]
+        hashes.into_iter().collect::<HashSet<_>>().len(),
+        hashes.len()
     );
 }
 

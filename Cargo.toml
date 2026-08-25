@@ -2,6 +2,7 @@
 name = "osdockx"
 version = "0.1.1"
 edition = "2024"
+rust-version = "1.92"
 license = "MIT"
 description = "A lightweight, customizable OSX-inspired dock for Linux/X11."
 
