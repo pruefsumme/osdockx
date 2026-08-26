@@ -592,7 +592,8 @@ fn resolve_icons<'a>(
             let item_key = item.config_key();
             let mut rect = icon.rect;
             let mut alpha = 1.0;
-            let mut indicator_visibility = if item.active || item.is_running() {
+            let running = item.is_running();
+            let mut indicator_visibility = if running {
                 1.0
             } else {
                 0.0
@@ -614,12 +615,14 @@ fn resolve_icons<'a>(
             }) {
                 rect = motion_rect.rect;
             }
-            if let Some(indicator_state) = indicator_animation.and_then(|frame| {
-                frame
-                    .states
-                    .iter()
-                    .find(|state| state.item_key.eq_ignore_ascii_case(&item_key))
-            }) {
+            if running
+                && let Some(indicator_state) = indicator_animation.and_then(|frame| {
+                    frame
+                        .states
+                        .iter()
+                        .find(|state| state.item_key.eq_ignore_ascii_case(&item_key))
+                })
+            {
                 indicator_visibility = indicator_state.visibility;
                 indicator_emphasis = indicator_state.emphasis;
             }
@@ -640,12 +643,11 @@ fn resolve_icons<'a>(
             item: Cow::Borrowed(ghost.item.as_ref()),
             rect: ghost.rect,
             alpha: ghost.alpha,
-            indicator_visibility: if ghost.item.active || ghost.item.is_running() {
-                1.0
-            } else {
-                0.0
-            },
-            indicator_emphasis: if ghost.item.active { 1.0 } else { 0.0 },
+            // Presence ghosts represent items that no longer exist in the
+            // current model. Their icon may fade out, but their running light
+            // must disappear immediately with the application state.
+            indicator_visibility: 0.0,
+            indicator_emphasis: 0.0,
         }));
     }
 

@@ -2343,6 +2343,13 @@ fn build_indicator_animations(
             emphasis: 0.0,
         });
 
+        // A closed application has no valid indicator state. Dropping the
+        // animation immediately also prevents its last bright frame from
+        // surviving after the window has disappeared.
+        if to.visibility == 0.0 {
+            continue;
+        }
+
         if let Some(animation) = existing.get(key)
             && animation.started.elapsed() < INDICATOR_ANIMATION_DURATION
             && animation.to == to
@@ -4411,6 +4418,38 @@ mod tests {
         assert_eq!(animation.from.emphasis, 0.0);
         assert_eq!(animation.to.visibility, 1.0);
         assert_eq!(animation.to.emphasis, 1.0);
+    }
+
+    #[test]
+    fn indicator_animation_stops_immediately_when_application_closes() {
+        let previous = DockModel {
+            items: vec![item_with_state(Some("xfce4-terminal.desktop"), true, true)],
+        };
+        let next = DockModel {
+            items: vec![item_with_state(
+                Some("xfce4-terminal.desktop"),
+                false,
+                false,
+            )],
+        };
+        let existing = HashMap::from([(
+            "xfce4-terminal.desktop".to_string(),
+            IndicatorAnimation {
+                from: IndicatorVisual {
+                    visibility: 0.0,
+                    emphasis: 0.0,
+                },
+                to: IndicatorVisual {
+                    visibility: 1.0,
+                    emphasis: 1.0,
+                },
+                started: Instant::now(),
+            },
+        )]);
+
+        let animations = build_indicator_animations(&previous, &next, &existing);
+
+        assert!(animations.is_empty());
     }
 
     #[test]
