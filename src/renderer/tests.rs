@@ -568,6 +568,55 @@ fn leopard_reflections_are_visible_at_icon_bottom() {
 }
 
 #[test]
+fn removed_application_ghost_does_not_keep_running_indicator() {
+    let config = Config::default().normalized();
+    let theme = Theme::from_config(&config.theme);
+    let running_item = DockItem {
+        id: "test.desktop".to_string(),
+        name: "Test".to_string(),
+        desktop_id: Some("test.desktop".to_string()),
+        startup_wm_class: None,
+        icon_name: None,
+        window_icon: None,
+        pinned: false,
+        windows: vec![crate::model::WindowInfo {
+            xid: 42,
+            title: Some("Test".to_string()),
+            class: Some("Test".to_string()),
+            pid: Some(1000),
+            executable: Some("test".to_string()),
+            workspace: Some(0),
+            icon: None,
+            active: true,
+            urgent: false,
+            minimized: false,
+        }],
+        active: true,
+        urgent: false,
+        badge: None,
+    };
+    let previous_model = DockModel {
+        items: vec![running_item.clone()],
+    };
+    let empty_model = DockModel { items: Vec::new() };
+    let layout = Renderer::layout_for(&previous_model, &config.dock, &theme, None);
+    let presence = IconPresenceFrame {
+        current: Vec::new(),
+        ghosts: vec![GhostIcon {
+            item: std::sync::Arc::new(running_item),
+            rect: layout.icons[0].rect,
+            alpha: 0.5,
+        }],
+    };
+
+    let resolved_icons = resolve_icons(&empty_model, &layout, None, Some(&presence), None);
+
+    assert_eq!(resolved_icons.len(), 1);
+    assert_eq!(resolved_icons[0].indicator_visibility, 0.0);
+    assert_eq!(resolved_icons[0].indicator_emphasis, 0.0);
+}
+
+#[test]
 fn leopard_default_layout_has_visible_floor_below_icons() {
     let config = Config::default().normalized();
     let theme = Theme::from_config(&config.theme);
