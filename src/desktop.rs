@@ -118,10 +118,7 @@ impl DesktopApp {
             self.startup_wm_class
                 .as_deref()
                 .is_some_and(|wm_class| wm_class.eq_ignore_ascii_case(class))
-                || self
-                    .desktop_id
-                    .trim_end_matches(".desktop")
-                    .eq_ignore_ascii_case(class)
+                || application_match_key(&self.desktop_id) == application_match_key(class)
                 || self.name.eq_ignore_ascii_case(class)
         });
 
@@ -246,8 +243,22 @@ fn executable_matches(exec: Option<&str>, window_executable: Option<&str>) -> bo
 
     exec_command_candidates(exec)
         .into_iter()
-        .filter_map(|token| command_basename(&token).map(str::to_ascii_lowercase))
-        .any(|candidate| candidate == window_executable.to_ascii_lowercase())
+        .filter_map(|token| command_basename(&token).map(application_match_key))
+        .any(|candidate| candidate == application_match_key(window_executable))
+}
+
+fn application_match_key(value: &str) -> String {
+    let mut key = value.trim().to_ascii_lowercase();
+    if let Some(stripped) = key.strip_suffix(".desktop") {
+        key = stripped.to_string();
+    }
+    for suffix in [".pyw", ".py", ".sh", ".pl", ".rb"] {
+        if let Some(stripped) = key.strip_suffix(suffix) {
+            key = stripped.to_string();
+            break;
+        }
+    }
+    key
 }
 
 fn exec_command_candidates(exec: &str) -> Vec<String> {
@@ -348,6 +359,31 @@ mod tests {
             workspace: None,
             icon: None,
             active: false,
+            urgent: false,
+            minimized: false,
+        };
+
+        assert!(app.matches_window(&window));
+    }
+
+    #[test]
+    fn script_wm_class_matches_desktop_launcher_without_suffix() {
+        let app = DesktopApp {
+            desktop_id: "mintinstall.desktop".to_string(),
+            name: "Software Manager".to_string(),
+            icon_name: Some("mintinstall".to_string()),
+            startup_wm_class: None,
+            exec: Some("mintinstall".to_string()),
+        };
+        let window = WindowInfo {
+            xid: 42,
+            title: Some("Software Manager".to_string()),
+            class: Some("Mintinstall.py".to_string()),
+            pid: Some(1000),
+            executable: Some("/usr/bin/python3.13".to_string()),
+            workspace: Some(0),
+            icon: None,
+            active: true,
             urgent: false,
             minimized: false,
         };

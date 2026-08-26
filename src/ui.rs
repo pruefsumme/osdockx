@@ -4365,6 +4365,20 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_application_launch_stops_at_hard_timeout() {
+        let animation = LaunchAnimation::new();
+
+        assert!(launch_animation_continues_at(
+            &animation,
+            LAUNCH_BOUNCE_TIMEOUT - Duration::from_millis(1)
+        ));
+        assert!(!launch_animation_continues_at(
+            &animation,
+            LAUNCH_BOUNCE_TIMEOUT
+        ));
+    }
+
+    #[test]
     fn disabled_launch_bounce_does_not_start_animation() {
         let mut animations = HashMap::new();
 
